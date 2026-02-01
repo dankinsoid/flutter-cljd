@@ -79,9 +79,8 @@
 (defn- enabled? [this]
   (widget-enabled? this (.-widget this)))
 
-(defn- handle-states-controller-change [this]
-  ;; Force a rebuild to resolve widget.mouseCursor
-  (.setState this (fn [])))
+(defn- handle-states-controller-change [_]
+  nil)
 
 (defn- init-states-controller [this]
   (set! (.-internalStatesController this) (w/ValueNotifier #{}))
@@ -289,12 +288,8 @@
     (.dispose ^super this))
 
   ;; Build method
-  (build [this context]
+  (build [this _context]
     (let [^Button widget (.-widget this)
-          ^w/MouseCursor effective-mouse-cursor (w/WidgetStateProperty.resolveAs
-                                                 (or (.-mouse-cursor widget)
-                                                     w/WidgetStateMouseCursor.clickable)
-                                                 (.-value (states-controller this)))
           primary-enabled? (primary-button-enabled? this widget)
           secondary-enabled? (secondary-button-enabled? this widget)
           action-map {w/ActivateIntent (w/CallbackAction.
@@ -305,69 +300,81 @@
        .actions action-map
        .child
        (w/Focus.
-        .focusNode (.-focus-node (.-widget this))
+        .focusNode (.-focus-node widget)
         .canRequestFocus (can-request-focus? this)
         .onFocusChange #(handle-focus-update this %)
-        .autofocus (.-autofocus (.-widget this))
+        .autofocus (.-autofocus widget)
         .child
-        (w/MouseRegion.
-         .cursor effective-mouse-cursor
-         .onEnter #(handle-mouse-enter this %)
-         .onExit #(handle-mouse-exit this %)
-         .onHover #(handle-mouse-move this %)
+        (w/GestureDetector.
+         .onTapDown (when primary-enabled?
+                      #(handle-tap-down this %))
+         .onTapUp (when primary-enabled?
+                    #(handle-tap-up this %))
+         .onTap (when primary-enabled?
+                  #(handle-tap this))
+         .onTapCancel (when primary-enabled?
+                        #(handle-tap-cancel this))
+         .onDoubleTap (when (.-on-double-tap widget)
+                        #(handle-double-tap this))
+         .onDoubleTapCancel (when (.-on-double-tap widget)
+                              #(clear-offsets this))
+         .onLongPressCancel (when (.-on-long-press widget)
+                              #(clear-offsets this))
+         .onLongPress (when (.-on-long-press widget)
+                        #(handle-long-press this))
+         .onLongPressStart (when (.-on-long-press widget)
+                             #(handle-long-press-start this %))
+         .onLongPressUp (when (.-on-long-press widget)
+                          #(clear-offsets this))
+         .onSecondaryTapDown (when secondary-enabled?
+                               #(handle-secondary-tap-down this %))
+         .onSecondaryTapUp (when secondary-enabled?
+                             #(handle-secondary-tap-up this %))
+         .onSecondaryTap (when secondary-enabled?
+                           #(handle-secondary-tap this))
+         .onSecondaryTapCancel (when secondary-enabled?
+                                 #(handle-secondary-tap-cancel this))
+         .behavior w/HitTestBehavior.opaque
+         .excludeFromSemantics true
          .child
-         (w/DefaultSelectionStyle.merge
-          .mouseCursor effective-mouse-cursor
-          .child
-          (w/Semantics.
-           .onTap (when-not (or (.-exclude-from-semantics (.-widget this))
-                                (nil? (.-on-tap (.-widget this))))
-                    #(handle-tap this))
-           .onLongPress (when-not (or (.-exclude-from-semantics (.-widget this))
-                                      (nil? (.-on-long-press (.-widget this))))
-                          #(handle-long-press this))
-           .child
-           (w/GestureDetector.
-            .onTapDown (when primary-enabled?
-                         #(handle-tap-down this %))
-            .onTapUp (when primary-enabled?
-                       #(handle-tap-up this %))
-            .onTap (when primary-enabled?
-                     #(handle-tap this))
-            .onTapCancel (when primary-enabled?
-                           #(handle-tap-cancel this))
-            .onDoubleTap (when (.-on-double-tap (.-widget this))
-                           #(handle-double-tap this))
-            .onDoubleTapCancel (when (.-on-double-tap (.-widget this))
-                                 #(clear-offsets this))
-            .onLongPressCancel (when (.-on-long-press (.-widget this))
-                                 #(clear-offsets this))
-            .onLongPress (when (.-on-long-press (.-widget this))
-                           #(handle-long-press this))
-            .onLongPressStart (when (.-on-long-press (.-widget this))
-                                #(handle-long-press-start this %))
-            .onLongPressUp (when (.-on-long-press (.-widget this))
-                             #(clear-offsets this))
-            .onSecondaryTapDown (when secondary-enabled?
-                                  #(handle-secondary-tap-down this %))
-            .onSecondaryTapUp (when secondary-enabled?
-                                #(handle-secondary-tap-up this %))
-            .onSecondaryTap (when secondary-enabled?
-                              #(handle-secondary-tap this))
-            .onSecondaryTapCancel (when secondary-enabled?
-                                    #(handle-secondary-tap-cancel this))
-            .behavior w/HitTestBehavior.opaque
-            .excludeFromSemantics true
-            .child
-            ((.-child (.-widget this))
-             {:context context
-              :state (.-value (states-controller this))
-              :prev-state (.-oldStates this)
-              :local-offset (.-cursorLocalOffset this)
-              :global-offset (.-cursorGlobalOffset this)})))))))))
+         (w/ValueListenableBuilder.
+          .valueListenable (states-controller this)
+          .builder
+          (fn [ctx states _]
+            (let [^w/MouseCursor effective-mouse-cursor
+                  (w/WidgetStateProperty.resolveAs
+                   (or (.-mouse-cursor widget)
+                       w/WidgetStateMouseCursor.clickable)
+                   states)]
+              (w/MouseRegion.
+               .cursor effective-mouse-cursor
+               .onEnter #(handle-mouse-enter this %)
+               .onExit #(handle-mouse-exit this %)
+               .onHover #(handle-mouse-move this %)
+               .child
+               (w/DefaultSelectionStyle.merge
+                .mouseCursor effective-mouse-cursor
+                .child
+                (w/Semantics.
+                 .onTap (when-not (or (.-exclude-from-semantics widget)
+                                      (nil? (.-on-tap widget)))
+                          #(handle-tap this))
+                 .onLongPress (when-not (or (.-exclude-from-semantics widget)
+                                            (nil? (.-on-long-press widget)))
+                                #(handle-long-press this))
+                 .child
+                 ((.-child widget)
+                  {:context ctx
+                   :state states
+                   :prev-state (.-oldStates this)
+                   :local-offset (.-cursorLocalOffset this)
+                   :global-offset (.-cursorGlobalOffset this)}))))))))))))
 
   ^:mixin #/(w/AutomaticKeepAliveClientMixin Button)
   (wantKeepAlive [_] false))
+
+(defn- ^w/Widget opacity-builder [opacity child]
+  (w/Opacity .opacity opacity .child child))
 
 (defn- default-button-modifier [button {:keys [state context prev-state]}]
   (let [text-style (w/DefaultTextStyle.of context)
@@ -381,8 +388,7 @@
      .child (an/animated*
              {:duration (core/Duration .milliseconds (if did-unhovered 500 50))
               :update-strategy (if (or (did :pressed) (did :hovered)) :immediate :on-complete)}
-             [(fn [opacity child]
-                (w/Opacity .opacity opacity .child child))
+             [opacity-builder
               (cond (state :pressed) 0.5 (state :hovered) 0.8 :else 1.0)
               button]))))
 
