@@ -170,7 +170,10 @@
                                   nil
                                   nil
                                   (.-context this)
-                                  (a/AnimationController .vsync this))]
+                                  (a/AnimationController .vsync this)
+                                  nil
+                                  nil
+                                  nil)]
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
@@ -224,7 +227,10 @@
                      ^:mutable ^w/OverlayEntry? entry
                      ^:mutable ^w/BuildContext? context
                      ^:mutable ^w/BuildContext originalContext
-                     ^:mutable ^a/AnimationController controller]
+                     ^:mutable ^a/AnimationController controller
+                     ^:mutable ^r/RenderBox? overlayBox
+                     ^:mutable boundary
+                     ^:mutable ^w/Size? feedbackSize]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -240,6 +246,8 @@
 
   DragAvatar
   (prepare [^DragAvatar this]
+    (.-overlayBox! this (.findRenderObject (.-context (.-overlayState this))))
+    (.-boundary! this (w/DragBoundary.forRectOf (.-originalContext this)))
     (let [entry (w/OverlayEntry .builder #(.buildWidget this %))]
       (set! (.-entry this) entry)
       (.insert (.-overlayState this) entry)
@@ -251,12 +259,14 @@
     (.-lastOffset! this (.- global-position (.-dragStartPoint this)))
 
     (when (.-mounted (.-overlayState this))
-      (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
+      (let [^r/RenderBox box (.-overlayBox this)
             ^w/Offset overlay-space-offset (.globalToLocal box global-position)
             ^w/Offset offset (.- overlay-space-offset (.-dragStartPoint this))
-            delegate (w/DragBoundary.forRectOf (.-originalContext this))
-            size (some-> this .-context .findRenderObject .-size)
-            rect (.nearestPositionWithinBoundary delegate (.& offset (or size w/Size.zero)))
+            size (or (.-feedbackSize this)
+                     (some-> this .-context .findRenderObject .-size))
+            _ (when (and (nil? (.-feedbackSize this)) size)
+                (.-feedbackSize! this size))
+            rect (.nearestPositionWithinBoundary (.-boundary this) (.& offset (or size w/Size.zero)))
             offset (or ((.-onDragUpdate this) details (.-topLeft rect))
                        (.-topLeft rect))]
         (.-overlayOffset! this offset)
@@ -293,12 +303,13 @@
             (.-activeTarget! this new-target))))))
 
   (getDragTargets [^DragAvatar _ path]
-    (for [entry path
-          :let [target (.-target entry)]
-          :when (instance? r/RenderMetaData target)
-          :let [meta-data (.-metaData target)]
-          :when (instance? DragTargetState meta-data)]
-      meta-data))
+    (into []
+      (comp
+        (map #(.-target %))
+        (filter #(instance? r/RenderMetaData %))
+        (map #(.-metaData %))
+        (filter #(instance? DragTargetState %)))
+      path))
 
   (leaveAllEntered [^DragAvatar this]
     (doseq [target (.-enteredTargets this)]
@@ -306,8 +317,7 @@
     (.-enteredTargets! this #{}))
 
   (finishDrag [^DragAvatar this end-kind velocity]
-    (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
-          target (when (= end-kind :dropped) (.-activeTarget this))
+    (let [target (when (= end-kind :dropped) (.-activeTarget this))
           target-box (some-> target .-context .findRenderObject)
           target-size (some-> target-box .-size)
           child-box (some-> this .-originalContext .findRenderObject)
@@ -365,9 +375,8 @@
                 (let [offset (w/Offset.lerp (.-overlayOffset this)
                                             (.-finalOffset this)
                                             (a/Curves.easeInOut.transform (.-value (.-controller this))))]
-                  (w/Positioned
-                   .left (.-dx offset)
-                   .top (.-dy offset)
+                  (w/Transform.translate
+                   .offset offset
                    .child child)))))
 
   (^w/Velocity restrictVelocityAxis [^DragAvatar this ^w/Velocity velocity]
