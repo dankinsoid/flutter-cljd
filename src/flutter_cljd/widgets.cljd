@@ -921,10 +921,11 @@
 
   [Flutter docs](https://api.flutter.dev/flutter/widgets/Container-class.html)"
   ([] (cnt/container*))
-  ([child] (cnt/container* child))
-  ([& args]
-   (let [[args children] (ut/key-values-args-and-children args)]
-     (cnt/container* args (last children)))))
+  ([child & args]
+   (if args
+     (let [[args children] (ut/key-values-args-and-children (cons child args))]
+       (cnt/container* args (last children)))
+     (cnt/container* child))))
 
 (defn ^w/Widget custom-multi-child-layout
   "A widget that uses a delegate to size and position multiple children.
@@ -1911,10 +1912,9 @@
       - `child`: The child widget.
 
    [Flutter docs](https://api.flutter.dev/flutter/widgets/UnconstrainedBox-class.html)"
-  ([child] (uc/unconstrained* {} child))
-  ([& args]
-   (let [[args children] (ut/key-values-args-and-children args)]
-     (uc/unconstrained* args (last children)))))
+  [arg0 & args]
+  (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
+    (uc/unconstrained* args (last children))))
 
 (defn ^w/Widget hero
   "A widget that marks its child as being a candidate for hero animations.

@@ -405,7 +405,7 @@
      .behavior (-> this .-widget .-hitTestBehavior)
      .child ((-> this .-widget .-builder)
              context
-             (map #(.-data %) (.-candidateAvatars this)))))
+             (map #(.-data ^DragAvatar %) (.-candidateAvatars this)))))
 
   (setState [^DraggableState this modify]
     (if (.-mounted this)
