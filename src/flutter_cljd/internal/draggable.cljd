@@ -246,7 +246,7 @@
 
   DragAvatar
   (prepare [^DragAvatar this]
-    (.-overlayBox! this (.findRenderObject (.-context (.-overlayState this))))
+    (.-overlayBox! this (^r/RenderBox? (.findRenderObject (.-context (.-overlayState this)))))
     (.-boundary! this (w/DragBoundary.forRectOf (.-originalContext this)))
     (let [entry (w/OverlayEntry .builder #(.buildWidget this %))]
       (set! (.-entry this) entry)
