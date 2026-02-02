@@ -1521,6 +1521,10 @@
    ```clojure
    ;; Modifier in a pipeline
    (->> (text \"Hello\")
+     (animated controller opacity))
+
+   ;; For composite values, ILookup on Animation extracts a child animation
+   (->> (text \"Hello\")
      (animated (:opacity controller) opacity)
      (animated (:offset controller) offset :dx))
 
