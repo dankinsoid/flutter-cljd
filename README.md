@@ -33,7 +33,7 @@ Besides wrappers the library contains some extensions to Flutter
 ;; Card with multiple elements
 (->> (row :spacing 10
        (text "Title" :size 20, :weight :bold)
-       (text "Subtitle" :color :gray))
+       (text "Subtitle" :color :grey))
      (padding 16)
      (card :elevation 2 :radius 8))
 ```
@@ -93,7 +93,7 @@ Besides wrappers the library contains some extensions to Flutter
          (ui/column :spacing 10
            (ui/text name :size 18, :weight :bold)
            (ui/text role :size 14)))
-       (ui/with-text-style :color :gray)
+       (ui/with-text-style :color :grey)
        (ui/padding 16)
        (ui/card :elevation 4 :radius 12)
        (ui/center)))

@@ -1,10 +1,9 @@
-(ns demo.screens.home-screen
+(ns screens.home-screen
   "Home screen with category grid"
   (:require
    [flutter-cljd.widgets :as f]
-   [demo.data.categories :as categories]
-   [demo.widgets.category-card :as card]
-   [demo.utils.navigation :as nav]
+   [data.categories :as categories]
+   [widgets.category-card :as card]
    ["package:flutter/material.dart" :as m]))
 
 (defn home-screen []

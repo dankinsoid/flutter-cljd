@@ -1,6 +1,6 @@
-(ns demo.main
+(ns main
   (:require
-   [demo.app :as app]
+   [app]
    ["package:flutter/material.dart" :as m]))
 
 (defn main []

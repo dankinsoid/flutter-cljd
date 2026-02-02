@@ -1,6 +1,6 @@
-(ns demo.app
+(ns app
   (:require
-   [demo.screens.home-screen :as home]
+   [screens.home-screen :as home]
    ["package:flutter/material.dart" :as m]))
 
 (defn demo-app []

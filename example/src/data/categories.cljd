@@ -1,4 +1,4 @@
-(ns demo.data.categories
+(ns data.categories
   "Widget categories and their metadata"
   (:require ["package:flutter/material.dart" :as m]))
 

@@ -1,4 +1,4 @@
-(ns demo.widgets.category-card
+(ns widgets.category-card
   "Category card widget for home screen"
   (:require
    [flutter-cljd.widgets :as f]
@@ -21,6 +21,6 @@
                     (f/with-text-style :align :center))
                (f/sized {:h 4})
                (->> (f/text description :size 12)
-                    (f/with-text-style :color :gray :align :center)))
+                    (f/with-text-style :color :grey :align :center)))
              (f/padding 16)
              (f/center))))))

@@ -1,4 +1,4 @@
-(ns demo.utils.navigation
+(ns utils.navigation
   "Navigation utilities for demo app"
   (:require ["package:flutter/material.dart" :as m]))
 

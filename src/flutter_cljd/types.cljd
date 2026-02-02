@@ -569,6 +569,7 @@
                         :indigo m/Colors.indigo
                         :blue-grey m/Colors.blueGrey
                         :grey m/Colors.grey
+                        :gray m/Colors.grey
                         :black m/Colors.black
                         :white m/Colors.white
                         :transparent m/Colors.transparent
@@ -642,8 +643,8 @@
     - `:inherit` (boolean, default: true): Whether the style is inherited from the parent. 
     - `:color` (Color, default: nil): The color of the text.
     - `:background-color` (Color, default: nil): The background color of the text.
-    - `:font-size` (number, default: nil): The size of the font.
-    - `:font-weight` (number or FontWeight, default: nil): The weight of the font.
+    - `:size` or `:font-size` (number, default: nil): The size of the font.
+    - `:weight` or `:font-weight` (number or FontWeight, default: nil): The weight of the font.
     - `:font-style` (keyword or FontStyle, default: nil): The style of the font.
     - `:letter-spacing` (number, default: nil): The spacing between letters.
     - `:word-spacing` (number, default: nil): The spacing between words.
@@ -661,7 +662,7 @@
     - `:decoration-style` (TextDecorationStyle, default: nil): The style of the decoration.
     - `:decoration-thickness` (number, default: nil): The thickness of the decoration.
     - `:debug-label` (string, default: nil): The debug label of the text.
-    - `:font-family` (string, default: nil): The font family of the text.
+    - `:family` or `:font-family` (string, default: nil): The font family of the text.
     - `:font-family-fallback` (list of string, default: nil): The font family fallback of the text.
     - `:package` (string, default: nil): The package of the font family.
     - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows."
@@ -676,8 +677,8 @@
        .inherit (:inherit args true)
        .color (some-> (args :color) color)
        .backgroundColor (some-> (args :background-color) color)
-       .fontSize (args :font-size)
-       .fontWeight (some-> (args :font-weight) font-weight)
+       .fontSize (:size args (:font-size args))
+       .fontWeight (some-> (:weight args (:font-weight args)) font-weight)
        .fontStyle (some-> (args :font-style) font-style)
        .letterSpacing (args :letter-spacing)
        .wordSpacing (args :word-spacing)
@@ -695,7 +696,7 @@
        .decorationStyle (args :decoration-style)
        .decorationThickness (args :decoration-thickness)
        .debugLabel (args :debug-label)
-       .fontFamily (args :font-family)
+       .fontFamily (:family args (:font-family args))
        .fontFamilyFallback (args :font-family-fallback)
        .package (args :package)
        .overflow (args :overflow))

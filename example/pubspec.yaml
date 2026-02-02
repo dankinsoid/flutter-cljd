@@ -37,7 +37,7 @@ dependencies:
 
   # Local dependency on flutter-cljd library
   flutter_cljd:
-    path: ../
+    path: .clojuredart/deps/9f356e0df292d0e7b1e2af8d8786865dd4d38ddf7fc93492674b9cbd7d762aad
 
   # For syntax highlighting
   flutter_highlight: ^0.7.0
