@@ -1483,76 +1483,88 @@
    (oc/on-change-of* value nil on-change child)))
 
 (defn ^w/Widget animated
-  "Creates a widget that animates given values.
+  "Animates values and rebuilds its subtree on every tick.
 
-   This widget accepts:
-     1. An optional map with the following keys:
-        - `:duration` - The duration of the animation. Default is 250 milliseconds.
-        - `:curve` - The curve of the animation. Default is `Curves.easeInOut`.
-        - `:lerp` - The lerp function to interpolate between values. Default is `utils/lerp`.
-        - `:on-end` - The callback to be called when the animation ends. Default is nil.
-        - `:when` - The condition to trigger the animation. True by default.
-        - `:update-strategy` - Defines how the animation should handle updates when properties like duration, curve, or target value change mid-animation.  
-          - `:immediate` (default) - Recalculates the animation and continues to the new value.  
-          - `:on-complete` - Completes the current animation before starting a new one with the latest options.  
-          - `:sequential` - Completes the current animation and then animates through all intermediate updates in order.
-     2. A builder function that creates the child widget. (fn [value Widget?])
-     3. Values to animate. Animation is triggered when any value changes and `:when` option is true. All values are passed to the builder function. For a single value, it can optionally be passed before the builder function.
-     4. An optional child widget that is passed to the builder function as the last argument.
-   
-   Or:
-     1. An `Animation` or `ValueListenable` or `Atom`.
-     2. A builder function that creates the child widget. (fn [value Widget?])
-     3. An optional child widget that is passed to the builder function.
+   General form: `(animated [opts?] builder values... [child?])`.
 
-  ```clojure
-  (animated
-    {:duration 250}
-    {:padding pd :color txt-clr}
-    #(padding (:padding %1) 
-        (text \"Text\" {:color (:color %1)})))
-  ```
-     If your builder function contains a subtree that doesn't depend on the animation,
-     it's more efficient to build that subtree once instead of rebuilding it on every animation tick.
-     
-     To achieve this, animated can be inserted before any modifier call:
-     
-  ```clojure
+   ## Implicit
+
+   Animates automatically when values change.
+   An options map can be passed as the first argument:
+
+   ```clojure
+   ;; Modifier in a pipeline — compare: (padding pd child)
    (->> (some-widget)
      (animated padding pd)
-     (animated sized w h)
-     (animated {:duration 200 :curve :linear}
-       decorated {:color color, :border-radius radius}))
-  ```
+     (animated {:duration 200} decorated {:color clr}))
 
-  [!NOTE]
-  All provided values must be animatable and consistent.
-  
-  Animatable values include:
-  - Numbers
-  - Vectors
-  - Maps
-  - Flutter classes with a static `lerp` method (e.g., Color, Alignment)
-  
-  For consistent animations, ensure values maintain the same type and structure between updates. For example:
-  
-  Instead of:
-  ```clojure
-  ;; Inconsistent - animation won't work correctly
-  {:h 8 :v 10}  ; first value
-  {:all 16}     ; second value - different structure
-  ```
-  
-  Use:
-  ```clojure
-  ;; Correct - consistent EdgeInsets instances
-  (t/insets {:h 8 :v 10})  ; first value
-  (t/insets {:all 16})     ; second value
-  ```
-  
-  Keywords are not animatable. Convert them to appropriate Flutter classes using methods from the `flutter-cljd/types` namespace:
-  - `(t/color :blue)`
-  - `(t/alignment :center)`"
+   ;; Standalone builder
+   (animated #(text \"Hello\" {:color %}) color)
+
+   ;; Multiple values
+   (animated
+     {:duration 250}
+     #(padding (:padding %) (text \"Text\" {:color (:color %)}))
+     {:padding pd :color txt-clr})
+   ```
+
+   ## Explicit
+
+   Driven by an `Animation`, `ValueListenable`, or `Atom`:
+
+   ```clojure
+   ;; Modifier in a pipeline
+   (->> (text \"Hello\")
+     (animated (:opacity controller) opacity)
+     (animated (:offset controller) offset :dx))
+
+   ;; Standalone builder
+   (animated my-animation #(opacity % (text \"Fade\")))
+   ```
+
+   ## Child widget
+
+   Both modes accept an optional child widget as the last argument.
+   When present, the builder acts as a modifier — it wraps the child
+   without rebuilding it on each tick. In a `->>` pipeline the child
+   is threaded automatically.
+
+   Extra static args are passed to the modifier as-is;
+   the animated value is appended as the last arg before child:
+   `(animated controller offset :dx)` → `(offset :dx animated-value child)`.
+
+   ## Options (implicit mode only)
+
+   | Key                | Default            | Description                          |
+   |--------------------|--------------------|--------------------------------------|
+   | `:duration`        | 250 ms             | Animation duration                   |
+   | `:curve`           | `Curves.easeInOut` | Animation curve                      |
+   | `:lerp`            | `utils/lerp`       | Interpolation function               |
+   | `:on-end`          | nil                | Callback when animation completes    |
+   | `:when`            | true               | Condition that enables the animation |
+   | `:update-strategy` | `:immediate`       | How mid-animation updates are handled (see below) |
+
+   `:update-strategy` values:
+     - `:immediate` — restart toward the new target immediately.
+     - `:on-complete` — finish current animation, then animate to the latest target.
+     - `:sequential` — finish current animation, then replay every queued target in order.
+
+   ## Animatable values
+
+   Numbers, vectors, maps, and Flutter classes with a static `lerp` method
+   (e.g. `Color`, `Alignment`).
+
+   Values must stay structurally consistent between updates:
+
+   ```clojure
+   ;; Bad — different map keys, can't interpolate
+   {:h 8 :v 10} -> {:all 16}
+
+   ;; Good — both are EdgeInsets instances
+   (t/insets {:h 8 :v 10}) -> (t/insets {:all 16})
+   ```
+
+   Keywords are not animatable — convert with `t/color`, `t/alignment`, etc."
   ([animation builder & values]
    (an/animated* animation (cons builder values))))
 

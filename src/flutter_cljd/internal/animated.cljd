@@ -105,10 +105,6 @@
           (fn? builder)
           [{} builder values]
           (fn? (first values)) [builder (first values) (drop 1 values)]
-          (and (fn? (second values))
-               (or (and has-child? (= (count values) 3))
-                   (= (count values) 2)))
-          [builder (second values) (cons (first values) (drop 2 values))]
           :else (throw (ex-info "Invalid arguments in animated" {:args (cons builder values)})))
         [values child] (if has-child?
                          [(vec (drop-last args)) (last args)]
