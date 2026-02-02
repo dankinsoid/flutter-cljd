@@ -1486,6 +1486,12 @@
   "Animates values and rebuilds its subtree on every tick.
 
    General form: `(animated [opts?] builder values... [child?])`.
+   To animate a modifier, wrap it with `animated`:
+
+   ```
+   (padding pd child)  ; static
+   (animated padding pd child)  ; animated — just insert `animated` before the call
+   ```
 
    ## Implicit
 
@@ -1493,9 +1499,9 @@
    An options map can be passed as the first argument:
 
    ```clojure
-   ;; Modifier in a pipeline — compare: (padding pd child)
    (->> (some-widget)
      (animated padding pd)
+     (animated offset :dx x-offset) 
      (animated {:duration 200} decorated {:color clr}))
 
    ;; Standalone builder
