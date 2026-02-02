@@ -1350,7 +1350,33 @@
    The arguments can be specified as a map with the following keys:
     - `:key` (any, default: nil): An identifier for the text.
     - `:style` (map or TextStyle, default: nil): The style to apply to the text.
-      Style map also can be passed directly instead of the arguments map.
+      Style map also can be passed directly instead of the arguments map with following keys:
+      - `:inherit` (boolean, default: true): Whether the style is inherited from the parent.
+      - `:color` (Color, default: nil): The color of the text.
+      - `:background-color` (Color, default: nil): The background color of the text.
+      - `:size` or `:font-size` (number, default: nil): The size of the font.
+      - `:weight` or `:font-weight` (number or FontWeight, default: nil): The weight of the font.
+      - `:font-style` (keyword or FontStyle, default: nil): The style of the font.
+      - `:letter-spacing` (number, default: nil): The spacing between letters.
+      - `:word-spacing` (number, default: nil): The spacing between words.
+      - `:text-baseline` (keyword or TextBaseline, default: nil): The baseline alignment for the text.
+      - `:height` or `:h` (number, default: nil): The height of the text.
+      - `:leading-distribution` (keyword or TextLeadingDistribution, default: nil): The leading distribution of the text.
+      - `:locale` (Locale, default: nil): The locale to use for the text.
+      - `:foreground` (Paint, default: nil): The foreground paint of the text.
+      - `:background` (Paint, default: nil): The background paint of the text.
+      - `:shadows` (list of Shadow, default: nil): The shadows of the text.
+      - `:font-features` (list of FontFeature, default: nil): The font features of the text.
+      - `:font-variations` (list of FontVariation, default: nil): The font variations of the text.
+      - `:decoration` (TextDecoration, default: nil): The decoration of the text.
+      - `:decoration-color` (Color, default: nil): The color of the decoration.
+      - `:decoration-style` (TextDecorationStyle, default: nil): The style of the decoration.
+      - `:decoration-thickness` (number, default: nil): The thickness of the decoration.
+      - `:debug-label` (string, default: nil): The debug label of the text.
+      - `:family` or `:font-family` (string, default: nil): The font family of the text.
+      - `:font-family-fallback` (list of string, default: nil): The font family fallback of the text.
+      - `:package` (string, default: nil): The package of the font family.
+      - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows.
       Check text-style function for more details.
     - `:strut-style` (StrutStyle, default: nil): The strut style to use for the text.
     - `:align` (keyword or TextAlign, default: nil): The alignment of the text.
