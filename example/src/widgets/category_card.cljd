@@ -1,0 +1,26 @@
+(ns demo.widgets.category-card
+  "Category card widget for home screen"
+  (:require
+   [flutter-cljd.widgets :as f]
+   ["package:flutter/material.dart" :as m]))
+
+(defn category-card [category on-tap]
+  (let [{:keys [name description color icon]} category]
+    (m/Card
+      .elevation 2
+      .child
+      (m/InkWell
+        .onTap on-tap
+        .child
+        (->> (f/column
+               (m/Icon icon
+                 .size 48
+                 .color (m/Color color))
+               (f/sized {:h 8})
+               (->> (f/text name :size 18 :weight :bold)
+                    (f/with-text-style :align :center))
+               (f/sized {:h 4})
+               (->> (f/text description :size 12)
+                    (f/with-text-style :color :gray :align :center)))
+             (f/padding 16)
+             (f/center))))))

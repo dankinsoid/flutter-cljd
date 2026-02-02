@@ -1,0 +1,7 @@
+(ns demo.main
+  (:require
+   [demo.app :as app]
+   ["package:flutter/material.dart" :as m]))
+
+(defn main []
+  (m/runApp (app/demo-app)))

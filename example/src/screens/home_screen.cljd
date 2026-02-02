@@ -1,0 +1,29 @@
+(ns demo.screens.home-screen
+  "Home screen with category grid"
+  (:require
+   [flutter-cljd.widgets :as f]
+   [demo.data.categories :as categories]
+   [demo.widgets.category-card :as card]
+   [demo.utils.navigation :as nav]
+   ["package:flutter/material.dart" :as m]))
+
+(defn home-screen []
+  (m/Scaffold
+    .appBar (m/AppBar
+              .title (m/Text "flutter-cljd Demo")
+              .centerTitle true)
+    .body
+    (->> (m/GridView.builder
+           .gridDelegate (m/SliverGridDelegateWithFixedCrossAxisCount
+                           .crossAxisCount 2
+                           .childAspectRatio 1.2
+                           .crossAxisSpacing 16
+                           .mainAxisSpacing 16)
+           .itemCount (count categories/categories)
+           .itemBuilder
+           (fn [ctx index]
+             (let [category (nth categories/categories index)]
+               (card/category-card
+                 category
+                 #(println (str "Tapped: " (:name category)))))))
+         (f/padding 16))))

@@ -3,6 +3,21 @@
 .clojuredart/
 lib/cljd-out/
 test/cljd-out/
+example/.cpcache/
+example/.clojuredart/
+example/lib/cljd-out/
+example/build/
+example/android/
+example/ios/
+example/linux/
+example/macos/
+example/windows/
+example/web/
+example/lib/
+example/test/
+example/lib/
+deps-demo.edn
+
 # Miscellaneous
 *.class
 *.log
@@ -52,9 +67,3 @@ app.*.map.json
 pubspec.lock
 .aider*
 .env
-
-# ClojureDart
-.cpcache/
-.clojuredart/
-lib/cljd-out/
-test/cljd-out/

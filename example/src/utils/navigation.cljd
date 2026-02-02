@@ -1,0 +1,10 @@
+(ns demo.utils.navigation
+  "Navigation utilities for demo app"
+  (:require ["package:flutter/material.dart" :as m]))
+
+(defn navigate-to [context widget]
+  (.push (m/Navigator.of context)
+    (m/MaterialPageRoute .builder (fn [_] widget))))
+
+(defn navigate-back [context]
+  (.pop (m/Navigator.of context)))

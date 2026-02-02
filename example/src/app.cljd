@@ -1,0 +1,10 @@
+(ns demo.app
+  (:require
+   [demo.screens.home-screen :as home]
+   ["package:flutter/material.dart" :as m]))
+
+(defn demo-app []
+  (m/MaterialApp
+    .title "flutter-cljd Demo"
+    .theme (m/ThemeData .primarySwatch m/Colors.blue)
+    .home (home/home-screen)))

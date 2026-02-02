@@ -1,0 +1,104 @@
+(ns demo.data.categories
+  "Widget categories and their metadata"
+  (:require ["package:flutter/material.dart" :as m]))
+
+(def categories
+  [{:id :layout
+    :name "Layout"
+    :icon m/Icons.dashboard
+    :description "Widgets for positioning and arranging children"
+    :color 0xFF2196F3
+    :widgets [:row :column :stack :center :padding :sized :expanded :flexible
+              :spacer :align :baseline :container :fractionally-sized]}
+
+   {:id :styling
+    :name "Styling"
+    :icon m/Icons.palette
+    :description "Visual styling and decoration"
+    :color 0xFFE91E63
+    :widgets [:colored :decorated :opacity :clip-oval :clip-rect :clip-corners
+              :text :with-text-style :color-filtered :keyed :banner]}
+
+   {:id :interactive
+    :name "Interactive"
+    :icon m/Icons.touch_app
+    :description "User interaction and gestures"
+    :color 0xFF4CAF50
+    :widgets [:button :draggable :drag-target :drag-boundary :shortcuts :actions
+              :listening :on-back-button]}
+
+   {:id :transformation
+    :name "Transformation"
+    :icon m/Icons.rotate_right
+    :description "Geometric transformations"
+    :color 0xFFFF9800
+    :widgets [:transform :scale :rotate :translate :flip :fractional-translation
+              :rotate-layout]}
+
+   {:id :animation
+    :name "Animation"
+    :icon m/Icons.movie
+    :description "Animation and motion"
+    :color 0xFF9C27B0
+    :widgets [:animated :on-change-of :with-motion]}
+
+   {:id :builder
+    :name "Builder"
+    :icon m/Icons.build
+    :description "Dynamic widget construction"
+    :color 0xFF00BCD4
+    :widgets [:builder :layout-builder :future-builder :stream-builder
+              :with-transformed-inherited]}
+
+   {:id :structural
+    :name "Structural"
+    :icon m/Icons.account_tree
+    :description "Widget tree manipulation"
+    :color 0xFFFFEB3B
+    :widgets [:absorb-pointer :ignore-pointer :hero :block-semantics
+              :checked-mode-banner :custom-multi-child-layout
+              :composited-transform-follower :composited-transform-target]}
+
+   {:id :input-form
+    :name "Input/Form"
+    :icon m/Icons.input
+    :description "Input handling and forms"
+    :color 0xFF795548
+    :widgets [:with-autocomplete-highlighted-index :autofill-group :keep-alive]}
+
+   {:id :constraints
+    :name "Constraints"
+    :icon m/Icons.aspect_ratio
+    :description "Size and layout constraints"
+    :color 0xFF607D8B
+    :widgets [:aspect-ratio :constraints-transformed :unconstrained]}
+
+   {:id :lifecycle
+    :name "Lifecycle"
+    :icon m/Icons.refresh
+    :description "Lifecycle management and state"
+    :color 0xFFF44336
+    :widgets [:on-create :on-dispose :on-update :on-did-change-dependencies
+              :on-deactivate :on-reassemble :with-managed :life-cycle-observer
+              :on-app-became-active :on-app-became-inactive :observe-visibility]}
+
+   {:id :inheritance
+    :name "Inheritance"
+    :icon m/Icons.share
+    :description "Inherited widget patterns"
+    :color 0xFF3F51B5
+    :widgets [:with-inherited :with-transformed-inherited :with-merged-inherited
+              :enabled :disabled]}
+
+   {:id :tools
+    :name "Tools & Advanced"
+    :icon m/Icons.construction
+    :description "Advanced features and utilities"
+    :color 0xFF9E9E9E
+    :widgets [:bottom-navigation-bar-item]}])
+
+(defn get-category [id]
+  (first (filter #(= (:id %) id) categories)))
+
+(defn get-widgets-for-category [category-id]
+  (-> (get-category category-id) :widgets))
