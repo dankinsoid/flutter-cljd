@@ -1,0 +1,67 @@
+(ns data.examples
+  "Widget examples with code and builders"
+  (:require
+   [flutter-cljd.widgets :as f]
+   ["package:flutter/material.dart" :as m]))
+
+(defmacro mk-example
+  "Create example map from name, description and code form.
+   Generates both :code string and :builder function from the same code."
+  [name desc & code]
+  (let [code-form (if (= 1 (count code)) (first code) (cons 'do code))]
+    `{:name ~name
+      :description ~desc
+      :code ~(pr-str code-form)
+      :builder (fn [] ~@code)}))
+
+(def examples
+  {:row
+   (mk-example "Row" "Horizontal layout widget"
+     (f/row
+       (f/text "Left")
+       (f/text "Center")
+       (f/text "Right")))
+
+   :column
+   (mk-example "Column" "Vertical layout widget"
+     (f/column
+       (f/text "Top")
+       (f/text "Middle")
+       (f/text "Bottom")))
+
+   :stack
+   (mk-example "Stack" "Layered layout widget"
+     (f/stack
+       (f/colored 0xFFE3F2FD
+         (f/sized {:w 200 :h 200}))
+       (f/center
+         (f/text "Centered on top"))))
+
+   :center
+   (mk-example "Center" "Centers child widget"
+     (f/center
+       (f/text "I'm centered!")))
+
+   :padding
+   (mk-example "Padding" "Adds padding around child"
+     (f/padding 20
+       (f/colored 0xFF1976D2
+         (f/text "Padded" :color :white))))
+
+   :colored
+   (mk-example "Colored" "Colors child widget background"
+     (f/colored 0xFF4CAF50
+       (f/padding 16
+         (f/text "Green background" :color :white))))
+
+   :text
+   (mk-example "Text" "Displays text"
+     (f/text "Hello, flutter-cljd!" :size 20 :weight :bold))
+
+   :button
+   (mk-example "Button" "Interactive button widget"
+     (f/button #(println "Button clicked!")
+       (f/text "Click me")))})
+
+(defn get-example [widget-id]
+  (get examples widget-id))

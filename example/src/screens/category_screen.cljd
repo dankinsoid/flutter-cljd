@@ -1,0 +1,30 @@
+(ns screens.category-screen
+  "Category screen showing list of widgets"
+  (:require
+   [flutter-cljd.widgets :as f]
+   [data.categories :as categories]
+   [screens.widget-detail-screen :as detail]
+   [utils.navigation :as nav]
+   ["package:flutter/material.dart" :as m]))
+
+(defn widget-list-item [widget-id on-tap]
+  (m/ListTile
+    .title (m/Text (name widget-id))
+    .trailing (m/Icon m/Icons.chevron_right)
+    .onTap on-tap))
+
+(defn category-screen [category]
+  (let [{:keys [name widgets color]} category]
+    (m/Scaffold
+      .appBar (m/AppBar
+                .title (m/Text name)
+                .backgroundColor (m/Color color))
+      .body
+      (m/ListView.builder
+        .itemCount (count widgets)
+        .itemBuilder
+        (fn [ctx index]
+          (let [widget-id (nth widgets index)]
+            (widget-list-item
+              widget-id
+              #(nav/navigate-to ctx (detail/widget-detail-screen widget-id)))))))))

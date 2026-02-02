@@ -4,6 +4,8 @@
    [flutter-cljd.widgets :as f]
    [data.categories :as categories]
    [widgets.category-card :as card]
+   [screens.category-screen :as category-screen]
+   [utils.navigation :as nav]
    ["package:flutter/material.dart" :as m]))
 
 (defn home-screen []
@@ -24,5 +26,5 @@
              (let [category (nth categories/categories index)]
                (card/category-card
                  category
-                 #(println (str "Tapped: " (:name category)))))))
+                 #(nav/navigate-to ctx (category-screen/category-screen category))))))
          (f/padding 16))))

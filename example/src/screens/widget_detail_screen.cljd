@@ -1,0 +1,75 @@
+(ns screens.widget-detail-screen
+  "Widget detail screen with preview and code"
+  (:require
+   [flutter-cljd.widgets :as f]
+   [data.examples :as examples]
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter_highlight/flutter_highlight.dart" :as highlight]
+   ["package:flutter_highlight/themes/github.dart" :as github-theme]))
+
+(defn code-viewer [code]
+  (m/SelectionArea
+    .child
+    (m/Container
+      .padding (m/EdgeInsets.all 16)
+      .decoration (m/BoxDecoration
+                    .color (m/Colors.grey.shade100)
+                    .borderRadius (m/BorderRadius.circular 8))
+      .child (highlight/HighlightView
+               code
+               .language "clojure"
+               .theme github-theme/githubTheme
+               .padding (m/EdgeInsets.all 12)
+               .textStyle (m/TextStyle .fontSize 14 .fontFamily "monospace")))))
+
+(defn preview-section [builder]
+  (m/Container
+    .padding (m/EdgeInsets.all 24)
+    .child (f/center (builder))))
+
+(defn widget-detail-screen [widget-id]
+  (let [example (examples/get-example widget-id)]
+    (if example
+      (let [{:keys [name description code builder]} example]
+        (m/Scaffold
+          .appBar (m/AppBar .title (m/Text name))
+          .body
+          (m/SingleChildScrollView
+            .child
+            (f/column
+              ;; Description
+              (m/Container
+                .padding (m/EdgeInsets.all 16)
+                .child (m/Text description
+                         .style (m/TextStyle .fontSize 16 .color m/Colors.grey)))
+
+              ;; Preview section
+              (m/Container
+                .padding (m/EdgeInsets.all 16)
+                .child
+                (f/column
+                  (m/Text "Preview"
+                    .style (m/TextStyle .fontSize 18 .fontWeight m/FontWeight.bold))
+                  (f/sized {:h 16})
+                  (m/Container
+                    .decoration (m/BoxDecoration
+                                  .border (m/Border.all .color m/Colors.grey)
+                                  .borderRadius (m/BorderRadius.circular 8))
+                    .child (preview-section builder))))
+
+              ;; Code section
+              (m/Container
+                .padding (m/EdgeInsets.all 16)
+                .child
+                (f/column
+                  (m/Text "Code"
+                    .style (m/TextStyle .fontSize 18 .fontWeight m/FontWeight.bold))
+                  (f/sized {:h 16})
+                  (code-viewer code)))))))
+
+      ;; No example found
+      (m/Scaffold
+        .appBar (m/AppBar .title (m/Text (name widget-id)))
+        .body (f/center
+                (m/Text (str "No example yet for " (name widget-id))
+                  .style (m/TextStyle .fontSize 16 .color m/Colors.grey)))))))
