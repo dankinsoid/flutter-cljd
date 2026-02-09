@@ -11,10 +11,14 @@ uniform vec2 uSize;
 uniform float uGridWidth;
 // 3
 uniform float uGridHeight;
-// 4-131
+// 4
+uniform float uUseTexture; // 0=uniforms, 1=texture
+// 5-132
 uniform vec2 uPositions[64];
-// 132-387
+// 133-388
 uniform vec4 uColors[64];
+
+uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
 
 out vec4 fragColor;
 
@@ -65,6 +69,31 @@ vec3 oklabToLinear(vec3 lab) {
         -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
         -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
     );
+}
+
+// --- Data access (uniform or texture) ---
+
+vec2 getPosition(int i) {
+    if (uUseTexture < 0.5) {
+        return uPositions[i];
+    }
+    float n = uGridWidth * uGridHeight;
+    float u = (float(i) + 0.5) / n;
+    // Row 0: R=x, G=y, B=alpha (8-bit each)
+    return texture(uData, vec2(u, 0.25)).rg;
+}
+
+vec4 getMeshColor(int i) {
+    if (uUseTexture < 0.5) {
+        return uColors[i];
+    }
+    float n = uGridWidth * uGridHeight;
+    float u = (float(i) + 0.5) / n;
+    // Row 0 B channel = alpha
+    float alpha = texture(uData, vec2(u, 0.25)).b;
+    // Row 1: RGB color
+    vec3 rgb = texture(uData, vec2(u, 0.75)).rgb;
+    return vec4(rgb, alpha);
 }
 
 // --- Inverse bilinear interpolation ---
@@ -140,10 +169,10 @@ void main() {
             int i01 = i00 + gw;
             int i11 = i01 + 1;
 
-            vec2 p00 = uPositions[i00];
-            vec2 p10 = uPositions[i10];
-            vec2 p01 = uPositions[i01];
-            vec2 p11 = uPositions[i11];
+            vec2 p00 = getPosition(i00);
+            vec2 p10 = getPosition(i10);
+            vec2 p01 = getPosition(i01);
+            vec2 p11 = getPosition(i11);
 
             // AABB early reject
             vec2 lo = min(min(p00, p10), min(p01, p11));
@@ -158,11 +187,11 @@ void main() {
             float u = uv.x;
             float v = uv.y;
 
-            // Fetch corner colors (sRGB 0-1)
-            vec4 c00 = uColors[i00];
-            vec4 c10 = uColors[i10];
-            vec4 c01 = uColors[i01];
-            vec4 c11 = uColors[i11];
+            // Fetch corner colors
+            vec4 c00 = getMeshColor(i00);
+            vec4 c10 = getMeshColor(i10);
+            vec4 c01 = getMeshColor(i01);
+            vec4 c11 = getMeshColor(i11);
 
             // sRGB -> linear -> OKLab
             vec3 lab00 = linearToOklab(srgbToLinearV(c00.rgb));

@@ -817,6 +817,25 @@
     :decal 3
     0))
 
+(defn- create-gradient-data-texture
+  "Nx2 data texture: row 0 = RGB (A=255), row 1 = (stop, alpha, 0, A=255)."
+  [colors stops]
+  (let [n (count colors)
+        recorder (ui/PictureRecorder)
+        canvas (ui/Canvas recorder)
+        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)]
+    (dotimes [i n]
+      (let [^ui/Color c (nth colors i)]
+        ;; Row 0: color RGB (A=255 to avoid premul)
+        (set! (.-color paint) (ui/Color.fromARGB 255 (.-red c) (.-green c) (.-blue c)))
+        (.drawRect canvas (ui/Rect.fromLTWH (double i) 0.0 1.0 1.0) paint)
+        ;; Row 1: R=stop, G=alpha (A=255 to avoid premul)
+        (let [stop-byte (-> (double (nth stops i)) (* 255.0) Math/round int (max 0) (min 255))
+              alpha-byte (-> (.-opacity c) (* 255.0) Math/round int (max 0) (min 255))]
+          (set! (.-color paint) (ui/Color.fromARGB 255 stop-byte alpha-byte 0))
+          (.drawRect canvas (ui/Rect.fromLTWH (double i) 1.0 1.0 1.0) paint))))
+    (.toImageSync (.endRecording recorder) n 2)))
+
 (defn- set-gradient-uniforms!
   [^ui/FragmentShader shader
    ^ui/Rect rect
@@ -827,37 +846,42 @@
    ^double p0x ^double p0y
    ^double p1x ^double p1y]
   (let [n (count colors)]
-    ;; Size
     (.setFloat shader 0 (.-width rect))
     (.setFloat shader 1 (.-height rect))
-    ;; Type & tile mode
     (.setFloat shader 2 (double gradient-type))
     (.setFloat shader 3 (double tile-mode-id))
-    ;; Color count
     (.setFloat shader 4 (double n))
-    ;; Geometry
-    (.setFloat shader 5 p0x)
-    (.setFloat shader 6 p0y)
-    (.setFloat shader 7 p1x)
-    (.setFloat shader 8 p1y)
-    ;; Colors (indices 9..72, 16 slots × 4 components)
-    (dotimes [i 16]
-      (let [base (+ 9 (* i 4))]
-        (if (< i n)
-          (let [^ui/Color c (nth colors i)]
-            (.setFloat shader base (/ (.-red c) 255.0))
-            (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
-            (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
-            (.setFloat shader (+ base 3) (.-opacity c)))
-          (do
-            (.setFloat shader base 0.0)
-            (.setFloat shader (+ base 1) 0.0)
-            (.setFloat shader (+ base 2) 0.0)
-            (.setFloat shader (+ base 3) 0.0)))))
-    ;; Stops (indices 73..88)
-    (dotimes [i 16]
-      (.setFloat shader (+ 73 i)
-                (if (< i n) (double (nth stops i)) 1.0)))
+    ;; Geometry (indices 6-9, shifted by 1 for uUseTexture)
+    (.setFloat shader 6 p0x)
+    (.setFloat shader 7 p0y)
+    (.setFloat shader 8 p1x)
+    (.setFloat shader 9 p1y)
+    (if (<= n 32)
+      ;; Uniform path
+      (do
+        (.setFloat shader 5 0.0)
+        ;; Colors (indices 10..137, 32 slots × 4 components)
+        (dotimes [i 32]
+          (let [base (+ 10 (* i 4))]
+            (if (< i n)
+              (let [^ui/Color c (nth colors i)]
+                (.setFloat shader base (/ (.-red c) 255.0))
+                (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
+                (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
+                (.setFloat shader (+ base 3) (.-opacity c)))
+              (do
+                (.setFloat shader base 0.0)
+                (.setFloat shader (+ base 1) 0.0)
+                (.setFloat shader (+ base 2) 0.0)
+                (.setFloat shader (+ base 3) 0.0)))))
+        ;; Stops (indices 138..169)
+        (dotimes [i 32]
+          (.setFloat shader (+ 138 i)
+                    (if (< i n) (double (nth stops i)) 1.0))))
+      ;; Texture path (>32 stops)
+      (do
+        (.setFloat shader 5 1.0)
+        (.setImageSampler shader 0 (create-gradient-data-texture colors stops))))
     shader))
 
 (deftype OkLabGradient
@@ -1005,42 +1029,69 @@
       :else
       (throw (Exception. (str "Invalid RadialGradient: " args))))))
 
+(defn- create-mesh-data-texture
+  "Nx2 data texture: row 0 = (x, y, alpha, A=255), row 1 = (r, g, b, A=255)."
+  [points colors]
+  (let [n (count points)
+        recorder (ui/PictureRecorder)
+        canvas (ui/Canvas recorder)
+        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)]
+    (dotimes [i n]
+      (let [pt (nth points i)
+            x-byte (-> (double (nth pt 0)) (* 255.0) Math/round int (max 0) (min 255))
+            y-byte (-> (double (nth pt 1)) (* 255.0) Math/round int (max 0) (min 255))
+            ^ui/Color c (nth colors i)
+            alpha-byte (-> (.-opacity c) (* 255.0) Math/round int (max 0) (min 255))]
+        ;; Row 0: R=x, G=y, B=alpha (A=255 to avoid premul)
+        (set! (.-color paint) (ui/Color.fromARGB 255 x-byte y-byte alpha-byte))
+        (.drawRect canvas (ui/Rect.fromLTWH (double i) 0.0 1.0 1.0) paint)
+        ;; Row 1: color RGB (A=255 to avoid premul)
+        (set! (.-color paint) (ui/Color.fromARGB 255 (.-red c) (.-green c) (.-blue c)))
+        (.drawRect canvas (ui/Rect.fromLTWH (double i) 1.0 1.0 1.0) paint)))
+    (.toImageSync (.endRecording recorder) n 2)))
+
 (defn- set-mesh-uniforms!
   [^ui/FragmentShader shader
    ^ui/Rect rect
    ^int grid-w ^int grid-h
    points colors]
   (let [n (* grid-w grid-h)]
-    ;; Size
     (.setFloat shader 0 (.-width rect))
     (.setFloat shader 1 (.-height rect))
-    ;; Grid dimensions
     (.setFloat shader 2 (double grid-w))
     (.setFloat shader 3 (double grid-h))
-    ;; Positions (indices 4..131, 64 slots × 2 components)
-    (dotimes [i 64]
-      (let [base (+ 4 (* i 2))]
-        (if (< i n)
-          (let [pt (nth points i)]
-            (.setFloat shader base (double (nth pt 0)))
-            (.setFloat shader (+ base 1) (double (nth pt 1))))
-          (do
-            (.setFloat shader base 0.0)
-            (.setFloat shader (+ base 1) 0.0)))))
-    ;; Colors (indices 132..387, 64 slots × 4 components)
-    (dotimes [i 64]
-      (let [base (+ 132 (* i 4))]
-        (if (< i n)
-          (let [^ui/Color c (nth colors i)]
-            (.setFloat shader base (/ (.-red c) 255.0))
-            (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
-            (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
-            (.setFloat shader (+ base 3) (.-opacity c)))
-          (do
-            (.setFloat shader base 0.0)
-            (.setFloat shader (+ base 1) 0.0)
-            (.setFloat shader (+ base 2) 0.0)
-            (.setFloat shader (+ base 3) 0.0)))))
+    (if (<= n 64)
+      ;; Uniform path
+      (do
+        (.setFloat shader 4 0.0)
+        ;; Positions (indices 5..132, 64 slots × 2 components)
+        (dotimes [i 64]
+          (let [base (+ 5 (* i 2))]
+            (if (< i n)
+              (let [pt (nth points i)]
+                (.setFloat shader base (double (nth pt 0)))
+                (.setFloat shader (+ base 1) (double (nth pt 1))))
+              (do
+                (.setFloat shader base 0.0)
+                (.setFloat shader (+ base 1) 0.0)))))
+        ;; Colors (indices 133..388, 64 slots × 4 components)
+        (dotimes [i 64]
+          (let [base (+ 133 (* i 4))]
+            (if (< i n)
+              (let [^ui/Color c (nth colors i)]
+                (.setFloat shader base (/ (.-red c) 255.0))
+                (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
+                (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
+                (.setFloat shader (+ base 3) (.-opacity c)))
+              (do
+                (.setFloat shader base 0.0)
+                (.setFloat shader (+ base 1) 0.0)
+                (.setFloat shader (+ base 2) 0.0)
+                (.setFloat shader (+ base 3) 0.0))))))
+      ;; Texture path (>64 points)
+      (do
+        (.setFloat shader 4 1.0)
+        (.setImageSampler shader 0 (create-mesh-data-texture points colors))))
     shader))
 
 (deftype OkLabMeshGradient
@@ -1094,7 +1145,7 @@
             points (or (:points args) (default-mesh-points w h))]
         (assert (>= w 2) "mesh-gradient: width must be >= 2")
         (assert (>= h 2) "mesh-gradient: height must be >= 2")
-        (assert (<= n 64) "mesh-gradient: grid too large (max 64 points = 8x8)")
+        (assert (<= n 256) "mesh-gradient: grid too large (max 256 points = 16x16)")
         (assert (= (count colors) n) "mesh-gradient: colors count must equal width * height")
         (assert (= (count points) n) "mesh-gradient: points count must equal width * height")
         (if (shader/mesh-shader-loaded?)

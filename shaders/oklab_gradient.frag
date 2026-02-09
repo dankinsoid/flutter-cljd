@@ -13,13 +13,17 @@ uniform float uType;      // 0=linear, 1=radial, 2=sweep
 uniform float uTileMode;  // 0=clamp, 1=repeat, 2=mirror, 3=decal
 // 4
 uniform float uColorCount;
-// 5-8
+// 5
+uniform float uUseTexture; // 0=uniforms, 1=texture
+// 6-9
 uniform vec2 uParam0;     // linear: begin; radial/sweep: center
 uniform vec2 uParam1;     // linear: end; radial: (radius, _); sweep: (startAngle, endAngle)
-// 9-72
-uniform vec4 uColors[16];
-// 73-88
-uniform float uStops[16];
+// 10-137
+uniform vec4 uColors[32];
+// 138-169
+uniform float uStops[32];
+
+uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
 
 out vec4 fragColor;
 
@@ -70,6 +74,28 @@ vec3 oklabToLinear(vec3 lab) {
         -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
         -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
     );
+}
+
+// --- Data access (uniform or texture) ---
+
+vec4 getColor(int i) {
+    if (uUseTexture < 0.5) {
+        return uColors[i];
+    }
+    float u = (float(i) + 0.5) / uColorCount;
+    // Row 0: RGB color (A=255 in texture to avoid premul issues)
+    vec3 rgb = texture(uData, vec2(u, 0.25)).rgb;
+    // Row 1: R=stop, G=alpha
+    float alpha = texture(uData, vec2(u, 0.75)).g;
+    return vec4(rgb, alpha);
+}
+
+float getStop(int i) {
+    if (uUseTexture < 0.5) {
+        return uStops[i];
+    }
+    float u = (float(i) + 0.5) / uColorCount;
+    return texture(uData, vec2(u, 0.75)).r;
 }
 
 // --- Gradient position ---
@@ -136,18 +162,18 @@ void main() {
     // Find the segment containing t
     int idx = 0;
     for (int i = 0; i < count - 1; i++) {
-        if (t >= uStops[i]) idx = i;
+        if (t >= getStop(i)) idx = i;
     }
 
     // Local interpolation factor within the segment
-    float sA = uStops[idx];
-    float sB = uStops[idx + 1];
+    float sA = getStop(idx);
+    float sB = getStop(idx + 1);
     float range = sB - sA;
     float localT = range > 0.0001 ? clamp((t - sA) / range, 0.0, 1.0) : 0.0;
 
     // Source colors (sRGB 0-1)
-    vec4 cA = uColors[idx];
-    vec4 cB = uColors[idx + 1];
+    vec4 cA = getColor(idx);
+    vec4 cB = getColor(idx + 1);
 
     // sRGB → linear → OKLab
     vec3 labA = linearToOklab(srgbToLinearV(cA.rgb));
