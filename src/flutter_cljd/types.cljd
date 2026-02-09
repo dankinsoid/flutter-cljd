@@ -1005,6 +1005,108 @@
       :else
       (throw (Exception. (str "Invalid RadialGradient: " args))))))
 
+(defn- set-mesh-uniforms!
+  [^ui/FragmentShader shader
+   ^ui/Rect rect
+   ^int grid-w ^int grid-h
+   points colors]
+  (let [n (* grid-w grid-h)]
+    ;; Size
+    (.setFloat shader 0 (.-width rect))
+    (.setFloat shader 1 (.-height rect))
+    ;; Grid dimensions
+    (.setFloat shader 2 (double grid-w))
+    (.setFloat shader 3 (double grid-h))
+    ;; Positions (indices 4..131, 64 slots × 2 components)
+    (dotimes [i 64]
+      (let [base (+ 4 (* i 2))]
+        (if (< i n)
+          (let [pt (nth points i)]
+            (.setFloat shader base (double (nth pt 0)))
+            (.setFloat shader (+ base 1) (double (nth pt 1))))
+          (do
+            (.setFloat shader base 0.0)
+            (.setFloat shader (+ base 1) 0.0)))))
+    ;; Colors (indices 132..387, 64 slots × 4 components)
+    (dotimes [i 64]
+      (let [base (+ 132 (* i 4))]
+        (if (< i n)
+          (let [^ui/Color c (nth colors i)]
+            (.setFloat shader base (/ (.-red c) 255.0))
+            (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
+            (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
+            (.setFloat shader (+ base 3) (.-opacity c)))
+          (do
+            (.setFloat shader base 0.0)
+            (.setFloat shader (+ base 1) 0.0)
+            (.setFloat shader (+ base 2) 0.0)
+            (.setFloat shader (+ base 3) 0.0)))))
+    shader))
+
+(deftype OkLabMeshGradient
+  [colors ^int grid-w ^int grid-h points]
+  :extends (m/Gradient .colors colors .stops nil)
+
+  (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
+    (let [shader (shader/create-mesh-shader)]
+      (set-mesh-uniforms! shader rect grid-w grid-h points colors)))
+
+  (scale [this ^double factor]
+    (OkLabMeshGradient
+     (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
+     grid-w grid-h points)))
+
+(defn- default-mesh-points [^int w ^int h]
+  (let [max-col (dec w)
+        max-row (dec h)]
+    (vec (for [row (range h)
+               col (range w)]
+           [(/ (double col) max-col)
+            (/ (double row) max-row)]))))
+
+(defn ^m/Gradient mesh-gradient
+  "Creates a mesh gradient defined by a grid of control points with colors.
+   Colors are interpolated in OKLab color space for perceptual uniformity.
+
+   - `:width` (int, required): grid columns (>= 2, max 8)
+   - `:height` (int, required): grid rows (>= 2, max 8)
+   - `:colors` (vector of colors, required): one color per grid point, row-major
+   - `:points` (vector of [x y], optional): positions in [0,1] space, row-major.
+     Defaults to a regular evenly-spaced grid.
+
+   ```clojure
+   (mesh-gradient {:width 3 :height 3
+                   :colors [:red :orange :yellow
+                            :green :white :blue
+                            :purple :pink :cyan]})
+   ```"
+  [arg0 & args]
+  (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
+    (cond
+      (instance? m/Gradient args)
+      args
+
+      (map? args)
+      (let [w (int (:width args))
+            h (int (:height args))
+            n (* w h)
+            colors (vec (map color (:colors args)))
+            points (or (:points args) (default-mesh-points w h))]
+        (assert (>= w 2) "mesh-gradient: width must be >= 2")
+        (assert (>= h 2) "mesh-gradient: height must be >= 2")
+        (assert (<= n 64) "mesh-gradient: grid too large (max 64 points = 8x8)")
+        (assert (= (count colors) n) "mesh-gradient: colors count must equal width * height")
+        (assert (= (count points) n) "mesh-gradient: points count must equal width * height")
+        (if (shader/mesh-shader-loaded?)
+          (OkLabMeshGradient colors w h points)
+          (m/LinearGradient
+           .begin m/Alignment.topLeft .end m/Alignment.bottomRight
+           .colors [(first colors) (last colors)]
+           .stops [0.0 1.0])))
+
+      :else
+      (throw (Exception. (str "Invalid mesh-gradient: " args))))))
+
 (defn ^m/Gradient gradient
   "Creates a Gradient object from the specified gradient.
    The gradient can be specified as a Gradient object, a map with the following keys:
@@ -1016,6 +1118,7 @@
   [gradient]
   (cond
     (instance? m/Gradient gradient) gradient
+    (some #(contains? gradient %) [:width :height]) (mesh-gradient gradient)
     (some #(contains? gradient %) [:begin :end]) (linear-gradient gradient)
     (some #(contains? gradient %) [:start-angle :end-angle]) (sweep-gradient gradient)
     (some #(contains? gradient %) [:radius]) (radial-gradient gradient)

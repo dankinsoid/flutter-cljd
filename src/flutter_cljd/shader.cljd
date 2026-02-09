@@ -3,6 +3,7 @@
    ["dart:ui" :as ui]))
 
 (def ^:private -oklab-program (atom nil))
+(def ^:private -mesh-program (atom nil))
 
 (defn ^:async load-oklab-shader!
   "Loads the OKLab gradient fragment shader. Call once at app startup.
@@ -21,3 +22,21 @@
    Returns nil if shader not loaded."
   ^ui/FragmentShader []
   (some-> @-oklab-program .fragmentShader))
+
+(defn ^:async load-mesh-shader!
+  "Loads the mesh gradient fragment shader. Call once at app startup.
+   Safe to call multiple times."
+  []
+  (when-not @-mesh-program
+    (reset! -mesh-program
+            (await (ui/FragmentProgram.fromAsset
+                    "packages/flutter_cljd/shaders/mesh_gradient.frag")))))
+
+(defn mesh-shader-loaded? ^bool []
+  (some? @-mesh-program))
+
+(defn create-mesh-shader
+  "Creates a new mesh `FragmentShader` from the cached program.
+   Returns nil if shader not loaded."
+  ^ui/FragmentShader []
+  (some-> @-mesh-program .fragmentShader))
