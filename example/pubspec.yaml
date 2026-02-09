@@ -36,12 +36,12 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # Local dependency on flutter-cljd library
-  flutter_cljd:
-    path: .clojuredart/deps/9f356e0df292d0e7b1e2af8d8786865dd4d38ddf7fc93492674b9cbd7d762aad
 
   # For syntax highlighting
   flutter_highlight: ^0.7.0
   visibility_detector: ^0.4.0+2
+  flutter_cljd:
+    path: .clojuredart/deps/78241fea4462bf3e23c1bd7c8483716980ff93c41ca153bb3f77072db9fbce0d
 
 dev_dependencies:
   flutter_test:

@@ -7,15 +7,17 @@ precision highp float;
 // --- Uniforms ---
 // 0-1
 uniform vec2 uSize;
-// 2
-uniform float uGridWidth;
-// 3
-uniform float uGridHeight;
+// 2-3
+uniform vec2 uOffset;     // rect.topLeft — FragCoord is absolute canvas coords
 // 4
+uniform float uGridWidth;
+// 5
+uniform float uGridHeight;
+// 6
 uniform float uUseTexture; // 0=uniforms, 1=texture
-// 5-132
+// 7-134
 uniform vec2 uPositions[64];
-// 133-388
+// 135-390
 uniform vec4 uColors[64];
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
@@ -96,128 +98,184 @@ vec4 getMeshColor(int i) {
     return vec4(rgb, alpha);
 }
 
-// --- Inverse bilinear interpolation ---
-// Based on Inigo Quilez's method.
-// Given a point p and a quad (a, b, c, d) where:
-//   a = top-left, b = top-right, c = bottom-right, d = bottom-left
-// Returns (u, v) in [0,1] if p is inside the quad, else (-1, -1).
+// --- Catmull-Rom bicubic interpolation ---
+// Weights for t: samples at positions -1, 0, 1, 2
 
-float cross2d(vec2 a, vec2 b) {
-    return a.x * b.y - a.y * b.x;
+vec4 catmullRomWeights(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    return vec4(
+        -0.5*t3 + t2 - 0.5*t,
+         1.5*t3 - 2.5*t2 + 1.0,
+        -1.5*t3 + 2.0*t2 + 0.5*t,
+         0.5*t3 - 0.5*t2
+    );
 }
 
-vec2 invBilinear(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
-    vec2 e = b - a;
-    vec2 f = d - a;
-    vec2 g = a - b + c - d;
-    vec2 h = p - a;
+// Get OKLab + alpha at grid position, clamped to grid bounds
+vec4 gridColorLab(int row, int col, int gw, int gh) {
+    int r = clamp(row, 0, gh - 1);
+    int c = clamp(col, 0, gw - 1);
+    vec4 srgb = getMeshColor(r * gw + c);
+    return vec4(linearToOklab(srgbToLinearV(srgb.rgb)), srgb.a);
+}
 
-    float k2 = cross2d(g, f);
-    float k1 = cross2d(e, f) + cross2d(h, g);
-    float k0 = cross2d(h, e);
+// --- Coons patch (cubic Bezier boundaries) ---
 
-    float u, v;
+vec2 gridPos(int row, int col, int gw, int gh) {
+    return getPosition(clamp(row, 0, gh - 1) * gw + clamp(col, 0, gw - 1));
+}
 
-    if (abs(k2) < 0.0001) {
-        // Near-linear case (parallel edges)
-        if (abs(k1) < 0.0001) return vec2(-1.0);
-        v = -k0 / k1;
-        float dx = e.x + g.x * v;
-        float dy = e.y + g.y * v;
-        u = (abs(dx) > abs(dy))
-            ? (h.x - f.x * v) / dx
-            : (h.y - f.y * v) / dy;
-    } else {
-        float w = k1 * k1 - 4.0 * k0 * k2;
-        if (w < 0.0) return vec2(-1.0);
-        w = sqrt(w);
+// Evaluate cubic Bezier B(t) and derivative B'(t)
+vec2 cubicBezier(vec2 B0, vec2 B1, vec2 B2, vec2 B3, float t, out vec2 dBdt) {
+    float s = 1.0 - t;
+    float s2 = s * s;
+    float t2 = t * t;
+    dBdt = 3.0 * (s2*(B1-B0) + 2.0*s*t*(B2-B1) + t2*(B3-B2));
+    return s2*s*B0 + 3.0*s2*t*B1 + 3.0*s*t2*B2 + t2*t*B3;
+}
 
-        v = (-k1 - w) / (2.0 * k2);
-        float dx = e.x + g.x * v;
-        float dy = e.y + g.y * v;
-        u = (abs(dx) > abs(dy))
-            ? (h.x - f.x * v) / dx
-            : (h.y - f.y * v) / dy;
+// Evaluate Coons patch S(u,v) and Jacobian at cell (row,col)
+// Boundary curves are cubic Bezier with tangents from Catmull-Rom
+vec2 evalCoons(float u, float v, int row, int col, int gw, int gh,
+               out vec2 dSdu, out vec2 dSdv) {
+    // Corners
+    vec2 c00 = gridPos(row, col, gw, gh);
+    vec2 c10 = gridPos(row, col+1, gw, gh);
+    vec2 c01 = gridPos(row+1, col, gw, gh);
+    vec2 c11 = gridPos(row+1, col+1, gw, gh);
 
-        if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001) {
-            v = (-k1 + w) / (2.0 * k2);
-            dx = e.x + g.x * v;
-            dy = e.y + g.y * v;
-            u = (abs(dx) > abs(dy))
-                ? (h.x - f.x * v) / dx
-                : (h.y - f.y * v) / dy;
-        }
-    }
+    // Bezier control points from Catmull-Rom tangents: offset = (next - prev) / 6
+    // Top edge (horizontal, row)
+    vec2 tB1 = c00 + (c10 - gridPos(row, col-1, gw, gh)) / 6.0;
+    vec2 tB2 = c10 - (gridPos(row, col+2, gw, gh) - c00) / 6.0;
+    // Bottom edge (horizontal, row+1)
+    vec2 bB1 = c01 + (c11 - gridPos(row+1, col-1, gw, gh)) / 6.0;
+    vec2 bB2 = c11 - (gridPos(row+1, col+2, gw, gh) - c01) / 6.0;
+    // Left edge (vertical, col)
+    vec2 lB1 = c00 + (c01 - gridPos(row-1, col, gw, gh)) / 6.0;
+    vec2 lB2 = c01 - (gridPos(row+2, col, gw, gh) - c00) / 6.0;
+    // Right edge (vertical, col+1)
+    vec2 rB1 = c10 + (c11 - gridPos(row-1, col+1, gw, gh)) / 6.0;
+    vec2 rB2 = c11 - (gridPos(row+2, col+1, gw, gh) - c10) / 6.0;
 
-    if (u < -0.001 || u > 1.001 || v < -0.001 || v > 1.001)
-        return vec2(-1.0);
+    // Evaluate boundary curves
+    vec2 topD, botD, leftD, rightD;
+    vec2 top   = cubicBezier(c00, tB1, tB2, c10, u, topD);
+    vec2 bot   = cubicBezier(c01, bB1, bB2, c11, u, botD);
+    vec2 left  = cubicBezier(c00, lB1, lB2, c01, v, leftD);
+    vec2 right = cubicBezier(c10, rB1, rB2, c11, v, rightD);
 
-    return clamp(vec2(u, v), 0.0, 1.0);
+    // Coons patch = ruled columns + ruled rows - bilinear corners
+    float su = 1.0 - u, sv = 1.0 - v;
+    vec2 bilin = su*sv*c00 + u*sv*c10 + su*v*c01 + u*v*c11;
+    vec2 S = sv*top + v*bot + su*left + u*right - bilin;
+
+    // Jacobian
+    dSdu = sv*topD + v*botD - left + right - (sv*(c10-c00) + v*(c11-c01));
+    dSdv = -top + bot + su*leftD + u*rightD - (su*(c01-c00) + u*(c11-c10));
+
+    return S;
 }
 
 // --- Main ---
 
 void main() {
-    vec2 pos = FlutterFragCoord().xy / uSize;
+    vec2 pos = (FlutterFragCoord().xy - uOffset) / uSize;
     int gw = int(uGridWidth);
     int gh = int(uGridHeight);
 
-    for (int row = 0; row < gh - 1; row++) {
-        for (int col = 0; col < gw - 1; col++) {
-            int i00 = row * gw + col;
-            int i10 = i00 + 1;
-            int i01 = i00 + gw;
-            int i11 = i01 + 1;
+    for (int row = 0; row < 15; row++) {
+        if (row >= gh - 1) break;
+        for (int col = 0; col < 15; col++) {
+            if (col >= gw - 1) break;
 
-            vec2 p00 = getPosition(i00);
-            vec2 p10 = getPosition(i10);
-            vec2 p01 = getPosition(i01);
-            vec2 p11 = getPosition(i11);
+            // Corner positions (reused for AABB and initial guess)
+            vec2 c00 = getPosition(row * gw + col);
+            vec2 c10 = getPosition(row * gw + col + 1);
+            vec2 c01 = getPosition((row + 1) * gw + col);
+            vec2 c11 = getPosition((row + 1) * gw + col + 1);
 
-            // AABB early reject
-            vec2 lo = min(min(p00, p10), min(p01, p11));
-            vec2 hi = max(max(p00, p10), max(p01, p11));
+            // AABB with margin for Bezier overshoot
+            vec2 lo = min(min(c00, c10), min(c01, c11));
+            vec2 hi = max(max(c00, c10), max(c01, c11));
+            vec2 margin = max(hi - lo, vec2(0.05));
+            lo -= margin;
+            hi += margin;
             if (pos.x < lo.x || pos.x > hi.x || pos.y < lo.y || pos.y > hi.y)
                 continue;
 
-            // a=top-left, b=top-right, c=bottom-right, d=bottom-left
-            vec2 uv = invBilinear(pos, p00, p10, p11, p01);
-            if (uv.x < 0.0) continue;
+            // Initial guess: linear projection onto cell parallelogram
+            vec2 d = pos - c00;
+            vec2 ex = c10 - c00;
+            vec2 ey = c01 - c00;
+            float det0 = ex.x * ey.y - ex.y * ey.x;
+            float u = abs(det0) > 1e-6
+                ? clamp((d.x * ey.y - d.y * ey.x) / det0, 0.0, 1.0) : 0.5;
+            float v = abs(det0) > 1e-6
+                ? clamp((ex.x * d.y - ex.y * d.x) / det0, 0.0, 1.0) : 0.5;
 
-            float u = uv.x;
-            float v = uv.y;
+            // Newton-Raphson on Coons patch
+            // Two attempts: linear guess, then center
+            bool accepted = false;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                if (attempt == 1) { u = 0.5; v = 0.5; }
 
-            // Fetch corner colors
-            vec4 c00 = getMeshColor(i00);
-            vec4 c10 = getMeshColor(i10);
-            vec4 c01 = getMeshColor(i01);
-            vec4 c11 = getMeshColor(i11);
+                for (int iter = 0; iter < 8; iter++) {
+                    vec2 dSdu, dSdv;
+                    vec2 S = evalCoons(u, v, row, col, gw, gh, dSdu, dSdv);
+                    vec2 err = pos - S;
 
-            // sRGB -> linear -> OKLab
-            vec3 lab00 = linearToOklab(srgbToLinearV(c00.rgb));
-            vec3 lab10 = linearToOklab(srgbToLinearV(c10.rgb));
-            vec3 lab01 = linearToOklab(srgbToLinearV(c01.rgb));
-            vec3 lab11 = linearToOklab(srgbToLinearV(c11.rgb));
+                    if (dot(err, err) < 1e-10) break;
 
-            // Bilinear interpolation in OKLab
-            vec3 labTop = mix(lab00, lab10, u);
-            vec3 labBot = mix(lab01, lab11, u);
-            vec3 labFinal = mix(labTop, labBot, v);
+                    float det = dSdu.x * dSdv.y - dSdu.y * dSdv.x;
+                    if (abs(det) < 1e-10) break;
 
-            // Alpha interpolation
-            float aTop = mix(c00.a, c10.a, u);
-            float aBot = mix(c01.a, c11.a, u);
-            float alpha = mix(aTop, aBot, v);
+                    u += ( err.x * dSdv.y - err.y * dSdv.x) / det;
+                    v += (-err.x * dSdu.y + err.y * dSdu.x) / det;
+                }
 
-            // OKLab -> linear -> sRGB, clamped
+                // Accept if clamped solution maps close to target
+                float cu = clamp(u, 0.0, 1.0);
+                float cv = clamp(v, 0.0, 1.0);
+                vec2 dSdu_c, dSdv_c;
+                vec2 Sc = evalCoons(cu, cv, row, col, gw, gh, dSdu_c, dSdv_c);
+                if (length(pos - Sc) < 0.005) {
+                    u = cu;
+                    v = cv;
+                    accepted = true;
+                    break;
+                }
+            }
+
+            if (!accepted) continue;
+
+            // Bicubic Catmull-Rom color interpolation in OKLab
+            vec4 wu = catmullRomWeights(u);
+            vec4 wv = catmullRomWeights(v);
+
+            vec3 labFinal = vec3(0.0);
+            float alpha = 0.0;
+
+            for (int j = 0; j < 4; j++) {
+                vec3 rowLab = vec3(0.0);
+                float rowA = 0.0;
+                for (int i = 0; i < 4; i++) {
+                    vec4 labA = gridColorLab(row + j - 1, col + i - 1, gw, gh);
+                    rowLab += labA.xyz * wu[i];
+                    rowA += labA.w * wu[i];
+                }
+                labFinal += rowLab * wv[j];
+                alpha += rowA * wv[j];
+            }
+
+            alpha = clamp(alpha, 0.0, 1.0);
             vec3 rgb = clamp(linearToSrgbV(oklabToLinear(labFinal)), 0.0, 1.0);
 
-            // Premultiplied alpha
             fragColor = vec4(rgb * alpha, alpha);
             return;
         }
     }
 
-    // Outside all cells
     fragColor = vec4(0.0);
 }

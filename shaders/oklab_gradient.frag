@@ -159,9 +159,10 @@ void main() {
 
     int count = int(uColorCount);
 
-    // Find the segment containing t
+    // Find the segment containing t (SkSL requires constant loop bound)
     int idx = 0;
-    for (int i = 0; i < count - 1; i++) {
+    for (int i = 0; i < 31; i++) {
+        if (i >= count - 1) break;
         if (t >= getStop(i)) idx = i;
     }
 

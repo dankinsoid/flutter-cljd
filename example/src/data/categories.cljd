@@ -11,6 +11,14 @@
     :widgets [:row :column :stack :center :padding :sized :expanded :flexible
               :spacer :align :baseline :container :fractionally-sized]}
 
+   {:id :gradients
+    :name "Gradients"
+    :icon m/Icons.gradient
+    :description "OKLab and mesh gradient shaders"
+    :color 0xFFFF6F00
+    :widgets [:linear-gradient-oklab :linear-gradient-srgb :radial-gradient
+              :sweep-gradient :mesh-gradient :multi-stop-gradient]}
+
    {:id :styling
     :name "Styling"
     :icon m/Icons.palette

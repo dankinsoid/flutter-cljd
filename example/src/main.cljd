@@ -1,7 +1,10 @@
 (ns main
   (:require
    [app]
+   [flutter-cljd.shader :as shader]
    ["package:flutter/material.dart" :as m]))
 
-(defn main []
+(defn ^:async main []
+  (await (shader/load-oklab-shader!))
+  (await (shader/load-mesh-shader!))
   (m/runApp (app/demo-app)))
