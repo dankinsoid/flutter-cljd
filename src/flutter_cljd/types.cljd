@@ -16,7 +16,8 @@
    [flutter-cljd.keyboard-keys :as keys]
    [flutter-cljd.color-filters :as clr-f]
    [flutter-cljd.types :as t]
-   [flutter-cljd.utils :as ut]))
+   [flutter-cljd.utils :as ut]
+   [flutter-cljd.shader :as shader]))
 
 (deftype ^:private AnyActionDispatcher [invoke]
   :extends w/ActionDispatcher
@@ -808,37 +809,130 @@
     :else
     (map color [colors colors])))
 
-(defn ^m/LinearGradient linear-gradient
+(defn- tile-mode-id ^int [mode]
+  (case mode
+    :clamp 0
+    :repeated 1
+    :mirror 2
+    :decal 3
+    0))
+
+(defn- set-gradient-uniforms!
+  [^ui/FragmentShader shader
+   ^ui/Rect rect
+   ^int gradient-type
+   ^int tile-mode-id
+   colors
+   stops
+   ^double p0x ^double p0y
+   ^double p1x ^double p1y]
+  (let [n (count colors)]
+    ;; Size
+    (.setFloat shader 0 (.-width rect))
+    (.setFloat shader 1 (.-height rect))
+    ;; Type & tile mode
+    (.setFloat shader 2 (double gradient-type))
+    (.setFloat shader 3 (double tile-mode-id))
+    ;; Color count
+    (.setFloat shader 4 (double n))
+    ;; Geometry
+    (.setFloat shader 5 p0x)
+    (.setFloat shader 6 p0y)
+    (.setFloat shader 7 p1x)
+    (.setFloat shader 8 p1y)
+    ;; Colors (indices 9..72, 16 slots × 4 components)
+    (dotimes [i 16]
+      (let [base (+ 9 (* i 4))]
+        (if (< i n)
+          (let [^ui/Color c (nth colors i)]
+            (.setFloat shader base (/ (.-red c) 255.0))
+            (.setFloat shader (+ base 1) (/ (.-green c) 255.0))
+            (.setFloat shader (+ base 2) (/ (.-blue c) 255.0))
+            (.setFloat shader (+ base 3) (.-opacity c)))
+          (do
+            (.setFloat shader base 0.0)
+            (.setFloat shader (+ base 1) 0.0)
+            (.setFloat shader (+ base 2) 0.0)
+            (.setFloat shader (+ base 3) 0.0)))))
+    ;; Stops (indices 73..88)
+    (dotimes [i 16]
+      (.setFloat shader (+ 73 i)
+                (if (< i n) (double (nth stops i)) 1.0)))
+    shader))
+
+(deftype OkLabGradient
+  [colors stops
+   ^int gradient-type
+   ^int tm-id
+   begin-align end-align
+   center-align
+   ^double radius-val
+   ^double start-angle ^double end-angle]
+  :extends (m/Gradient .colors colors .stops stops)
+
+  (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
+    (let [shader (shader/create-oklab-shader)
+          stops (or (.-stops this)
+                    (let [n (count colors)]
+                      (mapv #(/ (double %) (dec n)) (range n))))]
+      (case gradient-type
+        ;; Linear
+        0 (let [b (.withinRect (.resolve ^m/AlignmentGeometry begin-align textDirection) rect)
+                e (.withinRect (.resolve ^m/AlignmentGeometry end-align textDirection) rect)]
+            (set-gradient-uniforms! shader rect 0 tm-id colors stops
+                                   (.-dx b) (.-dy b) (.-dx e) (.-dy e)))
+        ;; Radial
+        1 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
+                r (* radius-val (.-shortestSide rect))]
+            (set-gradient-uniforms! shader rect 1 tm-id colors stops
+                                   (.-dx c) (.-dy c) r 0.0))
+        ;; Sweep
+        2 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)]
+            (set-gradient-uniforms! shader rect 2 tm-id colors stops
+                                   (.-dx c) (.-dy c) start-angle end-angle)))))
+
+  (scale [this ^double factor]
+    (OkLabGradient
+     (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
+     stops gradient-type tm-id
+     begin-align end-align center-align radius-val start-angle end-angle)))
+
+(defn ^m/Gradient linear-gradient
   "Creates a LinearGradient object from the specified arguments.
    The arguments can be specified as a map with the following keys:
    - `:begin` (alignment, default: :center-start): The alignment of the gradient's start point.
    - `:end` (alignment, default: :center-end): The alignment of the gradient's end point.
    - `:colors` (list of colors, default: [:transparent :transparent]): The colors of the gradient.
    - `:stops` (list of numbers, default: nil): The stops of the gradient.
-   - `:tile-mode` (tile-mode, default: :clamp): The tile mode of the gradient."
+   - `:tile-mode` (tile-mode, default: :clamp): The tile mode of the gradient.
+   - `:color-space` (keyword, default: :oklab): `:oklab` for perceptual interpolation, `:srgb` for native."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
-      (instance? m/LinearGradient args)
+      (instance? m/Gradient args)
       args
 
       (map? args)
-      (let [[colors stops] (ut/expand-gradient-colors
-                            (:color-space args :oklab)
-                            (gradient-colors (:colors args))
-                            (:stops args)
-                            (:steps args 16))]
-        (m/LinearGradient
-         .begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
-         .end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))
-         .colors colors
-         .stops stops
-         .tileMode (tile-mode (:tile-mode args :clamp))))
+      (let [cs (:color-space args :oklab)
+            colors (vec (gradient-colors (:colors args)))
+            stops (:stops args)
+            tm (:tile-mode args :clamp)
+            begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
+            end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))]
+        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+          (OkLabGradient colors stops 0 (tile-mode-id tm)
+                         begin end nil 0.0 0.0 0.0)
+          (let [[colors stops] (ut/expand-gradient-colors
+                                cs colors stops (:steps args 16))]
+            (m/LinearGradient
+             .begin begin .end end
+             .colors colors .stops stops
+             .tileMode (tile-mode tm)))))
 
       :else
       (throw (Exception. (str "Invalid LinearGradient: " args))))))
 
-(defn ^m/SweepGradient sweep-gradient
+(defn ^m/Gradient sweep-gradient
   "Creates a SweepGradient object from the specified arguments.
    The arguments can be specified as a map with the following keys:
    - `:center` (alignment, default: :center): The alignment of the gradient's center point.
@@ -846,56 +940,67 @@
    - `:end-angle` (number, default: 2 * Math/PI): The end angle of the gradient.
    - `:colors` (list of colors, default: [:transparent :transparent]): The colors of the gradient.
    - `:stops` (list of numbers, default: nil): The stops of the gradient.
-   - `:tile-mode` (tile-mode, default: :clamp): The tile mode of the gradient."
+   - `:tile-mode` (tile-mode, default: :clamp): The tile mode of the gradient.
+   - `:color-space` (keyword, default: :oklab): `:oklab` for perceptual interpolation, `:srgb` for native."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
-      (instance? m/SweepGradient args)
+      (instance? m/Gradient args)
       args
 
       (map? args)
-      (let [[colors stops] (ut/expand-gradient-colors
-                            (:color-space args :oklab)
-                            (gradient-colors (:colors args))
-                            (:stops args)
-                            (:steps args 16))]
-        (m/SweepGradient
-         .center (alignment-geometry (:center args m/Alignment.center))
-         .startAngle (:start-angle args 0)
-         .endAngle (:end-angle args (* 2 (.pi double)))
-         .colors colors
-         .stops stops
-         .tileMode (tile-mode (:tile-mode args :clamp))))
+      (let [cs (:color-space args :oklab)
+            colors (vec (gradient-colors (:colors args)))
+            stops (:stops args)
+            tm (:tile-mode args :clamp)
+            center (alignment-geometry (:center args m/Alignment.center))
+            sa (double (:start-angle args 0))
+            ea (double (:end-angle args (* 2 (.pi double))))]
+        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+          (OkLabGradient colors stops 2 (tile-mode-id tm)
+                         nil nil center 0.0 sa ea)
+          (let [[colors stops] (ut/expand-gradient-colors
+                                cs colors stops (:steps args 16))]
+            (m/SweepGradient
+             .center center
+             .startAngle sa .endAngle ea
+             .colors colors .stops stops
+             .tileMode (tile-mode tm)))))
 
       :else
       (throw (Exception. (str "Invalid SweepGradient: " args))))))
 
-(defn ^m/RadialGradient radial-gradient
+(defn ^m/Gradient radial-gradient
   "Creates a RadialGradient object from the specified arguments.
    The arguments can be specified as a map with the following keys:
    - `:center` (alignment, default: Alignment.center): The alignment of the gradient's center point.
    - `:radius` (number, default: 0.5): The radius of the gradient.
    - `:colors` (list of colors, default: [:transparent :transparent]): The colors of the gradient.
    - `:stops` (list of numbers, default: nil): The stops of the gradient.
-   - `:tile-mode` (tile-mode, default: nil): The tile mode of the gradient."
+   - `:tile-mode` (tile-mode, default: :clamp): The tile mode of the gradient.
+   - `:color-space` (keyword, default: :oklab): `:oklab` for perceptual interpolation, `:srgb` for native."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
-      (instance? m/RadialGradient args)
+      (instance? m/Gradient args)
       args
 
       (map? args)
-      (let [[colors stops] (ut/expand-gradient-colors
-                            (:color-space args :oklab)
-                            (gradient-colors (:colors args))
-                            (:stops args)
-                            (:steps args 16))]
-        (m/RadialGradient
-         .center (alignment-geometry (:center args m/Alignment.center))
-         .radius (:radius args 0.5)
-         .colors colors
-         .stops stops
-         .tileMode (tile-mode (:tile-mode args :clamp))))
+      (let [cs (:color-space args :oklab)
+            colors (vec (gradient-colors (:colors args)))
+            stops (:stops args)
+            tm (:tile-mode args :clamp)
+            center (alignment-geometry (:center args m/Alignment.center))
+            r (double (:radius args 0.5))]
+        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+          (OkLabGradient colors stops 1 (tile-mode-id tm)
+                         nil nil center r 0.0 0.0)
+          (let [[colors stops] (ut/expand-gradient-colors
+                                cs colors stops (:steps args 16))]
+            (m/RadialGradient
+             .center center .radius r
+             .colors colors .stops stops
+             .tileMode (tile-mode tm)))))
 
       :else
       (throw (Exception. (str "Invalid RadialGradient: " args))))))
