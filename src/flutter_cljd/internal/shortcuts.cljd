@@ -3,6 +3,7 @@
    ["package:flutter/material.dart" :as m]
    ["package:flutter/services.dart" :as s]
    [flutter-cljd.types :as t]
+   [flutter-cljd.utils :as u :refer [??]]
    [flutter-cljd.core :as c]))
 
 (defn ^m/Widget shortcuts*
@@ -53,7 +54,7 @@
                              (invoke
                               (if has-value #(apply action (rest value)) action)))))))))
                (if modal m/KeyEventResult.skipRemainingHandlers m/KeyEventResult.ignored))))))
-       .includeSemantics (or include-semantics true)
+       .includeSemantics (?? include-semantics true)
        .child child)
       
       :else (throw (Exception. (str "Invalid shortcuts: " shortcuts))))))

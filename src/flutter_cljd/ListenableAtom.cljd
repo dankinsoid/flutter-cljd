@@ -1,30 +1,28 @@
 (ns flutter-cljd.ListenableAtom
   (:require
    [cljd.core :as c]
-   ["dart:core" :as dc]
    ["package:flutter/foundation.dart" :as f]))
 
-(deftype AtomListenable [^c/Atom atom ^:mutable keys]
+(deftype AtomListenable [^c/Atom atom ^:mutable listeners]
   :extends f/ValueListenable
 
-  (value [^AtomListenable this] (c/deref (.-atom this)))
+  (value [^AtomListenable this] (deref (.-atom this)))
 
   (addListener [^AtomListenable this listener]
-    (let [key (dc/identityHashCode listener)]
-      (.-keys! this (conj (.-keys this) key))
-      (c/add-watch (.-atom this) key (fn [_ _ _ _] (listener))))
+    (.-listeners! this (conj (.-listeners this) listener))
+    (add-watch (.-atom this) listener (fn [_ _ _ _] (listener)))
     nil)
 
   (removeListener [^AtomListenable this listener]
-    (let [key (dc/identityHashCode listener)]
-      (.-keys! this (disj (.-keys this) key))
-      (c/remove-watch (.-atom this) key))
+    (.-listeners! this (disj (.-listeners this) listener))
+    (remove-watch (.-atom this) listener)
     nil)
 
   AtomListenable
   (dispose [^AtomListenable this]
-    (doseq [key (.-keys this)]
-      (.removeListener this key))
+    (doseq [l (.-listeners this)]
+      (remove-watch (.-atom this) l))
+    (.-listeners! this #{})
     nil))
 
 (defn ^AtomListenable atom-listenable [^c/Atom atom]
