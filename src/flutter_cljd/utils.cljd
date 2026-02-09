@@ -3,6 +3,8 @@
   (:require
    [cljd.flutter :as f]
    [cljd.set :as set]
+   ["dart:math" :as math]
+   ["dart:ui" :as ui]
    ["package:flutter/foundation.dart" :as fd]
    ["package:flutter/widgets.dart" :as w]))
 
@@ -177,6 +179,126 @@
 
      :else
      #(if (> % 0.5) to from))))
+
+;;; OKLab color space
+
+(defn- srgb->linear ^double [^double c]
+  (if (> c 0.04045)
+    (math/pow (/ (+ c 0.055) 1.055) 2.4)
+    (/ c 12.92)))
+
+(defn- linear->srgb ^double [^double c]
+  (if (> c 0.0031308)
+    (- (* 1.055 (math/pow c (/ 1.0 2.4))) 0.055)
+    (* 12.92 c)))
+
+(defn- cbrt ^double [^double x]
+  (if (>= x 0)
+    (math/pow x (/ 1.0 3.0))
+    (- (math/pow (- x) (/ 1.0 3.0)))))
+
+(defn- clamp01 ^double [^double x]
+  (max 0.0 (min 1.0 x)))
+
+(defn color->oklab
+  "Converts a `Color` to OKLab. Returns `[L a b alpha]`.
+
+   ```clojure
+   (color->oklab Colors.red) ; => [0.6279… 0.2248… 0.1258… 1.0]
+   ```"
+  [^ui/Color color]
+  (let [r (srgb->linear (/ (.-red color) 255.0))
+        g (srgb->linear (/ (.-green color) 255.0))
+        b (srgb->linear (/ (.-blue color) 255.0))
+        l (cbrt (+ (* 0.4122214708 r) (* 0.5363325363 g) (* 0.0514459929 b)))
+        m (cbrt (+ (* 0.2119034982 r) (* 0.6806995451 g) (* 0.1073969566 b)))
+        s (cbrt (+ (* 0.0883024619 r) (* 0.2817188376 g) (* 0.6299787005 b)))]
+    [(+ (* 0.2104542553 l) (* 0.7936177850 m) (* -0.0040720468 s))
+     (+ (* 1.9779984951 l) (* -2.4285922050 m) (* 0.4505937099 s))
+     (+ (* 0.0259040371 l) (* 0.7827717662 m) (* -0.8086757660 s))
+     (.-opacity color)]))
+
+(defn oklab->color
+  "Converts OKLab values to a `Color`.
+
+   ```clojure
+   (oklab->color [0.5 0.0 0.0 1.0])
+   (oklab->color 0.5 0.0 0.0)
+   (oklab->color 0.5 0.0 0.0 1.0)
+   ```"
+  ([[L a b alpha]]
+   (oklab->color L a b alpha))
+  ([L a b]
+   (oklab->color L a b 1.0))
+  ([L a b alpha]
+   (let [l_ (+ L (* 0.3963377774 a) (* 0.2158037573 b))
+         m_ (+ L (* -0.1055613458 a) (* -0.0638541728 b))
+         s_ (+ L (* -0.0894841775 a) (* -1.2914855480 b))
+         l (* l_ l_ l_)
+         m (* m_ m_ m_)
+         s (* s_ s_ s_)
+         r (clamp01 (linear->srgb (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s))))
+         g (clamp01 (linear->srgb (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s))))
+         bl (clamp01 (linear->srgb (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s))))]
+     (ui/Color.fromRGBO
+      (.round (* r 255))
+      (.round (* g 255))
+      (.round (* bl 255))
+      (double alpha)))))
+
+(defn oklab-lerp
+  "Interpolates between two colors in OKLab color space.
+   Produces perceptually uniform transitions unlike `Color.lerp` (which uses sRGB).
+
+   ```clojure
+   (oklab-lerp Colors.red Colors.blue 0.5)
+   ((oklab-lerp Colors.red Colors.blue) 0.5) ; curried form for animations
+   ```"
+  ([from to t]
+   ((oklab-lerp from to) (double t)))
+  ([from to]
+   (let [[l1 a1 b1 alpha1] (color->oklab from)
+         [l2 a2 b2 alpha2] (color->oklab to)]
+     (fn [^double t]
+       (oklab->color
+        (+ l1 (* t (- l2 l1)))
+        (+ a1 (* t (- a2 a1)))
+        (+ b1 (* t (- b2 b1)))
+        (+ alpha1 (* t (- alpha2 alpha1))))))))
+
+(defmulti expand-gradient-colors
+  "Expands gradient colors in the given color space.
+   Returns `[colors stops]`. Override for custom color spaces.
+
+   Dispatches on `color-space` keyword (`:oklab`, `:srgb`, etc.)."
+  (fn [color-space colors stops steps] color-space))
+
+(defmethod expand-gradient-colors :srgb [_ colors stops _steps]
+  [colors stops])
+
+(defmethod expand-gradient-colors :oklab [_ colors stops steps]
+  (let [n (count colors)
+        stops (or stops (mapv #(/ (double %) (dec n)) (range n)))
+        result (mapcat
+                (fn [i]
+                  (let [f (oklab-lerp (nth colors i) (nth colors (inc i)))
+                        s1 (nth stops i)
+                        s2 (nth stops (inc i))
+                        end (if (= i (- n 2)) (inc steps) steps)]
+                    (map (fn [j]
+                           (let [t (/ (double j) steps)]
+                             [(f t) (+ s1 (* t (- s2 s1)))]))
+                         (range end))))
+                (range (dec n)))]
+    [(mapv first result) (mapv second result)]))
+
+(extend-protocol f/ITweenable
+  ui/Color
+  (-tween [end]
+    (f/tween-with
+     (fn [begin end]
+       (oklab-lerp begin end))
+     end)))
 
 (defn flatten-children
   "Flattens a nested collection of children and filters out non-Widget elements.

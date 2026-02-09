@@ -823,12 +823,17 @@
       args
 
       (map? args)
-      (m/LinearGradient
-       .begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
-       .end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))
-       .colors (gradient-colors (:colors args))
-       .stops (args :stops)
-       .tileMode (tile-mode (:tile-mode args :clamp)))
+      (let [[colors stops] (ut/expand-gradient-colors
+                            (:color-space args :oklab)
+                            (gradient-colors (:colors args))
+                            (:stops args)
+                            (:steps args 16))]
+        (m/LinearGradient
+         .begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
+         .end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))
+         .colors colors
+         .stops stops
+         .tileMode (tile-mode (:tile-mode args :clamp))))
 
       :else
       (throw (Exception. (str "Invalid LinearGradient: " args))))))
@@ -849,13 +854,18 @@
       args
 
       (map? args)
-      (m/SweepGradient
-       .center (alignment-geometry (:center args m/Alignment.center))
-       .startAngle (:start-angle args 0)
-       .endAngle (:end-angle args (* 2 (.pi double)))
-       .colors (gradient-colors (args :colors))
-       .stops (args :stops)
-       .tileMode (tile-mode (:tile-mode args :clamp)))
+      (let [[colors stops] (ut/expand-gradient-colors
+                            (:color-space args :oklab)
+                            (gradient-colors (:colors args))
+                            (:stops args)
+                            (:steps args 16))]
+        (m/SweepGradient
+         .center (alignment-geometry (:center args m/Alignment.center))
+         .startAngle (:start-angle args 0)
+         .endAngle (:end-angle args (* 2 (.pi double)))
+         .colors colors
+         .stops stops
+         .tileMode (tile-mode (:tile-mode args :clamp))))
 
       :else
       (throw (Exception. (str "Invalid SweepGradient: " args))))))
@@ -875,12 +885,17 @@
       args
 
       (map? args)
-      (m/RadialGradient
-       .center (alignment-geometry (:center args m/Alignment.center))
-       .radius (:radius args 0.5)
-       .colors (gradient-colors (:colors args))
-       .stops (args :stops)
-       .tileMode (tile-mode (:tile-mode args :clamp)))
+      (let [[colors stops] (ut/expand-gradient-colors
+                            (:color-space args :oklab)
+                            (gradient-colors (:colors args))
+                            (:stops args)
+                            (:steps args 16))]
+        (m/RadialGradient
+         .center (alignment-geometry (:center args m/Alignment.center))
+         .radius (:radius args 0.5)
+         .colors colors
+         .stops stops
+         .tileMode (tile-mode (:tile-mode args :clamp))))
 
       :else
       (throw (Exception. (str "Invalid RadialGradient: " args))))))
