@@ -2092,51 +2092,47 @@
 (defn ^w/Widget list-view
   "Scrollable list of widgets.
 
-  Without `:item-builder` — static list of children.
-  With `:item-builder` — lazy builder pattern.
-  With `:item-builder` + `:separator-builder` — separated list.
+  Trailing `fn` → lazy builder (receives item or index). Two trailing `fn`s → separated.
+  A collection or number before the builder sets the data source.
 
   ```clojure
   (list-view (text \"A\") (text \"B\") (text \"C\"))
-  (list-view :padding 16 :physics :bouncing (text \"A\") (text \"B\"))
-  (list-view :item-count 100 :item-builder (fn [ctx i] (text (str i))))
-  (list-view :item-count 50
-             :item-builder (fn [ctx i] (text (str i)))
-             :separator-builder (fn [ctx i] (m/Divider)))
+  (list-view items (fn [ctx item] (text (:name item))))
+  (list-view 100 (fn [ctx i] (text (str i))))
+  (list-view items
+             (fn [ctx item] (text (:name item)))
+             (fn [ctx i] (divider)))
+  (list-view (fn [ctx i] (text (str i))))
   ```
 
-  Scroll options: `:scroll-direction` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
+  Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
   `:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`), `:shrink-wrap`,
   `:padding`, `:clip`, `:cache-extent`.
 
-  Extra: `:item-extent`, `:item-count`, `:item-builder`, `:separator-builder`,
+  Extra: `:item-extent`,
   `:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (scrl/list-view* args children)))
+  (scrl/list-view* args))
 
 (defn ^w/Widget grid-view
   "Scrollable grid of widgets.
 
-  Requires either `:cross-axis-count` or `:max-cross-axis-extent` to define the grid layout.
-  Without `:item-builder` — static children. With `:item-builder` — lazy builder.
+  Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+  Trailing `fn` → lazy builder; collection/number before it sets data source.
 
   ```clojure
   (grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
-  (grid-view :cross-axis-count 3 :main-axis-spacing 8 :cross-axis-spacing 8
-             :item-count 100 :item-builder (fn [ctx i] (text (str i))))
-  (grid-view :max-cross-axis-extent 200 :child-aspect-ratio 1.5
-             :item-count 50 :item-builder (fn [ctx i] (text (str i))))
+  (grid-view :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
+  (grid-view :max-cross-axis-extent 200 50 (fn [ctx i] (text (str i))))
   ```
 
   Grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
   `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
 
-  Scroll options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
   `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (scrl/grid-view* args children)))
+  (scrl/grid-view* args))
 
 (defn ^w/Widget custom-scroll-view
   "Scroll view composed of slivers.
@@ -2148,7 +2144,7 @@
   (custom-scroll-view :physics :bouncing sliver1 sliver2)
   ```
 
-  Options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
   `:shrink-wrap`, `:clip`, `:cache-extent`, `:center`, `:anchor`, `:semantic-child-count`."
   [& args]
   (let [[args slivers] (ut/key-values-args-and-children args)]
@@ -2159,10 +2155,10 @@
 
   ```clojure
   (single-child-scroll-view (column (text \"A\") (text \"B\")))
-  (single-child-scroll-view :scroll-direction :horizontal child)
+  (single-child-scroll-view :axis :horizontal child)
   ```
 
-  Options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
   `:padding`, `:clip`, `:keyboard-dismiss-behavior` (`:manual`/`:on-drag`),
   `:drag-start-behavior` (`:start`/`:down`)."
   [& args]
@@ -2199,15 +2195,13 @@
 (defn ^w/Widget sliver-list
   "Sliver that displays children in a list. Use inside `custom-scroll-view`.
 
-  Without `:item-builder` — static children. With `:item-builder` — lazy builder.
-
   ```clojure
   (sliver-list (text \"A\") (text \"B\"))
-  (sliver-list :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  (sliver-list items (fn [ctx item] (text (:name item))))
+  (sliver-list 100 (fn [ctx i] (text (str i))))
   ```"
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (scrl/sliver-list* args children)))
+  (scrl/sliver-list* args))
 
 (defn ^w/Widget sliver-grid
   "Sliver that displays children in a grid. Use inside `custom-scroll-view`.
@@ -2216,11 +2210,10 @@
 
   ```clojure
   (sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
-  (sliver-grid :cross-axis-count 3 :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  (sliver-grid :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
   ```"
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (scrl/sliver-grid* args children)))
+  (scrl/sliver-grid* args))
 
 (defn ^w/Widget sliver-to-box-adapter
   "Wraps a regular (box) widget so it can be used inside `custom-scroll-view`."

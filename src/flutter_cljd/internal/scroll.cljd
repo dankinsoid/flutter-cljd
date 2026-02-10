@@ -2,13 +2,42 @@
   (:require
    ["package:flutter/material.dart" :as m]
    ["package:flutter/widgets.dart" :as w]
-   [flutter-cljd.types :as t]))
+   [flutter-cljd.types :as t]
+   [flutter-cljd.utils :as ut]))
+
+(defn- parse-scroll-args
+  [raw-args]
+  (let [f (first raw-args)
+        [source raw-args] (if (or (int? f) (sequential? f))
+                            [f (rest raw-args)]
+                            [nil raw-args])
+        l (last raw-args)]
+    (if (fn? l)
+      (let [without-last (butlast raw-args)
+            pl (last without-last)
+            [item-fn sep-fn kv-rest]
+            (if (fn? pl)
+              [pl l (butlast without-last)]
+              [l nil without-last])
+            args (ut/key-values-map kv-rest)
+            args (if (map? args) args {})
+            item-builder (if (and source (not (int? source)))
+                           (fn [ctx i] (item-fn ctx (nth source i)))
+                           item-fn)]
+        [(cond-> (assoc args :item-builder item-builder)
+           sep-fn (assoc :separator-builder sep-fn)
+           (int? source) (assoc :item-count (int source))
+           (and (some? source) (not (int? source))) (assoc :item-count (count source)))
+         []])
+      (ut/key-values-args-and-children
+       (if source (cons source raw-args) raw-args)))))
 
 ;; --- list-view ---
 
-(defn ^m/Widget list-view* [args children]
-  (let [key (t/widget-key (:key args))
-        direction (t/axis (or (:scroll-direction args) :vertical))
+(defn ^m/Widget list-view* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)
+        key (t/widget-key (:key args))
+        direction (t/axis (or (:axis args) :vertical))
         reverse (boolean (:reverse args))
         controller (:controller args)
         primary (:primary args)
@@ -86,9 +115,10 @@
 
 ;; --- grid-view ---
 
-(defn ^m/Widget grid-view* [args children]
-  (let [key (t/widget-key (:key args))
-        direction (t/axis (or (:scroll-direction args) :vertical))
+(defn ^m/Widget grid-view* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)
+        key (t/widget-key (:key args))
+        direction (t/axis (or (:axis args) :vertical))
         reverse (boolean (:reverse args))
         controller (:controller args)
         primary (:primary args)
@@ -146,7 +176,7 @@
 (defn ^m/Widget custom-scroll-view* [args slivers]
   (m/CustomScrollView
    .key (t/widget-key (:key args))
-   .scrollDirection (t/axis (or (:scroll-direction args) :vertical))
+   .scrollDirection (t/axis (or (:axis args) :vertical))
    .reverse (boolean (:reverse args))
    .controller (:controller args)
    .primary (:primary args)
@@ -164,7 +194,7 @@
 (defn ^w/Widget single-child-scroll-view* [args child]
   (w/SingleChildScrollView
    .key (t/widget-key (:key args))
-   .scrollDirection (t/axis (or (:scroll-direction args) :vertical))
+   .scrollDirection (t/axis (or (:axis args) :vertical))
    .reverse (boolean (:reverse args))
    .controller (:controller args)
    .primary (:primary args)
@@ -204,8 +234,9 @@
 
 ;; --- Slivers ---
 
-(defn ^w/Widget sliver-list* [args children]
-  (let [key (t/widget-key (:key args))
+(defn ^w/Widget sliver-list* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)
+        key (t/widget-key (:key args))
         item-builder (:item-builder args)
         item-count (:item-count args)
         add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
@@ -226,8 +257,9 @@
        .addSemanticIndexes add-semantic-indexes
        .children children))))
 
-(defn ^w/Widget sliver-grid* [args children]
-  (let [key (t/widget-key (:key args))
+(defn ^w/Widget sliver-grid* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)
+        key (t/widget-key (:key args))
         delegate (t/sliver-grid-delegate args)
         item-builder (:item-builder args)
         item-count (:item-count args)
