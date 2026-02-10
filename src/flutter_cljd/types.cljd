@@ -5,6 +5,7 @@
    ["package:flutter/services.dart" :as s]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter/animation.dart" :as a]
+   ["package:flutter/gestures.dart" :as g]
    ["package:flutter/rendering.dart" :as r]
    ["dart:core" :as dc]
    ["dart:ui" :as ui]
@@ -432,7 +433,7 @@
          (number? value) (m/EdgeInsetsDirectional.all value)
 
          (map? value)
-         (if (> (some value [:left :l :right :r]) 0)
+         (if (some value [:left :l :right :r])
            (m/EdgeInsets.fromLTRB
             (or (some value [:left :l :horizontal :h :all]) 0)
             (or (some value [:top :t :vertical :v :all]) 0)
@@ -1814,12 +1815,12 @@
         :page    (m/PageScrollPhysics)
         (throw (Exception. (str "Invalid scroll physics: " physics " (expected :bouncing, :clamping, :never, :always, or :page)")))))))
 
-(defn ^m/DragStartBehavior drag-start-behavior [b]
-  (if (instance? m/DragStartBehavior b)
+(defn ^g/DragStartBehavior drag-start-behavior [b]
+  (if (instance? g/DragStartBehavior b)
     b
     (case b
-      :start m/DragStartBehavior.start
-      :down  m/DragStartBehavior.down
+      :start g/DragStartBehavior.start
+      :down  g/DragStartBehavior.down
       (throw (Exception. (str "Invalid drag start behavior: " b " (expected :start or :down)"))))))
 
 (defn ^r/SliverGridDelegate sliver-grid-delegate

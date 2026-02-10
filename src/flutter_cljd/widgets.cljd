@@ -2092,16 +2092,22 @@
 (defn ^w/Widget list-view
   "Scrollable list of widgets.
 
-  Trailing `fn` → lazy builder (receives item or index). Two trailing `fn`s → separated.
-  A collection or number before the builder sets the data source.
+  Trailing `fn` → lazy builder `(fn [ctx item-or-index] ...)`.
+  Two trailing `fn`s → item builder + separator builder.
+  A collection or number before the builder(s) sets the data source.
 
   ```clojure
+  ;; static children
   (list-view (text \"A\") (text \"B\") (text \"C\"))
+  ;; builder from collection — fn receives element
   (list-view items (fn [ctx item] (text (:name item))))
+  ;; builder from count — fn receives index
   (list-view 100 (fn [ctx i] (text (str i))))
+  ;; separated — second fn builds separators
   (list-view items
              (fn [ctx item] (text (:name item)))
              (fn [ctx i] (divider)))
+  ;; infinite builder (no data source)
   (list-view (fn [ctx i] (text (str i))))
   ```
 
