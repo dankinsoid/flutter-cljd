@@ -68,18 +68,20 @@
    :linear-gradient-oklab
    (mk-example "Linear OKLab" "OKLab interpolation — perceptually smooth, no muddy middle"
      (f/decorated
-       {:gradient {:colors [:red :cyan]
-                   :begin :center-left
-                   :end :center-right}
+       {:gradient {:type :linear
+                   :colors [:red :cyan]
+                   :begin :top-left
+                   :end :bottom-right}
         :border-radius 12}
        (f/sized {:w 280 :h 80})))
 
    :linear-gradient-srgb
    (mk-example "Linear sRGB" "Native sRGB interpolation — grey/muddy middle on complementary colors"
      (f/decorated
-       {:gradient {:colors [:red :cyan]
-                   :begin :center-left
-                   :end :center-right
+       {:gradient {:type :linear
+                   :colors [:red :cyan]
+                   :begin :top-left
+                   :end :bottom-right
                    :color-space :srgb}
         :border-radius 12}
        (f/sized {:w 280 :h 80})))
@@ -87,24 +89,36 @@
    :radial-gradient
    (mk-example "Radial" "Radial gradient from center in OKLab"
      (f/decorated
-       {:gradient {:colors [:yellow :purple]
+       {:gradient {:type :radial
+                   :colors [:yellow :purple]
                    :radius 0.7}
         :border-radius 12}
-       (f/sized {:w 200 :h 200})))
+       (f/sized {:w 200 :h 400})))
+
+   :diamond-gradient
+   (mk-example "Diamond" "Diamond-shaped gradient (Manhattan distance)"
+     (f/decorated
+       {:gradient {:type :diamond
+                   :colors [:yellow :purple]
+                   :radius 0.7}
+        :border-radius 12}
+       (f/sized {:w 200 :h 300})))
 
    :sweep-gradient
    (mk-example "Sweep" "Angular sweep gradient in OKLab"
      (f/decorated
-       {:gradient {:colors [:red :orange :yellow :green :blue :purple :red]
+       {:gradient {:type :sweep
+                   :colors [:red :orange :yellow :green :blue :purple :red]
                    :start-angle 0.0
                    :end-angle (* 2 ut/π)}
         :border-radius 100}
-       (f/sized {:w 200 :h 200})))
+       (f/sized {:w 200 :h 300})))
 
    :mesh-gradient
    (mk-example "Mesh" "4x4 mesh gradient with warped points"
      (f/decorated
-       {:gradient {:width 4 :height 4
+       {:gradient {:type :mesh
+                   :width 4 :height 4
                    :points [[0.0, 0.0], [0.3, 0.0], [0.7, 0.0], [1.0, 0.0],
                             [0.0, 0.3], [0.2, 0.4], [0.7, 0.2], [1.0, 0.3],
                             [0.0, 0.7], [0.3, 0.8], [0.7, 0.6], [1.0, 0.7],
@@ -114,12 +128,13 @@
                             :orange :pink :yellow :orange
                             :yellow :orange :pink :purple]}
         :border-radius 12}
-       (f/sized {:w 200 :h 200})))
+       (f/sized {:w 200 :h 400})))
 
    :multi-stop-gradient
    (mk-example "Multi-stop" "Gradient with many color stops and custom positions"
      (f/decorated
-       {:gradient {:colors [:red :orange :yellow :green :cyan :blue :purple]
+       {:gradient {:type :linear
+                   :colors [:red :orange :yellow :green :cyan :blue :purple]
                    :stops [0.0 0.15 0.3 0.5 0.7 0.85 1.0]
                    :begin :top-left
                    :end :bottom-right}

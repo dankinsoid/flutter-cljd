@@ -6,8 +6,8 @@
 (def ^:private -mesh-program (atom nil))
 
 (defn ^:async load-oklab-shader!
-  "Loads the OKLab gradient fragment shader. Call once at app startup.
-   Safe to call multiple times."
+  "Loads the OKLab gradient fragment shader. Requires Impeller.
+   Call once at app startup. Safe to call multiple times."
   []
   (when-not @-oklab-program
     (reset! -oklab-program
@@ -24,8 +24,8 @@
   (some-> @-oklab-program .fragmentShader))
 
 (defn ^:async load-mesh-shader!
-  "Loads the mesh gradient fragment shader. Call once at app startup.
-   Safe to call multiple times."
+  "Loads the mesh gradient fragment shader. Requires Impeller.
+   Call once at app startup. Safe to call multiple times."
   []
   (when-not @-mesh-program
     (reset! -mesh-program
@@ -40,3 +40,16 @@
    Returns nil if shader not loaded."
   ^ui/FragmentShader []
   (some-> @-mesh-program .fragmentShader))
+
+(defn ^:async load-shaders!
+  "Loads all gradient shaders (OKLab + mesh). Requires Impeller.
+   Must be called once at app startup before using gradients.
+
+   ```clojure
+   (defn ^:async main []
+     (await (shader/load-shaders!))
+     (f/run-app (my-app)))
+   ```"
+  []
+  (await (load-oklab-shader!))
+  (await (load-mesh-shader!)))

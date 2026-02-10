@@ -1241,7 +1241,7 @@
      - `:border` - Border properties like width, color, style
      - `:border-radius` - Corner radius values
      - `:box-shadow` - Shadow effects
-     - `:gradient` - Linear or radial color gradients
+     - `:gradient` - Gradient with `:type` — `:linear`, `:radial`, `:sweep`, `:diamond`, `:mesh` (OKLab/diamond/mesh require Impeller)
      - `:image` - Background image
    - child: The widget to decorate
 
@@ -1260,16 +1260,17 @@
     (text \"Hello\"))
     
   ;; Gradient background with shadow
-  (decorated {:gradient {:colors [:blue :green]
-                        :begin :top-left
-                        :end :bottom-right}
+  (decorated {:gradient {:type :linear
+                         :colors [:blue :green]
+                         :begin :top-left
+                         :end :bottom-right}
               :box-shadow [{:color :black
                            :blur-radius 10}]}
     (text \"Hello\"))
 
   ;; Foreground decoration
-  (decorated :position m/DecorationPosition.foreground 
-             :gradient {:colors [:transparent :black]}
+  (decorated :position m/DecorationPosition.foreground
+             :gradient {:type :linear :colors [:transparent :black]}
     (image \"background.jpg\"))
   ```
 

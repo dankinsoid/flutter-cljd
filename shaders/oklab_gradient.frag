@@ -112,7 +112,8 @@ float computeT(vec2 pos) {
         float radius = uParam1.x;
         if (radius < 0.0001) return 0.0;
         return length(pos - uParam0) / radius;
-    } else {
+    } else if (uType < 2.5) {
+        // Sweep: angle from center, normalized to [0,1]
         // Sweep: angle from center, normalized to [0,1]
         vec2 d = pos - uParam0;
         float angle = atan(d.y, d.x);
@@ -122,6 +123,12 @@ float computeT(vec2 pos) {
         float range = endAngle - startAngle;
         if (abs(range) < 0.0001) return 0.0;
         return (angle - startAngle) / range;
+    } else {
+        // Diamond: Manhattan distance from center / radius
+        float radius = uParam1.x;
+        if (radius < 0.0001) return 0.0;
+        vec2 d = abs(pos - uParam0);
+        return (d.x + d.y) / radius;
     }
 }
 

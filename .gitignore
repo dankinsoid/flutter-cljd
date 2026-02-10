@@ -69,3 +69,4 @@ app.*.map.json
 pubspec.lock
 .aider*
 .env
+REPL.lock
