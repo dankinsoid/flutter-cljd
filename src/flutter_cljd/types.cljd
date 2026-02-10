@@ -1802,6 +1802,82 @@
       :translucent r/HitTestBehavior.translucent
       (throw (Exception. (str "Invalid hit test behavior: " value " (expected :defer-to-child, :opaque, :inactive, :translucent)"))))))
 
+(defn ^m/ScrollPhysics? scroll-physics [physics]
+  (when (some? physics)
+    (if (instance? m/ScrollPhysics physics)
+      physics
+      (case physics
+        :bouncing (m/BouncingScrollPhysics)
+        :clamping (m/ClampingScrollPhysics)
+        :never   (m/NeverScrollableScrollPhysics)
+        :always  (m/AlwaysScrollableScrollPhysics)
+        :page    (m/PageScrollPhysics)
+        (throw (Exception. (str "Invalid scroll physics: " physics " (expected :bouncing, :clamping, :never, :always, or :page)")))))))
+
+(defn ^m/DragStartBehavior drag-start-behavior [b]
+  (if (instance? m/DragStartBehavior b)
+    b
+    (case b
+      :start m/DragStartBehavior.start
+      :down  m/DragStartBehavior.down
+      (throw (Exception. (str "Invalid drag start behavior: " b " (expected :start or :down)"))))))
+
+(defn ^r/SliverGridDelegate sliver-grid-delegate
+  "Converts a map of grid options to a `SliverGridDelegate`.
+
+  Pass a `SliverGridDelegate` instance directly, or a map with either:
+  - `:cross-axis-count` — creates `SliverGridDelegateWithFixedCrossAxisCount`
+  - `:max-cross-axis-extent` — creates `SliverGridDelegateWithMaxCrossAxisExtent`
+
+  Common options: `:child-aspect-ratio`, `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`."
+  [delegate]
+  (if (instance? r/SliverGridDelegate delegate)
+    delegate
+    (let [{:keys [cross-axis-count max-cross-axis-extent child-aspect-ratio
+                  cross-axis-spacing main-axis-spacing main-axis-extent]} delegate
+          aspect-ratio (or (some-> child-aspect-ratio double) 1.0)
+          cross-spacing (double (or cross-axis-spacing 0))
+          main-spacing (double (or main-axis-spacing 0))
+          main-extent (some-> main-axis-extent double)]
+      (cond
+        cross-axis-count
+        (m/SliverGridDelegateWithFixedCrossAxisCount
+         .crossAxisCount (int cross-axis-count)
+         .childAspectRatio aspect-ratio
+         .crossAxisSpacing cross-spacing
+         .mainAxisSpacing main-spacing
+         .mainAxisExtent main-extent)
+
+        max-cross-axis-extent
+        (m/SliverGridDelegateWithMaxCrossAxisExtent
+         .maxCrossAxisExtent (double max-cross-axis-extent)
+         .childAspectRatio aspect-ratio
+         .crossAxisSpacing cross-spacing
+         .mainAxisSpacing main-spacing
+         .mainAxisExtent main-extent)
+
+        :else
+        (throw (Exception. "sliver-grid-delegate requires :cross-axis-count or :max-cross-axis-extent"))))))
+
+(defn ^m/ScrollbarOrientation? scrollbar-orientation [o]
+  (when (some? o)
+    (if (instance? m/ScrollbarOrientation o)
+      o
+      (case o
+        :left   m/ScrollbarOrientation.left
+        :right  m/ScrollbarOrientation.right
+        :top    m/ScrollbarOrientation.top
+        :bottom m/ScrollbarOrientation.bottom
+        (throw (Exception. (str "Invalid scrollbar orientation: " o " (expected :left, :right, :top, or :bottom)")))))))
+
+(defn ^w/ScrollViewKeyboardDismissBehavior scroll-view-keyboard-dismiss-behavior [b]
+  (if (instance? w/ScrollViewKeyboardDismissBehavior b)
+    b
+    (case b
+      :manual  w/ScrollViewKeyboardDismissBehavior.manual
+      :on-drag w/ScrollViewKeyboardDismissBehavior.onDrag
+      (throw (Exception. (str "Invalid keyboard dismiss behavior: " b " (expected :manual or :on-drag)"))))))
+
 (defn ^ui/Size size
   "Creates a new `Size` object with the given width and height.
 

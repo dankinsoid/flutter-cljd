@@ -1,0 +1,291 @@
+(ns flutter-cljd.internal.scroll
+  (:require
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+;; --- list-view ---
+
+(defn ^m/Widget list-view* [args children]
+  (let [key (t/widget-key (:key args))
+        direction (t/axis (or (:scroll-direction args) :vertical))
+        reverse (boolean (:reverse args))
+        controller (:controller args)
+        primary (:primary args)
+        physics (some-> (:physics args) t/scroll-physics)
+        shrink-wrap (boolean (:shrink-wrap args))
+        padding (some-> (:padding args) t/insets)
+        clip (t/clip (or (:clip args) :hard-edge))
+        cache-extent (some-> (:cache-extent args) double)
+        item-extent (some-> (:item-extent args) double)
+        item-builder (:item-builder args)
+        separator-builder (:separator-builder args)
+        item-count (:item-count args)
+        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
+        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
+        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
+    (cond
+      ;; ListView.separated
+      (and item-builder separator-builder)
+      (m/ListView.separated
+       .key key
+       .scrollDirection direction
+       .reverse reverse
+       .controller controller
+       .primary primary
+       .physics physics
+       .shrinkWrap shrink-wrap
+       .padding padding
+       .clipBehavior clip
+       .cacheExtent cache-extent
+       .itemCount (some-> item-count int)
+       .itemBuilder item-builder
+       .separatorBuilder separator-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+
+      ;; ListView.builder
+      item-builder
+      (m/ListView.builder
+       .key key
+       .scrollDirection direction
+       .reverse reverse
+       .controller controller
+       .primary primary
+       .physics physics
+       .shrinkWrap shrink-wrap
+       .padding padding
+       .clipBehavior clip
+       .cacheExtent cache-extent
+       .itemExtent item-extent
+       .itemCount (some-> item-count int)
+       .itemBuilder item-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+
+      ;; ListView (static children)
+      :else
+      (m/ListView
+       .key key
+       .scrollDirection direction
+       .reverse reverse
+       .controller controller
+       .primary primary
+       .physics physics
+       .shrinkWrap shrink-wrap
+       .padding padding
+       .clipBehavior clip
+       .cacheExtent cache-extent
+       .itemExtent item-extent
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes
+       .children children))))
+
+;; --- grid-view ---
+
+(defn ^m/Widget grid-view* [args children]
+  (let [key (t/widget-key (:key args))
+        direction (t/axis (or (:scroll-direction args) :vertical))
+        reverse (boolean (:reverse args))
+        controller (:controller args)
+        primary (:primary args)
+        physics (some-> (:physics args) t/scroll-physics)
+        shrink-wrap (boolean (:shrink-wrap args))
+        padding (some-> (:padding args) t/insets)
+        clip (t/clip (or (:clip args) :hard-edge))
+        cache-extent (some-> (:cache-extent args) double)
+        delegate (t/sliver-grid-delegate args)
+        item-builder (:item-builder args)
+        item-count (:item-count args)
+        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
+        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
+        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
+    (if item-builder
+      ;; GridView.builder
+      (m/GridView.builder
+       .key key
+       .scrollDirection direction
+       .reverse reverse
+       .controller controller
+       .primary primary
+       .physics physics
+       .shrinkWrap shrink-wrap
+       .padding padding
+       .clipBehavior clip
+       .cacheExtent cache-extent
+       .gridDelegate delegate
+       .itemCount (some-> item-count int)
+       .itemBuilder item-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+
+      ;; GridView (static children)
+      (m/GridView
+       .key key
+       .scrollDirection direction
+       .reverse reverse
+       .controller controller
+       .primary primary
+       .physics physics
+       .shrinkWrap shrink-wrap
+       .padding padding
+       .clipBehavior clip
+       .cacheExtent cache-extent
+       .gridDelegate delegate
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes
+       .children children))))
+
+;; --- custom-scroll-view ---
+
+(defn ^m/Widget custom-scroll-view* [args slivers]
+  (m/CustomScrollView
+   .key (t/widget-key (:key args))
+   .scrollDirection (t/axis (or (:scroll-direction args) :vertical))
+   .reverse (boolean (:reverse args))
+   .controller (:controller args)
+   .primary (:primary args)
+   .physics (some-> (:physics args) t/scroll-physics)
+   .shrinkWrap (boolean (:shrink-wrap args))
+   .clipBehavior (t/clip (or (:clip args) :hard-edge))
+   .cacheExtent (some-> (:cache-extent args) double)
+   .center (:center args)
+   .anchor (double (or (:anchor args) 0.0))
+   .semanticChildCount (some-> (:semantic-child-count args) int)
+   .slivers slivers))
+
+;; --- single-child-scroll-view ---
+
+(defn ^w/Widget single-child-scroll-view* [args child]
+  (w/SingleChildScrollView
+   .key (t/widget-key (:key args))
+   .scrollDirection (t/axis (or (:scroll-direction args) :vertical))
+   .reverse (boolean (:reverse args))
+   .controller (:controller args)
+   .primary (:primary args)
+   .physics (some-> (:physics args) t/scroll-physics)
+   .padding (some-> (:padding args) t/insets)
+   .clipBehavior (t/clip (or (:clip args) :hard-edge))
+   .dragStartBehavior (t/drag-start-behavior (or (:drag-start-behavior args) :start))
+   .keyboardDismissBehavior (t/scroll-view-keyboard-dismiss-behavior
+                             (or (:keyboard-dismiss-behavior args) :manual))
+   .child child))
+
+;; --- scrollable ---
+
+(defn ^w/Widget scrollable* [args]
+  (w/Scrollable
+   .key (t/widget-key (:key args))
+   .axisDirection (t/axis-direction (or (:axis-direction args) :down))
+   .controller (:controller args)
+   .physics (some-> (:physics args) t/scroll-physics)
+   .viewportBuilder (:view-builder args)
+   .dragStartBehavior (t/drag-start-behavior (or (:drag-start-behavior args) :start))
+   .clipBehavior (t/clip (or (:clip args) :hard-edge))))
+
+;; --- scrollbar ---
+
+(defn ^m/Widget scrollbar* [args child]
+  (m/Scrollbar
+   .key (t/widget-key (:key args))
+   .controller (:controller args)
+   .thumbVisibility (:thumb-visibility args)
+   .trackVisibility (:track-visibility args)
+   .thickness (some-> (:thickness args) double)
+   .radius (some-> (:radius args) t/radius)
+   .interactive (:interactive args)
+   .scrollbarOrientation (some-> (:orientation args) t/scrollbar-orientation)
+   .child child))
+
+;; --- Slivers ---
+
+(defn ^w/Widget sliver-list* [args children]
+  (let [key (t/widget-key (:key args))
+        item-builder (:item-builder args)
+        item-count (:item-count args)
+        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
+        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
+        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
+    (if item-builder
+      (w/SliverList.builder
+       .key key
+       .itemCount (some-> item-count int)
+       .itemBuilder item-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+      (w/SliverList.list
+       .key key
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes
+       .children children))))
+
+(defn ^w/Widget sliver-grid* [args children]
+  (let [key (t/widget-key (:key args))
+        delegate (t/sliver-grid-delegate args)
+        item-builder (:item-builder args)
+        item-count (:item-count args)
+        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
+        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
+        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
+    (if item-builder
+      (w/SliverGrid.builder
+       .key key
+       .gridDelegate delegate
+       .itemCount (some-> item-count int)
+       .itemBuilder item-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+      (w/SliverGrid
+       .key key
+       .gridDelegate delegate
+       .delegate (w/SliverChildListDelegate
+                  children
+                  .addAutomaticKeepAlives add-automatic-keep-alives
+                  .addRepaintBoundaries add-repaint-boundaries
+                  .addSemanticIndexes add-semantic-indexes)))))
+
+(defn ^w/Widget sliver-to-box-adapter* [args child]
+  (w/SliverToBoxAdapter
+   .key (t/widget-key (:key args))
+   .child child))
+
+(defn ^w/Widget sliver-padding* [args sliver]
+  (w/SliverPadding
+   .key (t/widget-key (:key args))
+   .padding (t/insets (:padding args))
+   .sliver sliver))
+
+(defn ^w/Widget sliver-fill-remaining* [args child]
+  (w/SliverFillRemaining
+   .key (t/widget-key (:key args))
+   .hasScrollBody (boolean (:has-scroll-body args true))
+   .fillOverscroll (boolean (:fill-overscroll args))
+   .child child))
+
+(defn ^m/Widget sliver-app-bar* [args]
+  (m/SliverAppBar
+   .key (t/widget-key (:key args))
+   .title (:title args)
+   .leading (:leading args)
+   .actions (:actions args)
+   .flexibleSpace (:flexible-space args)
+   .floating (boolean (:floating args))
+   .pinned (boolean (:pinned args))
+   .snap (boolean (:snap args))
+   .stretch (boolean (:stretch args))
+   .expandedHeight (some-> (:expanded-height args) double)
+   .collapsedHeight (some-> (:collapsed-height args) double)
+   .backgroundColor (:background-color args)
+   .foregroundColor (:foreground-color args)
+   .elevation (some-> (:elevation args) double)
+   .toolbarHeight (double (or (:toolbar-height args) 56.0))
+   .centerTitle (:center-title args)
+   .bottom (:bottom args)))

@@ -14,14 +14,13 @@
               .title (m/Text "flutter-cljd Demo")
               .centerTitle true)
     .body
-    (->> (m/GridView.builder
-           .gridDelegate (m/SliverGridDelegateWithFixedCrossAxisCount
-                           .crossAxisCount 2
-                           .childAspectRatio 1.2
-                           .crossAxisSpacing 16
-                           .mainAxisSpacing 16)
-           .itemCount (count categories/categories)
-           .itemBuilder
+    (->> (f/grid-view
+           :cross-axis-count 2
+           :child-aspect-ratio 1.2
+           :cross-axis-spacing 16
+           :main-axis-spacing 16
+           :item-count (count categories/categories)
+           :item-builder
            (fn [ctx index]
              (let [category (nth categories/categories index)]
                (card/category-card

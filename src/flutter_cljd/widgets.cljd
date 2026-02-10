@@ -59,7 +59,8 @@
    [flutter-cljd.internal.on-visibility-change :as ovc]
    [flutter-cljd.internal.unconstrained :as uc]
    [flutter-cljd.internal.hero :as hr]
-   [flutter-cljd.internal.draggable :as drg]))
+   [flutter-cljd.internal.draggable :as drg]
+   [flutter-cljd.internal.scroll :as scrl]))
 
 (defn ^w/Widget absorb-pointer
   "A widget that absorbs pointers during hit testing. 
@@ -2085,3 +2086,177 @@
   "Constrains draggable movement to stay within this widget's bounds."
   [child]
   (w/DragBoundary .child child))
+
+;; ---- Scroll widgets ----
+
+(defn ^w/Widget list-view
+  "Scrollable list of widgets.
+
+  Without `:item-builder` — static list of children.
+  With `:item-builder` — lazy builder pattern.
+  With `:item-builder` + `:separator-builder` — separated list.
+
+  ```clojure
+  (list-view (text \"A\") (text \"B\") (text \"C\"))
+  (list-view :padding 16 :physics :bouncing (text \"A\") (text \"B\"))
+  (list-view :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  (list-view :item-count 50
+             :item-builder (fn [ctx i] (text (str i)))
+             :separator-builder (fn [ctx i] (m/Divider)))
+  ```
+
+  Scroll options: `:scroll-direction` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
+  `:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`), `:shrink-wrap`,
+  `:padding`, `:clip`, `:cache-extent`.
+
+  Extra: `:item-extent`, `:item-count`, `:item-builder`, `:separator-builder`,
+  `:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
+  [& args]
+  (let [[args children] (ut/key-values-args-and-children args)]
+    (scrl/list-view* args children)))
+
+(defn ^w/Widget grid-view
+  "Scrollable grid of widgets.
+
+  Requires either `:cross-axis-count` or `:max-cross-axis-extent` to define the grid layout.
+  Without `:item-builder` — static children. With `:item-builder` — lazy builder.
+
+  ```clojure
+  (grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
+  (grid-view :cross-axis-count 3 :main-axis-spacing 8 :cross-axis-spacing 8
+             :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  (grid-view :max-cross-axis-extent 200 :child-aspect-ratio 1.5
+             :item-count 50 :item-builder (fn [ctx i] (text (str i))))
+  ```
+
+  Grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
+  `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
+
+  Scroll options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
+  [& args]
+  (let [[args children] (ut/key-values-args-and-children args)]
+    (scrl/grid-view* args children)))
+
+(defn ^w/Widget custom-scroll-view
+  "Scroll view composed of slivers.
+
+  ```clojure
+  (custom-scroll-view
+    (sliver-app-bar :title (text \"Title\") :floating true)
+    (sliver-list (text \"A\") (text \"B\")))
+  (custom-scroll-view :physics :bouncing sliver1 sliver2)
+  ```
+
+  Options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  `:shrink-wrap`, `:clip`, `:cache-extent`, `:center`, `:anchor`, `:semantic-child-count`."
+  [& args]
+  (let [[args slivers] (ut/key-values-args-and-children args)]
+    (scrl/custom-scroll-view* args slivers)))
+
+(defn ^w/Widget single-child-scroll-view
+  "Makes a single child scrollable.
+
+  ```clojure
+  (single-child-scroll-view (column (text \"A\") (text \"B\")))
+  (single-child-scroll-view :scroll-direction :horizontal child)
+  ```
+
+  Options: `:scroll-direction`, `:reverse`, `:controller`, `:primary`, `:physics`,
+  `:padding`, `:clip`, `:keyboard-dismiss-behavior` (`:manual`/`:on-drag`),
+  `:drag-start-behavior` (`:start`/`:down`)."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/single-child-scroll-view* args child)))
+
+(defn ^w/Widget scrollable
+  "Low-level scrollable widget. Prefer `list-view`, `grid-view`, or `single-child-scroll-view`
+  unless you need direct viewport control.
+
+  `:view-builder` is `(fn [context offset] widget)` — builds the viewport given a scroll offset.
+
+  Options: `:axis-direction` (`:down`/`:up`/`:left`/`:right`), `:controller`, `:physics`,
+  `:drag-start-behavior`, `:clip`."
+  [& {:as args}]
+  (scrl/scrollable* args))
+
+(defn ^w/Widget scrollbar
+  "Wraps a scrollable child with a material scrollbar.
+
+  ```clojure
+  (scrollbar (list-view (text \"A\") (text \"B\")))
+  (scrollbar :thickness 6 :radius 3 (list-view ...))
+  ```
+
+  Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
+  `:thumb-visibility`, `:track-visibility`, `:orientation` (`:left`/`:right`/`:top`/`:bottom`)."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/scrollbar* args child)))
+
+;; ---- Slivers ----
+
+(defn ^w/Widget sliver-list
+  "Sliver that displays children in a list. Use inside `custom-scroll-view`.
+
+  Without `:item-builder` — static children. With `:item-builder` — lazy builder.
+
+  ```clojure
+  (sliver-list (text \"A\") (text \"B\"))
+  (sliver-list :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  ```"
+  [& args]
+  (let [[args children] (ut/key-values-args-and-children args)]
+    (scrl/sliver-list* args children)))
+
+(defn ^w/Widget sliver-grid
+  "Sliver that displays children in a grid. Use inside `custom-scroll-view`.
+
+  Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+
+  ```clojure
+  (sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
+  (sliver-grid :cross-axis-count 3 :item-count 100 :item-builder (fn [ctx i] (text (str i))))
+  ```"
+  [& args]
+  (let [[args children] (ut/key-values-args-and-children args)]
+    (scrl/sliver-grid* args children)))
+
+(defn ^w/Widget sliver-to-box-adapter
+  "Wraps a regular (box) widget so it can be used inside `custom-scroll-view`."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/sliver-to-box-adapter* args child)))
+
+(defn ^w/Widget sliver-padding
+  "Adds padding around a sliver. Use inside `custom-scroll-view`.
+
+  ```clojure
+  (sliver-padding 16 (sliver-list ...))
+  (sliver-padding {:left 8 :right 8} (sliver-list ...))
+  ```"
+  [padding sliver]
+  (scrl/sliver-padding* {:padding padding} sliver))
+
+(defn ^w/Widget sliver-fill-remaining
+  "Sliver that fills the remaining space in the viewport. Use inside `custom-scroll-view`.
+
+  Options: `:has-scroll-body` (default true), `:fill-overscroll`."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/sliver-fill-remaining* args child)))
+
+(defn ^w/Widget sliver-app-bar
+  "Material sliver app bar for use inside `custom-scroll-view`.
+
+  ```clojure
+  (sliver-app-bar :title (text \"Title\") :floating true :snap true)
+  (sliver-app-bar :title (text \"Title\") :pinned true :expanded-height 200
+                  :flexible-space (m/FlexibleSpaceBar .background image))
+  ```
+
+  Options: `:title`, `:leading`, `:actions`, `:flexible-space`, `:floating`, `:pinned`,
+  `:snap`, `:stretch`, `:expanded-height`, `:collapsed-height`, `:background-color`,
+  `:foreground-color`, `:elevation`, `:toolbar-height`, `:center-title`, `:bottom`."
+  [& {:as args}]
+  (scrl/sliver-app-bar* args))
