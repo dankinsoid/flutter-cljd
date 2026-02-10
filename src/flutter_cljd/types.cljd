@@ -919,18 +919,22 @@
                                    (.-dx b) (.-dy b) (.-dx e) (.-dy e)))
         ;; Radial
         1 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
-                r (* radius-val (.-shortestSide rect))]
+                side (.-shortestSide rect)
+                r (* radius-val side)
+                sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 1 tm-id colors stops
-                                   (.-dx c) (.-dy c) r 0.0))
+                                   (.-dx c) (.-dy c) r sr))
         ;; Sweep
         2 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)]
             (set-gradient-uniforms! shader rect 2 tm-id colors stops
                                    (.-dx c) (.-dy c) start-angle end-angle))
         ;; Diamond
         3 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
-                r (* radius-val (.-shortestSide rect))]
+                side (.-shortestSide rect)
+                r (* radius-val side)
+                sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 3 tm-id colors stops
-                                   (.-dx c) (.-dy c) r 0.0)))))
+                                   (.-dx c) (.-dy c) r sr)))))
 
   (scale [this ^double factor]
     (->oklab-gradient
@@ -1031,7 +1035,8 @@
    `:shape :diamond` requires `(shader/load-shaders!)`; falls back to circular radial.
 
    - `:center` (alignment, default: :center)
-   - `:radius` (number, default: 0.5)
+   - `:radius` (number, default: 0.5) — outer edge, fraction of shortestSide
+   - `:start-radius` (number, default: 0) — inner edge for ring gradients (OKLab only)
    - `:shape` (keyword, default: :circle): `:circle` or `:diamond` (Manhattan distance)
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
@@ -1050,10 +1055,11 @@
             tm (:tile-mode args :clamp)
             center (alignment-geometry (:center args m/Alignment.center))
             r (double (:radius args 0.5))
+            sr (double (:start-radius args 0))
             gtype (if (= (:shape args) :diamond) 3 1)]
         (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops gtype (tile-mode-id tm)
-                           nil nil center r 0.0 0.0)
+                           nil nil center r sr 0.0)
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16))]
             (m/RadialGradient

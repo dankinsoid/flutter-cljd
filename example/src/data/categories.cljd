@@ -17,7 +17,7 @@
     :description "OKLab and mesh gradient shaders"
     :color 0xFFFF6F00
     :widgets [:linear-gradient-oklab :linear-gradient-srgb :radial-gradient
-              :diamond-gradient :sweep-gradient :mesh-gradient :multi-stop-gradient]}
+              :diamond-gradient :ring-gradient :sweep-gradient :mesh-gradient :multi-stop-gradient]}
 
    {:id :styling
     :name "Styling"

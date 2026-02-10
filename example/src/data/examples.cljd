@@ -104,6 +104,16 @@
         :border-radius 12}
        (f/sized {:w 200 :h 300})))
 
+   :ring-gradient
+   (mk-example "Ring" "Radial ring gradient with start-radius"
+     (f/decorated
+       {:gradient {:type :radial
+                   :colors [:cyan :purple :orange]
+                   :radius 0.7
+                   :start-radius 0.2}
+        :border-radius 12}
+       (f/sized {:w 200 :h 200})))
+
    :sweep-gradient
    (mk-example "Sweep" "Angular sweep gradient in OKLab"
      (f/decorated

@@ -24,18 +24,17 @@ uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: R
 
 out vec4 fragColor;
 
-// --- sRGB <-> Linear ---
+// --- Fast sRGB <-> Linear (polynomial / sqrt-chain approximation) ---
 
 float srgbToLinear(float c) {
-    return c > 0.04045
-        ? pow((c + 0.055) / 1.055, 2.4)
-        : c / 12.92;
+    return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878);
 }
 
 float linearToSrgb(float c) {
-    return c > 0.0031308
-        ? 1.055 * pow(c, 1.0 / 2.4) - 0.055
-        : 12.92 * c;
+    float s1 = sqrt(max(c, 0.0));
+    float s2 = sqrt(s1);
+    float s3 = sqrt(s2);
+    return 0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3;
 }
 
 vec3 srgbToLinearV(vec3 c) {
@@ -46,12 +45,19 @@ vec3 linearToSrgbV(vec3 c) {
     return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
 }
 
+// --- Fast cube root (Newton from sqrt, 1 iteration) ---
+
+float fastCbrt(float x) {
+    float y = sqrt(x + 1e-10);
+    return (2.0 * y + x / (y * y)) / 3.0;
+}
+
 // --- Linear RGB <-> OKLab ---
 
 vec3 linearToOklab(vec3 rgb) {
-    float l = pow(max(0.4122214708 * rgb.r + 0.5363325363 * rgb.g + 0.0514459929 * rgb.b, 0.0), 1.0 / 3.0);
-    float m = pow(max(0.2119034982 * rgb.r + 0.6806995451 * rgb.g + 0.1073969566 * rgb.b, 0.0), 1.0 / 3.0);
-    float s = pow(max(0.0883024619 * rgb.r + 0.2817188376 * rgb.g + 0.6299787005 * rgb.b, 0.0), 1.0 / 3.0);
+    float l = fastCbrt(max(0.4122214708 * rgb.r + 0.5363325363 * rgb.g + 0.0514459929 * rgb.b, 0.0));
+    float m = fastCbrt(max(0.2119034982 * rgb.r + 0.6806995451 * rgb.g + 0.1073969566 * rgb.b, 0.0));
+    float s = fastCbrt(max(0.0883024619 * rgb.r + 0.2817188376 * rgb.g + 0.6299787005 * rgb.b, 0.0));
     return vec3(
         0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
         1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
