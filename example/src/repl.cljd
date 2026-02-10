@@ -1,0 +1,54 @@
+(ns repl
+  (:require
+   [flutter-cljd.widgets :as ui]
+   [flutter-cljd.shader :as shader]
+   [cljd.flutter :as f]
+   ["package:flutter/cupertino.dart" :as c]))
+
+;; ====== PREVIEWS — edit & hot reload ======
+
+(defn gradient-preview []
+  (->> (ui/column 
+        :cross-axis-alignment :stretch 
+        (->> (ui/decorated :gradient {:type :linear
+                                      :colors [:red :blue]
+                                      :begin :left
+                                      :end :right})
+             (ui/expanded))
+        (->> (ui/decorated :gradient {:type :linear
+                                      :colors [:red :blue]
+                                      :begin :left
+                                      :end :right
+                                      :color-space :srgb})
+             (ui/expanded)))
+       (ui/decorated :border-radius 12)
+       (ui/sized {:w 280 :h 200})))
+
+(defn mesh-preview []
+  (ui/decorated
+   {:gradient {:type :mesh
+               :width 3 :height 3
+               :colors [:red :green :blue
+                        :yellow :purple :orange
+                        :cyan :pink :white]}
+    :border-radius 12}
+   (ui/sized {:w 300 :h 300})))
+
+;; ==========================================
+
+(def current gradient-preview)
+
+(defn ^:async main []
+  (await (shader/load-oklab-shader!))
+  (await (shader/load-mesh-shader!))
+  (c/runApp
+   (c/CupertinoApp
+    .debugShowCheckedModeBanner false
+    .home
+    (f/widget
+     :watch [_ (atom false) :as $reload]
+     (c/CupertinoPageScaffold
+      .child (ui/center
+              (ui/on-reassemble
+               #(swap! $reload not)
+               (current))))))))

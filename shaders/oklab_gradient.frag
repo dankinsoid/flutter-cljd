@@ -48,11 +48,13 @@ vec3 linearToSrgbV(vec3 c) {
     return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
 }
 
-// --- Fast cube root (Newton from sqrt, 1 iteration) ---
+// --- Fast cube root (Newton from sqrt, 2 iterations) ---
 
 float fastCbrt(float x) {
     float y = sqrt(x + 1e-10);
-    return (2.0 * y + x / (y * y)) / 3.0;
+    y = (2.0 * y + x / (y * y)) / 3.0;
+    y = (2.0 * y + x / (y * y)) / 3.0;
+    return y;
 }
 
 // --- Linear RGB <-> OKLab ---

@@ -5,4 +5,4 @@
         flutter-cljd/flutter-cljd {:local/root ".."}}
  :aliases {:cljd {:main-opts ["-m" "cljd.build"]}}
  :cljd/opts {:kind :flutter
-             :main main}}
+             :main repl}}
