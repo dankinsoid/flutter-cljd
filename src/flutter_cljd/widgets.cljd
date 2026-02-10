@@ -2038,13 +2038,50 @@
   ([listenable builder & values]
    (lstn/listening* listenable builder values)))
 
-(defn ^w/Widget draggable [& args]
+(defn ^w/Widget draggable
+  "Makes its child draggable via touch/pointer.
+  The last positional arg is the child widget; all preceding kwargs configure behavior.
+
+  Options:
+    :data                    — payload delivered to `drag-target` on drop
+    :feedback                — widget (or (fn [child] widget)) shown under the pointer while dragging;
+                               defaults to the child itself
+    :placeholder             — widget shown in place of the child while dragging
+    :delay                   — Duration or `:default` (long-press) before drag starts
+    :axis                    — `:horizontal` / `:vertical` to constrain drag direction
+    :affinity                — gesture recognizer axis affinity (defaults to :axis)
+    :feedback-offset         — Offset added to feedback position (default `Offset.zero`)
+    :drag-anchor-strategy    — `(fn [draggable context position])` returning anchor Offset
+    :max-simultaneous-drags  — max concurrent drags (nil = unlimited)
+    :on-drag-start           — `(fn [])` called when drag begins
+    :on-drag-update          — `(fn [details])` called on each drag move
+    :on-drag-will-end        — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back;
+                               return an Offset to override the final position
+    :on-drag-end             — `(fn [{:keys [was-accepted velocity offset]}])` called after drag completes
+    :haptic-feedback-on-start — bool, defaults to true when :delay is set
+    :root-overlay            — bool, use root overlay (default false)
+    :hit-test-behavior       — HitTestBehavior (default `:defer-to-child`)
+    :allowed-buttons-filter  — predicate filtering pointer buttons"
+  [& args]
   (let [[args children] (ut/key-values-args-and-children args)]
     (drg/draggable* args (last children))))
 
 (defn ^w/Widget drag-target
+  "Drop zone that receives data from `draggable` widgets.
+
+  `builder` is `(fn [context candidate-data])` — called to build the widget,
+  where `candidate-data` is a seq of `:data` values from draggables currently hovering.
+
+  Options:
+    :on-will-accept   — `(fn [data offset])` return truthy to accept the draggable
+    :on-accept        — `(fn [data offset])` called when an accepted draggable is dropped
+    :on-leave         — `(fn [data])` called when a draggable leaves the target
+    :on-move          — `(fn [data offset])` called on each move while hovering
+    :hit-test-behavior — HitTestBehavior (default `:translucent`)"
   [builder & {:keys [key on-will-accept on-accept on-leave on-move hit-test-behavior] :as args}]
   (drg/drag-target* (assoc args :builder builder)))
 
-(defn ^w/Widget drag-boundary [child]
+(defn ^w/Widget drag-boundary
+  "Constrains draggable movement to stay within this widget's bounds."
+  [child]
   (w/DragBoundary .child child))
