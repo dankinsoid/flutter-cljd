@@ -216,36 +216,60 @@ void main() {
                 ? clamp((ex.x * d.y - ex.y * d.x) / det0, 0.0, 1.0) : 0.5;
 
             // Newton-Raphson on Coons patch
-            // Two attempts: linear guess, then center
+            // Multiple starting points for robustness with non-monotonic grids
             bool accepted = false;
-            for (int attempt = 0; attempt < 2; attempt++) {
-                if (attempt == 1) { u = 0.5; v = 0.5; }
+            float bestDist = 1e6;
+            float bestU = 0.5, bestV = 0.5;
 
-                for (int iter = 0; iter < 8; iter++) {
+            for (int attempt = 0; attempt < 4; attempt++) {
+                if (attempt == 1) { u = 0.5; v = 0.5; }
+                else if (attempt == 2) { u = 0.25; v = 0.25; }
+                else if (attempt == 3) { u = 0.75; v = 0.75; }
+
+                for (int iter = 0; iter < 10; iter++) {
                     vec2 dSdu, dSdv;
                     vec2 S = evalCoons(u, v, row, col, gw, gh, dSdu, dSdv);
                     vec2 err = pos - S;
 
-                    if (dot(err, err) < 1e-10) break;
+                    if (dot(err, err) < 1e-12) break;
 
                     float det = dSdu.x * dSdv.y - dSdu.y * dSdv.x;
-                    if (abs(det) < 1e-10) break;
+                    if (abs(det) < 1e-12) break;
 
-                    u += ( err.x * dSdv.y - err.y * dSdv.x) / det;
-                    v += (-err.x * dSdu.y + err.y * dSdu.x) / det;
+                    float du = ( err.x * dSdv.y - err.y * dSdv.x) / det;
+                    float dv = (-err.x * dSdu.y + err.y * dSdu.x) / det;
+
+                    // Damp large steps to prevent divergence near singular Jacobian
+                    float stepLen = max(abs(du), abs(dv));
+                    if (stepLen > 1.0) { du /= stepLen; dv /= stepLen; }
+
+                    u += du;
+                    v += dv;
                 }
 
-                // Accept if clamped solution maps close to target
                 float cu = clamp(u, 0.0, 1.0);
                 float cv = clamp(v, 0.0, 1.0);
                 vec2 dSdu_c, dSdv_c;
                 vec2 Sc = evalCoons(cu, cv, row, col, gw, gh, dSdu_c, dSdv_c);
-                if (length(pos - Sc) < 0.005) {
-                    u = cu;
-                    v = cv;
+                float dist = length(pos - Sc);
+
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestU = cu;
+                    bestV = cv;
+                }
+
+                if (dist < 0.002) {
+                    u = cu; v = cv;
                     accepted = true;
                     break;
                 }
+            }
+
+            // Fallback: use best solution if reasonably close
+            if (!accepted && bestDist < 0.008) {
+                u = bestU; v = bestV;
+                accepted = true;
             }
 
             if (!accepted) continue;
