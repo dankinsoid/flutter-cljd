@@ -1,0 +1,69 @@
+(ns flutter-cljd.internal.collection.render
+  "Custom RenderSliver + Widget for sliver-collection.
+   Delegates performLayout to the ISliverLayout protocol."
+  (:require
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.internal.collection.layout :as lay]))
+
+;; --- CollectionRenderSliver ---
+
+(declare CollectionSliverWidget)
+
+(deftype CollectionRenderSliver
+  [^r/RenderSliverBoxChildManager childMgr
+   ^:mutable layoutImpl]  ;; ISliverLayout
+  :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
+
+  ;; Use SliverGridParentData for all layouts (grid/wrap need crossAxisOffset)
+  (setupParentData [_this ^r/RenderObject child]
+    (when-not (instance? r/SliverGridParentData (.-parentData child))
+      (.-parentData! child (r/SliverGridParentData)))
+    nil)
+
+  (childCrossAxisPosition [_this ^r/RenderBox child]
+    (let [^r/SliverGridParentData pd (.-parentData child)]
+      (or (.-crossAxisOffset pd) 0.0)))
+
+  (performLayout [this]
+    (lay/perform-layout (.-layoutImpl this) this (.-constraints this))))
+
+;; --- CollectionSliverWidget ---
+
+(deftype CollectionSliverWidget
+  [^w/SliverChildDelegate del
+   ^w/Key? k
+   layoutImpl]  ;; ISliverLayout
+  :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
+
+  (createRenderObject [_this ^w/BuildContext context]
+    (let [^w/SliverMultiBoxAdaptorElement element context]
+      (CollectionRenderSliver element layoutImpl)))
+
+  (updateRenderObject [_this ^w/BuildContext _context render-object]
+    (let [^CollectionRenderSliver rs render-object]
+      (.-layoutImpl! rs layoutImpl))))
+
+;; --- Public Constructor ---
+
+(defn ^w/Widget collection-sliver-widget
+  "Creates a CollectionSliverWidget with the given builder, count, and layout."
+  [item-builder
+   ^int item-count
+   layout-impl
+   opts]
+  (let [^w/Key? key (:key opts)
+        ^bool auto-keep-alive (:auto-keep-alive opts true)
+        ^bool repaint-boundaries (:repaint-boundaries opts true)
+        ^bool semantic-indexes (:semantic-indexes opts true)
+        find-child-index (:find-child-index opts)]
+    (CollectionSliverWidget
+     (w/SliverChildBuilderDelegate
+      item-builder
+      .childCount item-count
+      .findChildIndexCallback find-child-index
+      .addAutomaticKeepAlives auto-keep-alive
+      .addRepaintBoundaries repaint-boundaries
+      .addSemanticIndexes semantic-indexes)
+     key
+     layout-impl)))

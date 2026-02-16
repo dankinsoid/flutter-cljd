@@ -55,6 +55,47 @@
         "panel": "new"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Flutter Run (macOS)",
+      "type": "shell",
+      "command": "clj",
+      "args": [
+        "-M:cljd",
+        "flutter",
+        "-d", "macos",
+        "--enable-impeller"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/example"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "clojure",
+          "pattern": [
+            {
+              "regexp": "^⛔️ (.+) at line: (\\d+), column: (\\d+), file: (.+)$",
+              "message": 1,
+              "line": 2,
+              "column": 3,
+              "file": 4
+            }
+          ],
+          "severity": "error",
+          "fileLocation": ["relative", "${workspaceFolder}/example/src/"],
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": ".",
+            "endsPattern": "^$never$"
+          }
+        }
+      ]
     }
   ]
 }

@@ -1,0 +1,614 @@
+(ns flutter-cljd.internal.collection.layout
+  "Layout protocol and implementations for sliver-collection.
+   Each layout implements the full performLayout algorithm."
+  (:require
+   ["dart:core" :as dc]
+   ["dart:math" :as math]
+   ["package:flutter/rendering.dart" :as r]))
+
+;; --- Layout Protocol ---
+
+(defprotocol ISliverLayout
+  (perform-layout [this render-sliver constraints]))
+
+;; --- Helpers ---
+
+(defn- set-layout-offset!
+  [^r/RenderBox child ^double offset]
+  (let [^r/SliverMultiBoxAdaptorParentData pd (.-parentData child)]
+    (.-layoutOffset! pd offset)))
+
+(defn- set-cross-axis-offset!
+  [^r/RenderBox child ^double offset]
+  (let [^r/SliverGridParentData pd (.-parentData child)]
+    (.-crossAxisOffset! pd offset)))
+
+(defn- ^double main-extent
+  "Main-axis extent of a child's Size for the given constraints axis."
+  [^r/SliverConstraints constraints ^r/RenderBox child]
+  (if (= r/Axis.vertical (.-axis constraints))
+    (.-height (.-size child))
+    (.-width (.-size child))))
+
+(defn- ^double cross-extent-of
+  "Cross-axis extent of a child's Size for the given constraints axis."
+  [^r/SliverConstraints constraints ^r/RenderBox child]
+  (if (= r/Axis.vertical (.-axis constraints))
+    (.-width (.-size child))
+    (.-height (.-size child))))
+
+(def ^:private ^double precision-error-tolerance 1e-10)
+
+(declare perform-list-layout advance-child perform-wrap-layout finalize-wrap)
+
+;; ============================================================
+;; ListLayout — follows RenderSliverList algorithm (dead reckoning)
+;; ============================================================
+
+(deftype ListLayout [^double? item-extent]
+
+  ISliverLayout
+
+  (perform-layout [_this ^r/RenderSliverMultiBoxAdaptor sliver ^r/SliverConstraints constraints]
+    (let [^r/RenderSliverBoxChildManager child-mgr (.-childManager sliver)
+          _ (.didStartLayout child-mgr)
+          _ (.setDidUnderflow child-mgr false)
+
+          ^double scroll-offset (+ (.-scrollOffset constraints) (.-cacheOrigin constraints))
+          ^double remaining-extent (.-remainingCacheExtent constraints)
+          ^double target-end (+ scroll-offset remaining-extent)
+          ^r/BoxConstraints child-constraints
+          (if item-extent
+            (.asBoxConstraints constraints .minExtent item-extent .maxExtent item-extent)
+            (.asBoxConstraints constraints))]
+
+      ;; Ensure at least one child
+      (if (nil? (.-firstChild sliver))
+        (if-not (.addInitialChild sliver)
+          (do (.-geometry! sliver r/SliverGeometry.zero)
+              (.didFinishLayout child-mgr)
+              nil)
+          ;; Have first child — continue layout
+          (perform-list-layout sliver child-mgr constraints
+                              scroll-offset target-end child-constraints item-extent))
+        ;; Already have children
+        (do
+          ;; Handle null layout offsets (from reordering)
+          (when (nil? (.childScrollOffset sliver (.-firstChild sliver)))
+            (let [leading-null (loop [child (.-firstChild sliver) n 0]
+                                 (if (and child (nil? (.childScrollOffset sliver child)))
+                                   (recur (.childAfter sliver child) (inc n))
+                                   n))]
+              (.collectGarbage sliver leading-null 0)
+              (when (nil? (.-firstChild sliver))
+                (when-not (.addInitialChild sliver)
+                  (.-geometry! sliver r/SliverGeometry.zero)
+                  (.didFinishLayout child-mgr)))))
+          (when (.-firstChild sliver)
+            (perform-list-layout sliver child-mgr constraints
+                                scroll-offset target-end child-constraints item-extent)))))))
+
+(defn- perform-list-layout
+  "Core list layout: dead reckoning with scroll offset correction."
+  [^r/RenderSliverMultiBoxAdaptor sliver
+   ^r/RenderSliverBoxChildManager child-mgr
+   ^r/SliverConstraints constraints
+   ^double scroll-offset ^double target-end
+   ^r/BoxConstraints child-constraints ^double? item-extent]
+
+  ;; Step 1: Walk back to find child at/before scroll offset
+  (let [correction
+        (loop []
+          (let [^double earliest-offset (.childScrollOffset sliver (.-firstChild sliver))]
+            (if (> earliest-offset scroll-offset)
+              (let [new-child (.insertAndLayoutLeadingChild sliver child-constraints
+                                .parentUsesSize true)]
+                (if (nil? new-child)
+                  ;; No more children before — correct to 0
+                  (do (set-layout-offset! (.-firstChild sliver) 0.0)
+                      (if (zero? scroll-offset)
+                        (do (.layout (.-firstChild sliver) child-constraints
+                                     .parentUsesSize true)
+                            nil)
+                        ;; Need scroll offset correction
+                        (- scroll-offset)))
+                  ;; Laid out a leading child
+                  (let [^double first-child-offset
+                        (- earliest-offset (.paintExtentOf sliver (.-firstChild sliver)))]
+                    (if (< first-child-offset (- precision-error-tolerance))
+                      ;; Inconsistency — correct
+                      (do (set-layout-offset! (.-firstChild sliver) 0.0)
+                          first-child-offset)
+                      (do (set-layout-offset! (.-firstChild sliver) first-child-offset)
+                          (recur))))))
+              nil)))]
+
+    (if (some? correction)
+      ;; Return scroll offset correction
+      (do (.-geometry! sliver (r/SliverGeometry .scrollOffsetCorrection (- (double correction))))
+          (.didFinishLayout child-mgr))
+
+      ;; Step 2: Ensure at beginning if scroll offset ≈ 0
+      (let [correction-2
+            (when (< scroll-offset precision-error-tolerance)
+              (loop []
+                (when (pos? (.indexOf sliver (.-firstChild sliver)))
+                  (let [^double earliest-offset (.childScrollOffset sliver (.-firstChild sliver))
+                        _new-child (.insertAndLayoutLeadingChild sliver child-constraints
+                                     .parentUsesSize true)]
+                    (set-layout-offset! (.-firstChild sliver) 0.0)
+                    (let [^double first-child-offset
+                          (- earliest-offset (.paintExtentOf sliver (.-firstChild sliver)))]
+                      (if (< first-child-offset (- precision-error-tolerance))
+                        first-child-offset
+                        (recur)))))))]
+
+        (if (some? correction-2)
+          (do (.-geometry! sliver (r/SliverGeometry .scrollOffsetCorrection (- (double correction-2))))
+              (.didFinishLayout child-mgr))
+
+          ;; Step 3: Ensure first child is laid out
+          (do
+            ;; Always layout first child — addInitialChild sets layoutOffset=0
+            ;; but does NOT call layout, so child.hasSize can be false
+            (when-not (.-hasSize ^r/RenderBox (.-firstChild sliver))
+              (.layout (.-firstChild sliver) child-constraints .parentUsesSize true))
+
+            ;; Step 4: Walk forward through children
+            (let [[^int leading-garbage ^int trailing-garbage
+                   ^double end-scroll-offset ^bool reached-end]
+                  (loop [child (.-firstChild sliver)
+                         ^int idx (.indexOf sliver (.-firstChild sliver))
+                         ^double end-offset (+ (double (.childScrollOffset sliver (.-firstChild sliver)))
+                                               (.paintExtentOf sliver (.-firstChild sliver)))
+                         ^int leading 0]
+                    ;; Phase 1: Skip children before scroll offset (leading garbage)
+                    (if (< end-offset scroll-offset)
+                      (let [result (advance-child sliver child
+                                                  child-constraints (inc idx))]
+                        (if (nil? result)
+                          ;; Ran out of children
+                          (do (.collectGarbage sliver (max 0 (dec (inc leading))) 0)
+                              (let [^double ext (+ (double (.childScrollOffset sliver (.-lastChild sliver)))
+                                                   (.paintExtentOf sliver (.-lastChild sliver)))]
+                                [0 0 ext true]))
+                          (let [[next-child _] result
+                                ^double next-end (+ (double (.childScrollOffset sliver next-child))
+                                                    (.paintExtentOf sliver next-child))]
+                            (recur next-child (inc idx) next-end (inc leading)))))
+                      ;; Phase 2: Fill viewport + cache
+                      (loop [child child
+                             ^int idx idx
+                             ^double end-offset end-offset]
+                        (if (< end-offset target-end)
+                          (let [result (advance-child sliver child
+                                                      child-constraints (inc idx))]
+                            (if (nil? result)
+                              [leading 0 end-offset true]
+                              (let [[next-child _] result
+                                    ^double next-end (+ (double (.childScrollOffset sliver next-child))
+                                                        (.paintExtentOf sliver next-child))]
+                                (recur next-child (inc idx) next-end))))
+                          ;; Count trailing garbage
+                          (let [^int trailing
+                                (loop [c (.childAfter sliver child) n 0]
+                                  (if c (recur (.childAfter sliver c) (inc n)) n))]
+                            [leading trailing end-offset false])))))]
+
+              ;; Step 5: Collect garbage
+              (.collectGarbage sliver leading-garbage trailing-garbage)
+
+              ;; Step 6: Compute geometry
+              (let [^double estimated-max
+                    (if reached-end
+                      end-scroll-offset
+                      (if item-extent
+                        (* item-extent (double (.-childCount child-mgr)))
+                        (.estimateMaxScrollOffset child-mgr constraints
+                          .firstIndex (.indexOf sliver (.-firstChild sliver))
+                          .lastIndex (.indexOf sliver (.-lastChild sliver))
+                          .leadingScrollOffset (.childScrollOffset sliver (.-firstChild sliver))
+                          .trailingScrollOffset end-scroll-offset)))
+                    ^double paint-extent
+                    (.calculatePaintOffset sliver constraints
+                      .from (double (.childScrollOffset sliver (.-firstChild sliver)))
+                      .to end-scroll-offset)
+                    ^double cache-extent
+                    (.calculateCacheOffset sliver constraints
+                      .from (double (.childScrollOffset sliver (.-firstChild sliver)))
+                      .to end-scroll-offset)
+                    ^double target-end-paint
+                    (+ (.-scrollOffset constraints) (.-remainingPaintExtent constraints))]
+
+                (.-geometry! sliver
+                  (r/SliverGeometry
+                   .scrollExtent estimated-max
+                   .paintExtent paint-extent
+                   .cacheExtent cache-extent
+                   .maxPaintExtent estimated-max
+                   .hasVisualOverflow (or (> end-scroll-offset target-end-paint)
+                                         (pos? (.-scrollOffset constraints)))))
+                (when (= estimated-max end-scroll-offset)
+                  (.setDidUnderflow child-mgr true))
+                (.didFinishLayout child-mgr)))))))))
+
+(defn- advance-child
+  "Advances to the next child, creating if necessary.
+   Always checks index and calls layout (required for findChildIndexCallback remap).
+   Returns [child trailing-child] or nil."
+  [^r/RenderSliverMultiBoxAdaptor sliver
+   ^r/RenderBox current-child
+   ^r/BoxConstraints child-constraints ^int next-index]
+  (let [next-child (.childAfter sliver current-child)
+        ^double end-offset (+ (double (.childScrollOffset sliver current-child))
+                              (.paintExtentOf sliver current-child))]
+    (if (nil? next-child)
+      ;; No more in linked list — try to create
+      (let [child (.insertAndLayoutChild sliver child-constraints
+                    .after current-child .parentUsesSize true)]
+        (when child
+          (set-layout-offset! child end-offset)
+          [child child]))
+      ;; Next child exists — check index
+      (if (= (.indexOf sliver next-child) next-index)
+        ;; Correct index — re-layout in place
+        (do (.layout next-child child-constraints .parentUsesSize true)
+            (set-layout-offset! next-child end-offset)
+            [next-child next-child])
+        ;; Wrong index (remap shifted it) — insert new child
+        (let [child (.insertAndLayoutChild sliver child-constraints
+                      .after current-child .parentUsesSize true)]
+          (when child
+            (set-layout-offset! child end-offset)
+            [child child]))))))
+
+;; ============================================================
+;; GridLayout — follows RenderSliverGrid algorithm (index-based)
+;; ============================================================
+
+(deftype GridLayout [^r/SliverGridDelegate delegate
+                     ^:mutable ^r/SliverGridLayout? cachedLayout]
+
+  ISliverLayout
+
+  (perform-layout [this ^r/RenderSliverMultiBoxAdaptor sliver ^r/SliverConstraints constraints]
+    (let [^r/RenderSliverBoxChildManager child-mgr (.-childManager sliver)
+          _ (.didStartLayout child-mgr)
+          _ (.setDidUnderflow child-mgr false)
+
+          ^double scroll-offset (+ (.-scrollOffset constraints) (.-cacheOrigin constraints))
+          ^double remaining-extent (.-remainingCacheExtent constraints)
+          ^double target-end (+ scroll-offset remaining-extent)
+
+          ^r/SliverGridLayout grid-layout (.getLayout delegate constraints)
+          _ (.-cachedLayout! this grid-layout)
+
+          ^int first-index (.getMinChildIndexForScrollOffset grid-layout scroll-offset)
+          target-last-index (when (.-isFinite target-end)
+                              (.getMaxChildIndexForScrollOffset grid-layout target-end))]
+
+      ;; Garbage collect outside visible range
+      (if (.-firstChild sliver)
+        (let [leading (.calculateLeadingGarbage sliver .firstIndex first-index)
+              trailing (if target-last-index
+                         (.calculateTrailingGarbage sliver .lastIndex target-last-index)
+                         0)]
+          (.collectGarbage sliver leading trailing))
+        (.collectGarbage sliver 0 0))
+
+      (let [^r/SliverGridGeometry first-geom (.getGeometryForChildIndex grid-layout first-index)]
+        ;; Ensure first child exists
+        (if (nil? (.-firstChild sliver))
+          (when-not (.addInitialChild sliver
+                      .index first-index
+                      .layoutOffset (.-scrollOffset first-geom))
+            (let [^double max-ext (.computeMaxScrollOffset grid-layout (.-childCount child-mgr))]
+              (.-geometry! sliver (r/SliverGeometry .scrollExtent max-ext .maxPaintExtent max-ext))
+              (.didFinishLayout child-mgr)
+              nil))
+          true)
+
+        (when (.-firstChild sliver)
+          (let [^double leading-scroll-offset (.-scrollOffset first-geom)]
+            ;; Layout leading children (before first-index)
+            (let [trailing-child-with-layout
+                  (loop [^int idx (dec (.indexOf sliver (.-firstChild sliver)))
+                         ^double trailing-offset (.-trailingScrollOffset first-geom)
+                         trailing-child nil]
+                    (if (>= idx first-index)
+                      (let [^r/SliverGridGeometry geom (.getGeometryForChildIndex grid-layout idx)
+                            ^r/BoxConstraints box-c (.getBoxConstraints geom constraints)
+                            ^r/RenderBox child (.insertAndLayoutLeadingChild sliver box-c)]
+                        (set-layout-offset! child (.-scrollOffset geom))
+                        (set-cross-axis-offset! child (.-crossAxisOffset geom))
+                        (recur (dec idx)
+                               (double (math/max trailing-offset (.-trailingScrollOffset geom)))
+                               (or trailing-child child)))
+                      trailing-child))
+
+                  ;; If no leading children were created, lay out first child
+                  trailing-child-with-layout
+                  (or trailing-child-with-layout
+                      (do (.layout (.-firstChild sliver)
+                                   (.getBoxConstraints first-geom constraints))
+                          (set-layout-offset! (.-firstChild sliver) (.-scrollOffset first-geom))
+                          (set-cross-axis-offset! (.-firstChild sliver) (.-crossAxisOffset first-geom))
+                          (.-firstChild sliver)))]
+
+              ;; Layout trailing children
+              (let [[^double trailing-scroll-offset ^bool reached-end]
+                    (loop [^int idx (inc (.indexOf sliver trailing-child-with-layout))
+                           ^double trailing-offset (.-trailingScrollOffset first-geom)
+                           prev trailing-child-with-layout]
+                      (if (or (nil? target-last-index) (<= idx target-last-index))
+                        (let [^r/SliverGridGeometry geom (.getGeometryForChildIndex grid-layout idx)
+                              ^r/BoxConstraints box-c (.getBoxConstraints geom constraints)
+                              existing (.childAfter sliver prev)
+                              child (if (and existing (= (.indexOf sliver existing) idx))
+                                      (do (.layout existing box-c)
+                                          existing)
+                                      (.insertAndLayoutChild sliver box-c .after prev))]
+                          (if (nil? child)
+                            [trailing-offset true]
+                            (do (set-layout-offset! child (.-scrollOffset geom))
+                                (set-cross-axis-offset! child (.-crossAxisOffset geom))
+                                (recur (inc idx)
+                                       (double (math/max trailing-offset (.-trailingScrollOffset geom)))
+                                       child))))
+                        [trailing-offset false]))]
+
+                ;; Compute geometry
+                (let [^int last-index (.indexOf sliver (.-lastChild sliver))
+                      ^double estimated-total
+                      (if reached-end
+                        trailing-scroll-offset
+                        (.estimateMaxScrollOffset child-mgr constraints
+                          .firstIndex first-index
+                          .lastIndex last-index
+                          .leadingScrollOffset leading-scroll-offset
+                          .trailingScrollOffset trailing-scroll-offset))
+                      ^double paint-extent
+                      (.calculatePaintOffset sliver constraints
+                        .from (double (math/min (.-scrollOffset constraints) leading-scroll-offset))
+                        .to trailing-scroll-offset)
+                      ^double cache-extent
+                      (.calculateCacheOffset sliver constraints
+                        .from leading-scroll-offset
+                        .to trailing-scroll-offset)]
+
+                  (.-geometry! sliver
+                    (r/SliverGeometry
+                     .scrollExtent estimated-total
+                     .paintExtent paint-extent
+                     .maxPaintExtent estimated-total
+                     .cacheExtent cache-extent
+                     .hasVisualOverflow (or (> estimated-total paint-extent)
+                                           (pos? (.-scrollOffset constraints))
+                                           (not (zero? (.-overlap constraints))))))
+                  (when (= estimated-total trailing-scroll-offset)
+                    (.setDidUnderflow child-mgr true))
+                  (.didFinishLayout child-mgr))))))))))
+
+;; ============================================================
+;; WrapLayout — self-sizing flow layout
+;; ============================================================
+
+(deftype WrapLayout [^double spacing
+                     ^double runSpacing
+                     ^:mutable rowsCache]  ;; [{:start :end :height :offset :x-end} ...]
+
+  ISliverLayout
+
+  (perform-layout [this ^r/RenderSliverMultiBoxAdaptor sliver ^r/SliverConstraints constraints]
+    (let [^r/RenderSliverBoxChildManager child-mgr (.-childManager sliver)
+          _ (.didStartLayout child-mgr)
+          _ (.setDidUnderflow child-mgr false)
+
+          ^double scroll-offset (+ (.-scrollOffset constraints) (.-cacheOrigin constraints))
+          ^double remaining-extent (.-remainingCacheExtent constraints)
+          ^double target-end (+ scroll-offset remaining-extent)
+          ^double cross-extent (.-crossAxisExtent constraints)
+
+          ;; Loose constraints — children self-size (cross-axis bounded, main-axis unbounded)
+          ^r/BoxConstraints child-constraints
+          (if (= r/Axis.vertical (.-axis constraints))
+            (r/BoxConstraints .minWidth 0.0 .maxWidth cross-extent
+                              .minHeight 0.0 .maxHeight dc/double.infinity)
+            (r/BoxConstraints .minWidth 0.0 .maxWidth dc/double.infinity
+                              .minHeight 0.0 .maxHeight cross-extent))]
+
+      ;; Reset row cache for this pass
+      (.-rowsCache! this [])
+
+      ;; Ensure first child
+      (if (nil? (.-firstChild sliver))
+        (if-not (.addInitialChild sliver)
+          (do (.-geometry! sliver r/SliverGeometry.zero)
+              (.didFinishLayout child-mgr)
+              nil)
+          (perform-wrap-layout sliver child-mgr constraints
+                              scroll-offset target-end child-constraints
+                              cross-extent this))
+        (do
+          ;; Clear any children with null offsets
+          (when (nil? (.childScrollOffset sliver (.-firstChild sliver)))
+            (let [n (loop [c (.-firstChild sliver) n 0]
+                      (if (and c (nil? (.childScrollOffset sliver c)))
+                        (recur (.childAfter sliver c) (inc n)) n))]
+              (.collectGarbage sliver n 0)
+              (when (nil? (.-firstChild sliver))
+                (.addInitialChild sliver))))
+          (when (.-firstChild sliver)
+            (perform-wrap-layout sliver child-mgr constraints
+                                scroll-offset target-end child-constraints
+                                cross-extent this)))))))
+
+(defn- perform-wrap-layout
+  "Sequential layout for wrap: measure each child, pack into rows."
+  [^r/RenderSliverMultiBoxAdaptor sliver
+   ^r/RenderSliverBoxChildManager child-mgr
+   ^r/SliverConstraints constraints
+   ^double scroll-offset ^double target-end
+   ^r/BoxConstraints child-constraints
+   ^double cross-extent
+   ^WrapLayout wrap]
+
+  ;; Layout first child
+  (.layout (.-firstChild sliver) child-constraints .parentUsesSize true)
+  (set-layout-offset! (.-firstChild sliver) 0.0)
+  (set-cross-axis-offset! (.-firstChild sliver) 0.0)
+
+  ;; Track row state
+  (let [first-child (.-firstChild sliver)
+        ^double first-w (cross-extent-of constraints first-child)
+        ^double first-h (main-extent constraints first-child)
+        initial-row {:start 0 :end 1 :height first-h :offset 0.0 :x-end first-w}]
+    (.-rowsCache! wrap [initial-row])
+
+    ;; Walk forward
+    (loop [prev first-child
+           ^int idx 0
+           ^double end-offset first-h
+           ^int leading-garbage 0
+           row-state initial-row
+           rows [initial-row]
+           ^bool found-visible (>= end-offset scroll-offset)]
+
+      (if (< end-offset target-end)
+        ;; Try to advance
+        (let [next-idx (inc idx)
+              existing (.childAfter sliver prev)
+              child (if (and existing (= (.indexOf sliver existing) next-idx))
+                      (do (.layout existing child-constraints .parentUsesSize true)
+                          existing)
+                      (.insertAndLayoutChild sliver child-constraints
+                        .after prev .parentUsesSize true))]
+          (if (nil? child)
+            ;; No more children — finalize
+            (finalize-wrap sliver child-mgr constraints scroll-offset
+                          leading-garbage end-offset true wrap)
+            ;; Position this child in wrap flow
+            (let [^double sp (.-spacing wrap)
+                  ^double rsp (.-runSpacing wrap)
+                  ^double cw (cross-extent-of constraints child)
+                  ^double ch (main-extent constraints child)
+                  ^double row-x (:x-end row-state)
+                  ^double needed (+ row-x sp cw)
+                  fits (<= needed cross-extent)
+                  [^double cx ^double cy new-row new-rows]
+                  (if fits
+                    ;; Same row
+                    (let [x (+ row-x sp)
+                          new-h (double (math/max (:height row-state) ch))
+                          updated (assoc row-state :end (inc next-idx) :height new-h
+                                         :x-end (+ x cw))]
+                      [x (:offset row-state) updated
+                       (conj (pop rows) updated)])
+                    ;; New row
+                    (let [row-end (+ (:offset row-state) (:height row-state) rsp)
+                          new-r {:start next-idx :end (inc next-idx)
+                                 :height ch :offset row-end :x-end cw}]
+                      [0.0 row-end new-r (conj rows new-r)]))
+                  ^double new-end (+ (:offset (peek new-rows)) (:height (peek new-rows)))]
+              (set-layout-offset! child cy)
+              (set-cross-axis-offset! child cx)
+              (.-rowsCache! wrap new-rows)
+              (let [new-leading (if (and (not found-visible) (< new-end scroll-offset))
+                                  (inc leading-garbage) leading-garbage)
+                    new-found (or found-visible (>= new-end scroll-offset))]
+                (recur child next-idx new-end new-leading new-row new-rows new-found)))))
+
+        ;; Filled viewport — count trailing garbage
+        (let [^int trailing (loop [c (.childAfter sliver prev) n 0]
+                              (if c (recur (.childAfter sliver c) (inc n)) n))]
+          (finalize-wrap sliver child-mgr constraints scroll-offset
+                        leading-garbage end-offset (zero? trailing) wrap))))))
+
+(defn- finalize-wrap
+  [^r/RenderSliverMultiBoxAdaptor sliver
+   ^r/RenderSliverBoxChildManager child-mgr
+   ^r/SliverConstraints constraints
+   ^double _scroll-offset
+   ^int leading-garbage ^double end-scroll-offset ^bool reached-end
+   ^WrapLayout wrap]
+
+  ;; Count trailing
+  (let [^int trailing (if reached-end
+                        0
+                        (loop [c (.childAfter sliver (.-lastChild sliver)) n 0]
+                          (if c (recur (.childAfter sliver c) (inc n)) n)))]
+    (.collectGarbage sliver leading-garbage trailing))
+
+  (when (.-firstChild sliver)
+    (let [rows (.-rowsCache wrap)
+          ^int child-count (.-childCount child-mgr)
+          ^int last-idx (.indexOf sliver (.-lastChild sliver))
+          ^double leading-offset (double (.childScrollOffset sliver (.-firstChild sliver)))
+
+          ^double estimated-max
+          (if reached-end
+            end-scroll-offset
+            ;; Estimate from rows
+            (let [laid-out-rows (count rows)
+                  avg-per-row (if (pos? laid-out-rows)
+                                (/ (double (inc last-idx)) (double laid-out-rows)) 1.0)
+                  remaining (- child-count (inc last-idx))
+                  remaining-rows (double (math/max 1.0 (/ (double remaining) avg-per-row)))
+                  avg-height (if (pos? laid-out-rows)
+                               (/ end-scroll-offset (double laid-out-rows)) 50.0)]
+              (+ end-scroll-offset (* remaining-rows avg-height))))
+
+          ^double paint-extent
+          (.calculatePaintOffset sliver constraints
+            .from leading-offset .to end-scroll-offset)
+          ^double cache-extent
+          (.calculateCacheOffset sliver constraints
+            .from leading-offset .to end-scroll-offset)]
+
+      (.-geometry! sliver
+        (r/SliverGeometry
+         .scrollExtent estimated-max
+         .paintExtent paint-extent
+         .maxPaintExtent estimated-max
+         .cacheExtent cache-extent
+         .hasVisualOverflow (or (> estimated-max paint-extent)
+                               (pos? (.-scrollOffset constraints)))))
+      (when (= estimated-max end-scroll-offset)
+        (.setDidUnderflow child-mgr true))
+      (.didFinishLayout child-mgr))))
+
+;; --- Factory ---
+
+(defn resolve-layout
+  "Resolves layout keyword/value + opts into an ISliverLayout instance."
+  [layout opts]
+  (cond
+    (satisfies? ISliverLayout layout) layout
+
+    (instance? r/SliverGridDelegate layout)
+    (GridLayout layout nil)
+
+    (= :grid layout)
+    (let [delegate (or (:grid-delegate opts)
+                       (if-let [max-extent (:max-cross-axis-extent opts)]
+                         (r/SliverGridDelegateWithMaxCrossAxisExtent
+                          .maxCrossAxisExtent (double max-extent)
+                          .mainAxisSpacing (double (or (:main-axis-spacing opts) 0))
+                          .crossAxisSpacing (double (or (:cross-axis-spacing opts) 0))
+                          .childAspectRatio (double (or (:child-aspect-ratio opts) 1.0))
+                          .mainAxisExtent (some-> (:main-axis-extent opts) double))
+                         (r/SliverGridDelegateWithFixedCrossAxisCount
+                          .crossAxisCount (int (or (:cross-axis-count opts) 2))
+                          .mainAxisSpacing (double (or (:main-axis-spacing opts) 0))
+                          .crossAxisSpacing (double (or (:cross-axis-spacing opts) 0))
+                          .childAspectRatio (double (or (:child-aspect-ratio opts) 1.0))
+                          .mainAxisExtent (some-> (:main-axis-extent opts) double))))]
+      (GridLayout delegate nil))
+
+    (= :wrap layout)
+    (WrapLayout (double (or (:spacing opts) 0))
+                (double (or (:run-spacing opts) 0))
+                [])
+
+    :else
+    (ListLayout (some-> (:item-extent opts) double))))

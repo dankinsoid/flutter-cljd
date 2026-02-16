@@ -1,0 +1,112 @@
+(ns flutter-cljd.internal.collection.diff
+  "LIS-based O(n log n) diff algorithm for collection animations.
+   Computes inserts, removes, and moves between two data snapshots.")
+
+(defn- binary-search
+  "Binary search for the leftmost position in `tails` where
+   `(aget tails pos)` >= `value`. Returns insertion point."
+  ^int [^List tails ^int value ^int len]
+  (loop [^int lo 0
+         ^int hi len]
+    (if (< lo hi)
+      (let [^int mid (bit-shift-right (+ lo hi) 1)]
+        (if (< (nth tails mid) value)
+          (recur (inc mid) hi)
+          (recur lo mid)))
+      lo)))
+
+(defn- lis-indices
+  "Computes the Longest Increasing Subsequence of `arr`.
+   Returns a set of indices in `arr` that form the LIS.
+   O(n log n) via patience sorting with predecessor tracking."
+  [arr]
+  (let [n (count arr)]
+    (if (<= n 1)
+      (set (range n))
+      (let [;; tails[i] = smallest tail value of IS of length i+1
+            tails (vec (repeat n 0))
+            ;; indices[i] = index in arr of tails[i]
+            indices (vec (repeat n 0))
+            ;; predecessors[i] = index of previous element in LIS ending at i
+            predecessors (vec (repeat n -1))
+            [_ indices predecessors ^int lis-len]
+            (reduce
+             (fn [[tails indices predecessors ^int lis-len] ^int i]
+               (let [^int v (nth arr i)
+                     ^int pos (binary-search tails v lis-len)
+                     tails (assoc tails pos v)
+                     indices (assoc indices pos i)
+                     predecessors (if (pos? pos)
+                                    (assoc predecessors i (nth indices (dec pos)))
+                                    predecessors)]
+                 [tails indices predecessors (max lis-len (inc pos))]))
+             [tails indices predecessors 0]
+             (range n))]
+        ;; Backtrack to find LIS elements
+        (loop [^int k (nth indices (dec lis-len))
+               result #{}
+               ^int remaining lis-len]
+          (if (or (neg? k) (zero? remaining))
+            result
+            (recur (nth predecessors k) (conj result k) (dec remaining))))))))
+
+(defn compute-diff
+  "O(n log n) diff between old-data and new-data using key-fn for identity.
+
+   Returns:
+   ```
+   {:inserts [{:key k :new-index i} ...]
+    :removes [{:key k :old-index i :item item} ...]
+    :moves   [{:key k :old-index i :new-index j} ...]
+    :stable  [{:key k :old-index i :new-index j} ...]
+    :key->new-index {key -> int}}
+   ```"
+  [old-data new-data key-fn]
+  (let [old-keys (mapv key-fn old-data)
+        new-keys (mapv key-fn new-data)
+        old-key->idx (into {} (map-indexed (fn [i k] [k i]) old-keys))
+        new-key->idx (into {} (map-indexed (fn [i k] [k i]) new-keys))
+
+        ;; Indices in new-data of items present in both old and new
+        common-new-indices (filterv #(contains? old-key->idx (nth new-keys %))
+                                    (range (count new-keys)))
+        ;; Map to old indices in new-data order (for LIS)
+        old-indices-in-new-order (mapv #(old-key->idx (nth new-keys %))
+                                       common-new-indices)
+
+        ;; LIS: positions in common-new-indices that are "stable"
+        lis-set (lis-indices old-indices-in-new-order)
+
+        ;; Classify common items
+        moves-and-stable
+        (map-indexed
+         (fn [pos ci]
+           (let [new-idx ci
+                 k (nth new-keys new-idx)
+                 old-idx (old-key->idx k)]
+             (if (contains? lis-set pos)
+               {:type :stable :key k :old-index old-idx :new-index new-idx}
+               {:type :move :key k :old-index old-idx :new-index new-idx})))
+         common-new-indices)
+
+        ;; Inserts: in new but not in old
+        inserts (into []
+                      (comp
+                       (remove #(contains? old-key->idx (nth new-keys %)))
+                       (map (fn [i] {:key (nth new-keys i) :new-index i})))
+                      (range (count new-keys)))
+
+        ;; Removes: in old but not in new
+        removes (into []
+                      (comp
+                       (remove #(contains? new-key->idx (nth old-keys %)))
+                       (map (fn [i] {:key (nth old-keys i)
+                                     :old-index i
+                                     :item (nth old-data i)})))
+                      (range (count old-keys)))]
+
+    {:inserts inserts
+     :removes removes
+     :moves (filterv #(= :move (:type %)) moves-and-stable)
+     :stable (filterv #(= :stable (:type %)) moves-and-stable)
+     :key->new-index new-key->idx}))

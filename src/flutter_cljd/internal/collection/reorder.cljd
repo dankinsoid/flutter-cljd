@@ -1,0 +1,40 @@
+(ns flutter-cljd.internal.collection.reorder
+  "Drag-to-reorder integration for sliver-collection.
+   Wraps Flutter's SliverReorderableList."
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+(defn ^w/Widget build-reorderable-sliver
+  "Builds a SliverReorderableList wrapping each child with a drag listener.
+   `item-builder` should return the child widget (will be wrapped).
+   `on-reorder` is (fn [old-index new-index])."
+  [item-builder ^int item-count on-reorder opts]
+  (let [^w/Key? key (:key opts)
+        ^double? item-extent (:item-extent opts)
+        find-child-index (:find-child-index opts)
+        proxy-decorator (:proxy-decorator opts)
+        on-reorder-start (:on-reorder-start opts)
+        on-reorder-end (:on-reorder-end opts)]
+    (w/SliverReorderableList
+     .key key
+     .itemCount item-count
+     .itemExtent item-extent
+     .findChildIndexCallback find-child-index
+     .onReorder (fn [^int old-index ^int new-index]
+                  (on-reorder old-index new-index))
+     .onReorderStart on-reorder-start
+     .onReorderEnd on-reorder-end
+     .proxyDecorator proxy-decorator
+     .itemBuilder (fn [^w/BuildContext ctx ^int index]
+                    (w/ReorderableDragStartListener
+                     .key (w/ValueKey index)
+                     .index index
+                     .child (item-builder ctx index))))))
+
+(defn wrap-child-with-drag-handle
+  "Wraps a child widget with ReorderableDragStartListener at the given index."
+  [^int index ^w/Widget child]
+  (w/ReorderableDragStartListener
+   .index index
+   .child child))

@@ -1,0 +1,221 @@
+(ns flutter-cljd.internal.collection.animation
+  "Per-item animation state machine for sliver-collection.
+   Handles insert/remove/move animations with interruption support."
+  (:require
+   ["dart:core" :as dc]
+   ["package:flutter/animation.dart" :as a]
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+;; --- Animation Config Parsing ---
+
+(def default-duration (dc/Duration .milliseconds 300))
+(def default-curve a/Curves.easeInOut)
+
+(defn parse-anim-config
+  "Parses :animate option into a normalized config map.
+   Input: true | {:duration :curve :insert :remove :move}
+   Output: {:duration Duration :curve Curve :insert {...} :remove {...} :move {...}}"
+  [animate]
+  (if (true? animate)
+    {:duration default-duration
+     :curve default-curve
+     :insert {:duration default-duration :curve default-curve}
+     :remove {:duration default-duration :curve default-curve}
+     :move {:duration default-duration :curve default-curve}}
+    (let [dur (t/duration (or (:duration animate) (:dur animate) 300))
+          crv (t/curve (or (:curve animate) :ease-in-out))
+          parse-sub (fn [sub]
+                      (cond
+                        (nil? sub) {:duration dur :curve crv}
+                        (false? sub) nil
+                        (map? sub) {:duration (t/duration (or (:duration sub) (:dur sub) dur))
+                                    :curve (t/curve (or (:curve sub) crv))
+                                    :builder (:builder sub)}
+                        :else {:duration dur :curve crv}))]
+      {:duration dur
+       :curve crv
+       :insert (parse-sub (:insert animate))
+       :remove (parse-sub (:remove animate))
+       :move (parse-sub (:move animate))})))
+
+;; --- Animation State ---
+;;
+;; Each animating item is tracked in `active-anims` map:
+;; {item-key -> {:type      :insert | :remove | :move
+;;               :controller AnimationController
+;;               :animation  CurvedAnimation
+;;               ;; Move-specific:
+;;               :from-offset Offset (delta to animate from)
+;;               ;; Remove-specific:
+;;               :item       original item data
+;;               :old-index  int
+;;               }}
+
+(defn create-controller
+  "Creates an AnimationController with the given vsync and duration."
+  ^a/AnimationController [vsync ^dc/Duration duration]
+  (a/AnimationController .vsync vsync .duration duration))
+
+(defn create-curved-animation
+  "Creates a CurvedAnimation from controller and curve."
+  ^a/CurvedAnimation [^a/AnimationController controller ^a/Curve curve]
+  (a/CurvedAnimation .parent controller .curve curve))
+
+(defn start-insert-anim
+  "Creates and starts an insert animation. Returns anim-state map."
+  [vsync config on-complete]
+  (when-let [insert-config (:insert config)]
+    (let [^a/AnimationController ctrl (create-controller vsync (:duration insert-config))
+          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve insert-config))]
+      (.addStatusListener ctrl
+        (fn [^a/AnimationStatus status]
+          (when (.-isCompleted status)
+            (on-complete))))
+      (.forward ctrl .from 0.0)
+      {:type :insert :controller ctrl :animation anim})))
+
+(defn start-remove-anim
+  "Creates and starts a remove animation (reverse 1.0->0.0). Returns anim-state map."
+  [vsync config item ^int old-index on-complete]
+  (when-let [remove-config (:remove config)]
+    (let [^a/AnimationController ctrl (create-controller vsync (:duration remove-config))
+          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve remove-config))]
+      (.addStatusListener ctrl
+        (fn [^a/AnimationStatus status]
+          (when (.-isDismissed status)
+            (on-complete))))
+      (.-value! ctrl 1.0)
+      (.reverse ctrl)
+      {:type :remove :controller ctrl :animation anim
+       :item item :old-index old-index})))
+
+(defn start-move-anim
+  "Creates and starts a move animation. The actual from-offset is set
+   after layout in a post-frame callback. Returns anim-state map."
+  [vsync config ^w/Offset from-offset on-complete]
+  (when-let [move-config (:move config)]
+    (let [^a/AnimationController ctrl (create-controller vsync (:duration move-config))
+          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve move-config))]
+      (.addStatusListener ctrl
+        (fn [^a/AnimationStatus status]
+          (when (.-isCompleted status)
+            (on-complete))))
+      (.forward ctrl .from 0.0)
+      {:type :move :controller ctrl :animation anim
+       :from-offset from-offset})))
+
+(defn interrupt-anim
+  "Handles interrupted animation. Returns the current interpolated value
+   that the new animation should start from.
+   For move: returns current offset.
+   For insert/remove: returns current opacity value."
+  [existing-anim]
+  (when existing-anim
+    (let [^a/AnimationController ctrl (:controller existing-anim)
+          ^double value (.-value ctrl)]
+      (case (:type existing-anim)
+        :move (when-let [from (:from-offset existing-anim)]
+                (w/Offset.lerp from w/Offset.zero value))
+        :insert value
+        :remove value
+        nil))))
+
+(defn dispose-anim
+  "Disposes animation controller."
+  [anim-state]
+  (when-let [^a/AnimationController ctrl (:controller anim-state)]
+    (.dispose ^a/CurvedAnimation (:animation anim-state))
+    (.dispose ctrl)))
+
+(defn dispose-all-anims
+  "Disposes all active animations."
+  [active-anims]
+  (doseq [[_ anim] active-anims]
+    (dispose-anim anim)))
+
+;; --- Transition Builders ---
+
+(defn default-insert-transition
+  "Default insert animation: size grow + fade-in."
+  [^a/Animation animation ^w/Widget child]
+  (w/SizeTransition
+   .sizeFactor animation
+   .child (w/FadeTransition
+           .opacity animation
+           .child child)))
+
+(defn default-remove-transition
+  "Default remove animation: fade-out + size collapse."
+  [^a/Animation animation ^w/Widget child]
+  (w/SizeTransition
+   .sizeFactor animation
+   .child (w/FadeTransition
+           .opacity animation
+           .child child)))
+
+(defn wrap-with-insert-transition
+  "Wraps child with insert transition based on config."
+  [config anim-state ^w/Widget child]
+  (let [^a/Animation animation (:animation anim-state)
+        custom-builder (get-in config [:insert :builder])]
+    (if custom-builder
+      (custom-builder child animation)
+      (default-insert-transition animation child))))
+
+(defn wrap-with-remove-transition
+  "Wraps child with remove transition based on config."
+  [config anim-state ^w/Widget child]
+  (let [^a/Animation animation (:animation anim-state)
+        custom-builder (get-in config [:remove :builder])]
+    (if custom-builder
+      (custom-builder child animation)
+      (default-remove-transition animation child))))
+
+(defn wrap-with-move-transition
+  "Wraps child with move transition (Transform.translate animated from delta to zero)."
+  [anim-state ^w/Widget child]
+  (let [^a/Animation animation (:animation anim-state)
+        ^w/Offset from-offset (:from-offset anim-state)]
+    (w/AnimatedBuilder
+     .animation animation
+     .child child
+     .builder (fn [^w/BuildContext _ ^w/Widget? child]
+                (let [^double t (.-value animation)
+                      ^w/Offset offset (w/Offset.lerp from-offset w/Offset.zero t)]
+                  (w/Transform.translate
+                   .offset offset
+                   .child child))))))
+
+;; --- Shadow Data ---
+;;
+;; Shadow-data merges live data + dying items into a single vec.
+;; Each entry: {:type :live, :key k, :data-index i}
+;;          or {:type :dying, :key k, :item item, :controller ctrl, :animation anim}
+;; This is the single source of truth for childCount, builder, and findChildIndexCallback.
+
+(defn build-shadow-data
+  "Merges new-data (live items) with dying items into a unified shadow vec.
+   Dying items are inserted at their old-index positions (clamped).
+   Returns vec of {:type :live/:dying ...} entries."
+  [new-data key-fn dying-items]
+  (let [live (mapv (fn [i item] {:type :live :key (key-fn item) :data-index i})
+                   (range (count new-data)) new-data)]
+    (if (empty? dying-items)
+      live
+      ;; Insert dying items from highest old-index to lowest
+      ;; so earlier insertions don't shift later ones
+      (let [sorted (sort-by :old-index > dying-items)]
+        (reduce
+         (fn [v dying]
+           (let [idx (min (:old-index dying) (count v))]
+             (into (subvec v 0 idx)
+                   (cons (assoc dying :type :dying)
+                         (subvec v idx)))))
+         live
+         sorted)))))
+
+(defn shadow-key->index
+  "Builds {key -> shadow-index} map from shadow-data."
+  [shadow-data]
+  (into {} (map-indexed (fn [i entry] [(:key entry) i]) shadow-data)))
