@@ -3,40 +3,65 @@
    [flutter-cljd.widgets :as ui]
    [flutter-cljd.shader :as shader]
    [cljd.flutter :as f]
+   ["dart:math" :as math]
+   ["dart:ui" :as dart-ui]
    ["package:flutter/cupertino.dart" :as c]))
 
 ;; ====== PREVIEWS — edit & hot reload ======
 
-(defn gradient-preview []
-  (->> (ui/column 
-        :cross-axis-alignment :stretch 
-        (->> (ui/decorated :gradient {:type :linear
-                                      :colors [:red :blue]
-                                      :begin :left
-                                      :end :right})
-             (ui/expanded))
-        (->> (ui/decorated :gradient {:type :linear
-                                      :colors [:red :blue]
-                                      :begin :left
-                                      :end :right
-                                      :color-space :srgb})
-             (ui/expanded)))
-       (ui/decorated :border-radius 12)
-       (ui/sized {:w 280 :h 200})))
+(defn- rand-color ^dart-ui/Color []
+  (let [rng (math/Random)]
+    (dart-ui/Color.fromARGB 255
+      (.nextInt rng 256)
+      (.nextInt rng 256)
+      (.nextInt rng 256))))
 
-(defn mesh-preview []
-  (ui/decorated
-   {:gradient {:type :mesh
-               :width 3 :height 3
-               :colors [:red :green :blue
-                        :yellow :purple :orange
-                        :cyan :pink :white]}
-    :border-radius 12}
-   (ui/sized {:w 300 :h 300})))
+(defn- rand-palette [n]
+  (vec (repeatedly n rand-color)))
+
+(def -palette (atom (rand-palette 3)))
+
+(defn- gradient-strip [colors cs]
+  (ui/row
+   :cross-axis-alignment :center
+   (ui/sized {:w 56}
+             (ui/text (name cs) :style {:family "monospace" :size 13}))
+   (->> (ui/decorated {:gradient {:type :linear
+                                  :colors colors
+                                  :begin :left
+                                  :end :right
+                                  :color-space cs}
+                       :border-radius 8})
+        (ui/sized {:h 52})
+        ui/expanded)))
+
+(defn gradient-comparison []
+  (f/widget
+   :watch [colors -palette]
+   (ui/padding
+    {:horizontal 24 :vertical 32}
+    (ui/column
+     :main-axis-size :min
+     :cross-axis-alignment :stretch
+     (gradient-strip colors :srgb)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklab)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklch)
+     (ui/sized {:h 24})
+     (ui/center
+      (c/CupertinoButton
+       .color (dart-ui/Color 0xFF007AFF)
+       .borderRadius (c/BorderRadius.circular 12.0)
+       .child (c/Text "Random"
+                      .style (c/TextStyle
+                              .color (dart-ui/Color 0xFFFFFFFF)
+                              .fontWeight c/FontWeight.w600))
+       .onPressed #(reset! -palette (rand-palette 3))))))))
 
 ;; ==========================================
 
-(def current gradient-preview)
+(def current gradient-comparison)
 
 (defn ^:async main []
   (await (shader/load-oklab-shader!))

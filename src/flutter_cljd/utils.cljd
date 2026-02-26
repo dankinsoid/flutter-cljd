@@ -300,6 +300,80 @@
        (oklab-lerp begin end))
      end)))
 
+;;; OKLCH color space (OKLab in polar coordinates)
+
+(defn color->oklch
+  "Converts a `Color` to OKLCH. Returns `[L C H alpha]`.
+   L: lightness [0,1], C: chroma [0,~0.4], H: hue [−π, π].
+
+   ```clojure
+   (color->oklch Colors.red) ; => [0.6279… 0.2576… 0.5016… 1.0]
+   ```"
+  [^ui/Color color]
+  (let [[L a b alpha] (color->oklab color)]
+    [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha]))
+
+(defn oklch->color
+  "Converts OKLCH values to a `Color`.
+
+   ```clojure
+   (oklch->color [0.5 0.1 0.0 1.0])
+   (oklch->color 0.5 0.1 0.0)
+   (oklch->color 0.5 0.1 0.0 1.0)
+   ```"
+  ([[L C H alpha]]
+   (oklch->color L C H alpha))
+  ([L C H]
+   (oklch->color L C H 1.0))
+  ([L C H alpha]
+   (let [C (double C)
+         H (double H)]
+     (oklab->color L (* C (math/cos H)) (* C (math/sin H)) alpha))))
+
+(defn- lerp-hue ^double [^double h1 ^double h2 ^double t]
+  (let [diff (- h2 h1)
+        diff (cond
+               (> diff math/pi) (- diff (* 2 math/pi))
+               (< diff (- math/pi)) (+ diff (* 2 math/pi))
+               :else diff)]
+    (+ h1 (* t diff))))
+
+(defn oklch-lerp
+  "Interpolates between two colors in OKLCH color space.
+   Hue is interpolated along the shortest arc.
+
+   ```clojure
+   (oklch-lerp Colors.red Colors.blue 0.5)
+   ((oklch-lerp Colors.red Colors.blue) 0.5) ; curried form for animations
+   ```"
+  ([from to t]
+   ((oklch-lerp from to) (double t)))
+  ([from to]
+   (let [[l1 c1 h1 alpha1] (color->oklch from)
+         [l2 c2 h2 alpha2] (color->oklch to)]
+     (fn [^double t]
+       (oklch->color
+        (+ l1 (* t (- l2 l1)))
+        (+ c1 (* t (- c2 c1)))
+        (lerp-hue h1 h2 t)
+        (+ alpha1 (* t (- alpha2 alpha1))))))))
+
+(defmethod expand-gradient-colors :oklch [_ colors stops steps]
+  (let [n (count colors)
+        stops (or stops (mapv #(/ (double %) (dec n)) (range n)))
+        result (mapcat
+                (fn [i]
+                  (let [f (oklch-lerp (nth colors i) (nth colors (inc i)))
+                        s1 (nth stops i)
+                        s2 (nth stops (inc i))
+                        end (if (= i (- n 2)) (inc steps) steps)]
+                    (map (fn [j]
+                           (let [t (/ (double j) steps)]
+                             [(f t) (+ s1 (* t (- s2 s1)))]))
+                         (range end))))
+                (range (dec n)))]
+    [(mapv first result) (mapv second result)]))
+
 (defn flatten-children
   "Flattens a nested collection of children and filters out non-Widget elements.
    
