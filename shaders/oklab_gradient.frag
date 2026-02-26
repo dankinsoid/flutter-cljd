@@ -22,6 +22,8 @@ uniform vec2 uParam1;     // linear: end; radial/diamond: (endRadius, startRadiu
 uniform vec4 uColors[32];
 // 138-169
 uniform float uStops[32];
+// 170
+uniform float uColorSpace; // 0=oklab, 1=oklch
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
 
@@ -82,6 +84,16 @@ vec3 oklabToLinear(vec3 lab) {
         -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
         -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
     );
+}
+
+// --- OKLab <-> OKLCH ---
+
+vec3 oklabToOklch(vec3 lab) {
+    return vec3(lab.x, length(lab.yz), atan(lab.z, lab.y));
+}
+
+vec3 oklchToOklab(vec3 lch) {
+    return vec3(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z));
 }
 
 // --- Data access (uniform or texture) ---
@@ -196,13 +208,26 @@ void main() {
     vec4 cA = getColor(idx);
     vec4 cB = getColor(idx + 1);
 
-    // sRGB → linear → OKLab
-    vec3 labA = linearToOklab(srgbToLinearV(cA.rgb));
-    vec3 labB = linearToOklab(srgbToLinearV(cB.rgb));
-
-    // Interpolate in OKLab
-    vec3 labMix = mix(labA, labB, localT);
     float alphaMix = mix(cA.a, cB.a, localT);
+    vec3 labMix;
+    if (uColorSpace < 0.5) {
+        // OKLab: linear interpolation in Lab
+        vec3 labA = linearToOklab(srgbToLinearV(cA.rgb));
+        vec3 labB = linearToOklab(srgbToLinearV(cB.rgb));
+        labMix = mix(labA, labB, localT);
+    } else {
+        // OKLCH: interpolate L, C linearly; hue along shortest arc
+        vec3 lchA = oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
+        vec3 lchB = oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
+        float dH = lchB.z - lchA.z;
+        if (dH >  3.14159265) dH -= 6.28318530;
+        if (dH < -3.14159265) dH += 6.28318530;
+        labMix = oklchToOklab(vec3(
+            mix(lchA.x, lchB.x, localT),
+            mix(lchA.y, lchB.y, localT),
+            lchA.z + localT * dH
+        ));
+    }
 
     // OKLab → linear → sRGB, clamped
     vec3 rgb = clamp(linearToSrgbV(oklabToLinear(labMix)), 0.0, 1.0);

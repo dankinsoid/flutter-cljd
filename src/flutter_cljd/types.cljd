@@ -853,7 +853,8 @@
    colors
    stops
    ^double p0x ^double p0y
-   ^double p1x ^double p1y]
+   ^double p1x ^double p1y
+   ^int cs-id]
   (let [n (count colors)]
     (.setFloat shader 0 (.-width rect))
     (.setFloat shader 1 (.-height rect))
@@ -893,6 +894,7 @@
       (do
         (.setFloat shader 5 1.0)
         (.setImageSampler shader 0 (create-gradient-data-texture colors stops))))
+    (.setFloat shader 170 (double cs-id))
     shader))
 
 (declare ->oklab-gradient)
@@ -904,7 +906,8 @@
    begin-align end-align
    center-align
    ^double radius-val
-   ^double start-angle ^double end-angle]
+   ^double start-angle ^double end-angle
+   ^int cs-id]
   :extends (m/Gradient .colors colors .stops stops)
 
   (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
@@ -917,56 +920,56 @@
         0 (let [b (.withinRect (.resolve ^m/AlignmentGeometry begin-align textDirection) rect)
                 e (.withinRect (.resolve ^m/AlignmentGeometry end-align textDirection) rect)]
             (set-gradient-uniforms! shader rect 0 tm-id colors stops
-                                   (.-dx b) (.-dy b) (.-dx e) (.-dy e)))
+                                   (.-dx b) (.-dy b) (.-dx e) (.-dy e) cs-id))
         ;; Radial
         1 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
                 side (.-shortestSide rect)
                 r (* radius-val side)
                 sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 1 tm-id colors stops
-                                   (.-dx c) (.-dy c) r sr))
+                                   (.-dx c) (.-dy c) r sr cs-id))
         ;; Sweep
         2 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)]
             (set-gradient-uniforms! shader rect 2 tm-id colors stops
-                                   (.-dx c) (.-dy c) start-angle end-angle))
+                                   (.-dx c) (.-dy c) start-angle end-angle cs-id))
         ;; Diamond
         3 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
                 side (.-shortestSide rect)
                 r (* radius-val side)
                 sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 3 tm-id colors stops
-                                   (.-dx c) (.-dy c) r sr)))))
+                                   (.-dx c) (.-dy c) r sr cs-id)))))
 
   (scale [this ^double factor]
     (->oklab-gradient
      (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
      stops gradient-type tm-id
-     begin-align end-align center-align radius-val start-angle end-angle))
+     begin-align end-align center-align radius-val start-angle end-angle cs-id))
 
   (withOpacity [this ^double opacity]
     (->oklab-gradient
      (mapv #(.withOpacity ^ui/Color % opacity) colors)
      stops gradient-type tm-id
-     begin-align end-align center-align radius-val start-angle end-angle)))
+     begin-align end-align center-align radius-val start-angle end-angle cs-id)))
 
 (defn- ->oklab-gradient
   [colors stops gradient-type tm-id
-   begin-align end-align center-align radius-val start-angle end-angle]
+   begin-align end-align center-align radius-val start-angle end-angle cs-id]
   (OkLabGradient
    (.from #/(dc/List ui/Color) colors)
    (when stops (.from #/(dc/List dc/double) (map double stops)))
    gradient-type tm-id
-   begin-align end-align center-align radius-val start-angle end-angle))
+   begin-align end-align center-align radius-val start-angle end-angle cs-id))
 
 (defn ^m/Gradient linear-gradient
-  "Creates a LinearGradient. OKLab requires `(shader/load-shaders!)`; falls back to sRGB.
+  "Creates a LinearGradient. OKLab/OKLCH requires `(shader/load-shaders!)`; falls back to sRGB.
 
    - `:begin` (alignment, default: :center-start)
    - `:end` (alignment, default: :center-end)
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab` or `:srgb`"
+   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`"
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -980,9 +983,9 @@
             tm (:tile-mode args :clamp)
             begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
             end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))]
-        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops 0 (tile-mode-id tm)
-                           begin end nil 0.0 0.0 0.0)
+                           begin end nil 0.0 0.0 0.0 (if (= cs :oklch) 1 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16))]
             (m/LinearGradient
@@ -994,7 +997,7 @@
       (throw (Exception. (str "Invalid LinearGradient: " args))))))
 
 (defn ^m/Gradient sweep-gradient
-  "Creates a SweepGradient. OKLab requires `(shader/load-shaders!)`; falls back to sRGB.
+  "Creates a SweepGradient. OKLab/OKLCH requires `(shader/load-shaders!)`; falls back to sRGB.
 
    - `:center` (alignment, default: :center)
    - `:start-angle` (number, default: 0)
@@ -1002,7 +1005,7 @@
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab` or `:srgb`"
+   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`"
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -1017,9 +1020,9 @@
             center (alignment-geometry (:center args m/Alignment.center))
             sa (double (:start-angle args 0))
             ea (double (:end-angle args (* 2 π)))]
-        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops 2 (tile-mode-id tm)
-                           nil nil center 0.0 sa ea)
+                           nil nil center 0.0 sa ea (if (= cs :oklch) 1 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16))]
             (m/SweepGradient
@@ -1032,17 +1035,17 @@
       (throw (Exception. (str "Invalid SweepGradient: " args))))))
 
 (defn ^m/Gradient radial-gradient
-  "Creates a RadialGradient. OKLab requires `(shader/load-shaders!)`; falls back to sRGB.
+  "Creates a RadialGradient. OKLab/OKLCH requires `(shader/load-shaders!)`; falls back to sRGB.
    `:shape :diamond` requires `(shader/load-shaders!)`; falls back to circular radial.
 
    - `:center` (alignment, default: :center)
    - `:radius` (number, default: 0.5) — outer edge, fraction of shortestSide
-   - `:start-radius` (number, default: 0) — inner edge for ring gradients (OKLab only)
+   - `:start-radius` (number, default: 0) — inner edge for ring gradients (OKLab/OKLCH only)
    - `:shape` (keyword, default: :circle): `:circle` or `:diamond` (Manhattan distance)
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab` or `:srgb`"
+   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`"
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -1058,9 +1061,9 @@
             r (double (:radius args 0.5))
             sr (double (:start-radius args 0))
             gtype (if (= (:shape args) :diamond) 3 1)]
-        (if (and (= cs :oklab) (shader/oklab-shader-loaded?))
+        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops gtype (tile-mode-id tm)
-                           nil nil center r sr 0.0)
+                           nil nil center r sr 0.0 (if (= cs :oklch) 1 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16))]
             (m/RadialGradient
@@ -1096,7 +1099,8 @@
   [^ui/FragmentShader shader
    ^ui/Rect rect
    ^int grid-w ^int grid-h
-   points colors]
+   points colors
+   ^int cs-id]
   (let [n (* grid-w grid-h)]
     ;; uSize
     (.setFloat shader 0 (.-width rect))
@@ -1141,33 +1145,34 @@
       (do
         (.setFloat shader 6 1.0) ;; uUseTexture
         (.setImageSampler shader 0 (create-mesh-data-texture points colors))))
+    (.setFloat shader 391 (double cs-id))
     shader))
 
 (declare ->oklab-mesh-gradient)
 
 (deftype OkLabMeshGradient
-  [colors ^int grid-w ^int grid-h points]
+  [colors ^int grid-w ^int grid-h points ^int cs-id]
   :extends (m/Gradient .colors colors .stops nil)
 
   (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
     (let [shader (shader/create-mesh-shader)]
-      (set-mesh-uniforms! shader rect grid-w grid-h points colors)))
+      (set-mesh-uniforms! shader rect grid-w grid-h points colors cs-id)))
 
   (scale [this ^double factor]
     (->oklab-mesh-gradient
      (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
-     grid-w grid-h points))
+     grid-w grid-h points cs-id))
 
   (withOpacity [this ^double opacity]
     (->oklab-mesh-gradient
      (mapv #(.withOpacity ^ui/Color % opacity) colors)
-     grid-w grid-h points)))
+     grid-w grid-h points cs-id)))
 
 (defn- ->oklab-mesh-gradient
-  [colors grid-w grid-h points]
+  [colors grid-w grid-h points cs-id]
   (OkLabMeshGradient
    (.from #/(dc/List ui/Color) colors)
-   grid-w grid-h points))
+   grid-w grid-h points cs-id))
 
 (defn- default-mesh-points [^int w ^int h]
   (let [max-col (dec w)
@@ -1186,6 +1191,7 @@
    - `:colors` (vector of colors, required): one color per grid point, row-major
    - `:points` (vector of [x y], optional): positions in [0,1] space, row-major.
      Defaults to a regular evenly-spaced grid.
+   - `:color-space` (keyword, default: :oklab): `:oklab` or `:oklch`
 
    ```clojure
    (mesh-gradient {:width 3 :height 3
@@ -1203,6 +1209,7 @@
       (let [w (int (:width args))
             h (int (:height args))
             n (* w h)
+            cs (:color-space args :oklab)
             colors (vec (map color (:colors args)))
             points (or (:points args) (default-mesh-points w h))]
         (assert (>= w 2) "mesh-gradient: width must be >= 2")
@@ -1211,7 +1218,7 @@
         (assert (= (count colors) n) "mesh-gradient: colors count must equal width * height")
         (assert (= (count points) n) "mesh-gradient: points count must equal width * height")
         (if (shader/mesh-shader-loaded?)
-          (->oklab-mesh-gradient colors w h points)
+          (->oklab-mesh-gradient colors w h points (if (= cs :oklch) 1 0))
           (m/LinearGradient
            .begin m/Alignment.topLeft .end m/Alignment.bottomRight
            .colors [(first colors) (last colors)]

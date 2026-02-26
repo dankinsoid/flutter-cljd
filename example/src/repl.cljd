@@ -4,6 +4,8 @@
    [flutter-cljd.shader :as shader]
    [cljd.flutter :as f]
    [clojure.string :as str]
+   ["dart:math" :as math]
+   ["dart:ui" :as dart-ui]
    ["package:flutter/cupertino.dart" :as c]
    ["package:flutter/widgets.dart" :as w]))
 
@@ -294,6 +296,58 @@
     (fn [_ i]
       (color-tile (str "More " i) (nth colors (mod (+ i 3) (count colors))) 64)))))
 
+;; ====== 9. GRADIENT COLOR SPACES ======
+
+(defn- rand-color ^dart-ui/Color []
+  (let [rng (math/Random)]
+    (dart-ui/Color.fromARGB 255
+      (.nextInt rng 256)
+      (.nextInt rng 256)
+      (.nextInt rng 256))))
+
+(defn- rand-palette [n]
+  (vec (repeatedly n rand-color)))
+
+(def -palette (atom (rand-palette 3)))
+
+(defn- gradient-strip [colors cs]
+  (ui/row
+   :cross-axis-alignment :center
+   (ui/sized {:w 56}
+             (ui/text (name cs) :style {:family "monospace" :size 13}))
+   (->> (ui/decorated {:gradient {:type :linear
+                                  :colors colors
+                                  :begin :left
+                                  :end :right
+                                  :color-space cs}
+                       :border-radius 8})
+        (ui/sized {:h 52})
+        ui/expanded)))
+
+(defn gradient-comparison []
+  (f/widget
+   :watch [colors -palette]
+   (ui/padding
+    {:horizontal 24 :vertical 32}
+    (ui/column
+     :main-axis-size :min
+     :cross-axis-alignment :stretch
+     (gradient-strip colors :srgb)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklab)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklch)
+     (ui/sized {:h 24})
+     (ui/center
+      (c/CupertinoButton
+       .color (dart-ui/Color 0xFF007AFF)
+       .borderRadius (c/BorderRadius.circular 12.0)
+       .child (c/Text "Random"
+                      .style (c/TextStyle
+                              .color (dart-ui/Color 0xFFFFFFFF)
+                              .fontWeight c/FontWeight.w600))
+       .onPressed #(reset! -palette (rand-palette 3))))))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
@@ -304,7 +358,8 @@
    ["Prefetch"   prefetch-preview]
    ["Reorder"    reorder-preview]
    ["Offset Fix" offset-correction-preview]
-   ["Mixed"      mixed-layouts-preview]])
+   ["Mixed"      mixed-layouts-preview]
+   ["Gradients"  gradient-comparison]])
 
 (defn preview-switcher []
   (f/widget

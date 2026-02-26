@@ -19,6 +19,8 @@ uniform float uUseTexture; // 0=uniforms, 1=texture
 uniform vec2 uPositions[64];
 // 135-390
 uniform vec4 uColors[64];
+// 391
+uniform float uColorSpace; // 0=oklab, 1=oklch
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
 
@@ -81,6 +83,16 @@ vec3 oklabToLinear(vec3 lab) {
     );
 }
 
+// --- OKLab <-> OKLCH ---
+
+vec3 oklabToOklch(vec3 lab) {
+    return vec3(lab.x, length(lab.yz), atan(lab.z, lab.y));
+}
+
+vec3 oklchToOklab(vec3 lch) {
+    return vec3(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z));
+}
+
 // --- Data access (uniform or texture) ---
 
 vec2 getPosition(int i) {
@@ -120,12 +132,14 @@ vec4 catmullRomWeights(float t) {
     );
 }
 
-// Get OKLab + alpha at grid position, clamped to grid bounds
+// Get OKLab or OKLCH + alpha at grid position, clamped to grid bounds
 vec4 gridColorLab(int row, int col, int gw, int gh) {
     int r = clamp(row, 0, gh - 1);
     int c = clamp(col, 0, gw - 1);
     vec4 srgb = getMeshColor(r * gw + c);
-    return vec4(linearToOklab(srgbToLinearV(srgb.rgb)), srgb.a);
+    vec3 lab = linearToOklab(srgbToLinearV(srgb.rgb));
+    if (uColorSpace > 0.5) lab = oklabToOklch(lab);
+    return vec4(lab, srgb.a);
 }
 
 // --- Coons patch (cubic Bezier boundaries) ---
@@ -302,7 +316,9 @@ void main() {
             }
 
             alpha = clamp(alpha, 0.0, 1.0);
-            vec3 rgb = clamp(linearToSrgbV(oklabToLinear(labFinal)), 0.0, 1.0);
+            vec3 lab = labFinal;
+            if (uColorSpace > 0.5) lab = oklchToOklab(lab);
+            vec3 rgb = clamp(linearToSrgbV(oklabToLinear(lab)), 0.0, 1.0);
 
             fragColor = vec4(rgb * alpha, alpha);
             return;
