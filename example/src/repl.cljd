@@ -308,7 +308,7 @@
 (defn- rand-palette [n]
   (vec (repeatedly n rand-color)))
 
-(def -palette (atom (rand-palette 3)))
+(def -palette (atom (rand-palette 2)))
 
 (defn- gradient-strip
   ([colors cs] (gradient-strip colors cs nil))
@@ -356,7 +356,7 @@
                       .style (c/TextStyle
                               .color (dart-ui/Color 0xFFFFFFFF)
                               .fontWeight c/FontWeight.w600))
-       .onPressed #(reset! -palette (rand-palette 3))))))))
+       .onPressed #(reset! -palette (rand-palette 2))))))))
 
 ;; ====== PREVIEW SWITCHER ======
 

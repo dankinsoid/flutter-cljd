@@ -332,14 +332,14 @@
          H (double H)]
      (oklab->color L (* C (math/cos H)) (* C (math/sin H)) alpha))))
 
-(defn- hue-id ^long [hue-method]
+(defn- hue-id ^int [hue-method]
   (case hue-method
     :longer 2
     :increasing 3
     :decreasing 4
     1))
 
-(defn- lerp-hue ^double [^double h1 ^double h2 ^double t ^long hid]
+(defn- lerp-hue ^double [^double h1 ^double h2 ^double t ^int hid]
   (let [diff (- h2 h1)
         two-pi (* 2 math/pi)
         diff (case hid
