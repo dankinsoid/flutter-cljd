@@ -36,10 +36,12 @@ float srgbToLinear(float c) {
 }
 
 float linearToSrgb(float c) {
-    float s1 = sqrt(max(c, 0.0));
+    float a = abs(c);
+    float s1 = sqrt(a);
     float s2 = sqrt(s1);
     float s3 = sqrt(s2);
-    return 0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3;
+    float encoded = 0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3;
+    return c < 0.0 ? -encoded : encoded;
 }
 
 vec3 srgbToLinearV(vec3 c) {
@@ -245,8 +247,8 @@ void main() {
         ));
     }
 
-    // OKLab → linear → sRGB, clamped
-    vec3 rgb = clamp(linearToSrgbV(oklabToLinear(labMix)), 0.0, 1.0);
+    // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
+    vec3 rgb = linearToSrgbV(oklabToLinear(labMix));
 
     // Premultiplied alpha
     fragColor = vec4(rgb * alphaMix, alphaMix);

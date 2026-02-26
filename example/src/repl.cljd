@@ -1,6 +1,7 @@
 (ns repl
   (:require
    [flutter-cljd.widgets :as ui]
+   [flutter-cljd.utils :as ut]
    [flutter-cljd.shader :as shader]
    [cljd.flutter :as f]
    [clojure.string :as str]
@@ -324,9 +325,31 @@
                                    :end :right
                                    :color-space cs
                                    :hue hue}
-                        :border-radius 8})
+                        :border-radius 0})
          (ui/sized {:h 52})
          ui/expanded))))
+
+(defn- precomputed-gradient-strip
+  "sRGB gradient with n stops precomputed from OKLab/OKLCH lerp."
+  ([colors cs n] (precomputed-gradient-strip colors cs nil n))
+  ([colors cs hue n]
+   (let [lerp-fn (case cs
+                   :oklab (ut/oklab-lerp (first colors) (second colors))
+                   :oklch (ut/oklch-lerp (first colors) (second colors)
+                                         (or hue :shorter)))
+         pre-colors (mapv #(lerp-fn (/ (double %) (dec n))) (range n))]
+     (ui/row
+      :cross-axis-alignment :center
+      (ui/sized {:w 76}
+                (ui/text (str "\u2248" n " srgb") :style {:family "monospace" :size 11
+                                                           :color :grey}))
+      (->> (ui/decorated {:gradient {:type :linear
+                                     :colors pre-colors
+                                     :begin :left :end :right
+                                     :color-space :srgb}
+                          :border-radius 0})
+           (ui/sized {:h 28})
+           ui/expanded)))))
 
 (defn gradient-comparison []
   (f/widget
@@ -336,18 +359,18 @@
     (ui/column
      :main-axis-size :min
      :cross-axis-alignment :stretch
-     (gradient-strip colors :srgb)
-     (ui/sized {:h 10})
      (gradient-strip colors :oklab)
-     (ui/sized {:h 10})
+     (precomputed-gradient-strip colors :oklab 3)
+     (precomputed-gradient-strip colors :oklab 8)
+     (precomputed-gradient-strip colors :oklab 16)
      (gradient-strip colors :oklch)
-     (ui/sized {:h 10})
+     (precomputed-gradient-strip colors :oklch 3)
+     (precomputed-gradient-strip colors :oklch 8)
+     (precomputed-gradient-strip colors :oklch 16)
      (gradient-strip colors :oklch :longer)
-     (ui/sized {:h 10})
-     (gradient-strip colors :oklch :increasing)
-     (ui/sized {:h 10})
-     (gradient-strip colors :oklch :decreasing)
-     (ui/sized {:h 24})
+     (precomputed-gradient-strip colors :oklch :longer 3)
+     (precomputed-gradient-strip colors :oklch :longer 8)
+     (precomputed-gradient-strip colors :oklch :longer 16)
      (ui/center
       (c/CupertinoButton
        .color (dart-ui/Color 0xFF007AFF)
