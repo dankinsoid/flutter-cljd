@@ -3,11 +3,300 @@
    [flutter-cljd.widgets :as ui]
    [flutter-cljd.shader :as shader]
    [cljd.flutter :as f]
+   [clojure.string :as str]
    ["dart:math" :as math]
    ["dart:ui" :as dart-ui]
-   ["package:flutter/cupertino.dart" :as c]))
+   ["package:flutter/cupertino.dart" :as c]
+   ["package:flutter/widgets.dart" :as w]))
 
-;; ====== PREVIEWS — edit & hot reload ======
+;; ====== HELPERS ======
+
+(def colors [:red :blue :green :orange :purple :cyan :pink :yellow])
+
+(defn- color-tile
+  "Colored tile with label, used across multiple previews."
+  [label color ^double height]
+  (->> (ui/text (str label) {:size 16 :weight :bold :color :white})
+       (ui/center)
+       (ui/sized :h height)
+       (ui/colored color)))
+
+(defn- action-bar
+  "Row of buttons wrapped in sliver-to-box-adapter for use in custom-scroll-view."
+  [& buttons]
+  (ui/sliver-to-box-adapter
+   (->> (apply ui/row
+               :main-axis-alignment :space-evenly
+               buttons)
+        (ui/padding {:v 8}))))
+
+(defn- btn [label on-tap]
+  (ui/button on-tap
+    (->> (ui/text label {:size 13 :color :white})
+         (ui/padding {:h 12 :v 6})
+         (ui/clip-corners :all 6)
+         (ui/colored (c/CupertinoColors.activeBlue)))))
+
+;; ====== 1. LIST LAYOUT ======
+
+(defn list-layout-preview []
+  (ui/custom-scroll-view
+   (ui/sliver-collection
+    50 :item-extent 56
+    (fn [_ i]
+      (color-tile (str "Item " i) (nth colors (mod i (count colors))) 56)))))
+
+;; ====== 2. GRID LAYOUT ======
+
+(defn grid-layout-preview []
+  (ui/custom-scroll-view
+   (ui/sliver-collection
+    60
+    :layout :grid
+    :cross-axis-count 3
+    :main-axis-spacing 4
+    :cross-axis-spacing 4
+    (fn [_ i]
+      (color-tile i (nth colors (mod i (count colors))) 80)))))
+
+;; ====== 3. ANIMATIONS (insert / remove / move) ======
+
+(defn- make-item [id label]
+  {:id id :label label})
+
+(def ^:private initial-anim-items
+  (vec (map #(make-item % (str "Item " %))
+                    (range 12))))
+
+(defn animation-preview []
+  (f/widget
+   :watch [items (atom initial-anim-items) :as $items
+           next-id (atom (count initial-anim-items)) :as $next-id]
+   (ui/custom-scroll-view
+      ;; Toolbar
+      (action-bar
+       (btn "Add Random"
+            (fn []
+              (let [pos (rand-int (max 1 (count items)))]
+                (swap! $items #(vec (concat (take pos %) [{:id next-id :label (str "New " next-id)}] (drop pos %))))
+                (swap! $next-id inc))))
+       (btn "Remove Random"
+            (fn []
+              (when (seq items)
+                (let [idx (rand-int (count items))]
+                  (swap! $items #(vec (concat (subvec % 0 idx) (subvec % (inc idx)))))))))
+       (btn "Shuffle"
+            (fn []
+              (swap! $items shuffle)))
+       (btn "Reset"
+            (fn []
+              (reset! $items initial-anim-items)
+              (reset! $next-id (count initial-anim-items)))))
+      ;; Collection with animations
+      (ui/sliver-padding 8
+       (ui/sliver-collection
+        items
+        :key-fn :id
+        :animate {:duration 400
+                  :insert {:curve :ease-out}
+                  :remove {:duration 300}
+                  :move {:duration 500}}
+        (fn [_ item]
+          (->> (ui/text (:label item) {:size 16 :weight :bold :color :white})
+               (ui/center)
+               (ui/sized :h 56)
+               (ui/clip-corners :all 8)
+               (ui/colored (nth colors (mod (:id item) (count colors))))
+               (ui/padding {:b 4}))))))))
+
+;; ====== 4. GRID + ANIMATIONS ======
+
+(def ^:private initial-grid-items
+  (vec (map #(make-item % (str %)) (range 20))))
+
+(defn grid-animation-preview []
+  (f/widget
+   :watch [items (atom initial-grid-items) :as $items
+           next-id (atom (count initial-grid-items)) :as $next-id]
+   (ui/custom-scroll-view
+      (action-bar
+       (btn "+3"
+            (fn []
+              (let [new-items (vec (for [i (range 3)]
+                                    {:id (+ next-id i)
+                                     :label (str (+ next-id i))}))]
+                (swap! $items #(vec (concat (take 3 %) new-items (drop 3 %))))
+                (swap! $next-id + 3))))
+       (btn "-3"
+            (fn []
+              (when (> (count items) 3)
+                (swap! $items #(vec (take (- (count %) 3) %))))))
+       (btn "Shuffle"
+            (fn [] (swap! $items shuffle)))
+       (btn "Reset"
+            (fn []
+              (reset! $items initial-grid-items)
+              (reset! $next-id (count initial-grid-items)))))
+      (ui/sliver-padding 8
+       (ui/sliver-collection
+        items
+        :key-fn :id
+        :animate true
+        :layout :grid
+        :cross-axis-count 4
+        :main-axis-spacing 4
+        :cross-axis-spacing 4
+        (fn [_ item]
+          (->> (ui/text (:label item) {:size 18 :weight :bold :color :white})
+               (ui/center)
+               (ui/clip-corners :all 8)
+               (ui/colored (nth colors (mod (:id item) (count colors)))))))))))
+
+;; ====== 5. PREFETCH ======
+
+(defn prefetch-preview []
+  (f/widget
+   :watch [log (atom []) :as $log]
+   (ui/column
+      :cross-axis-alignment :stretch
+      ;; Log display at top
+      (->> (ui/column
+            :cross-axis-alignment :start
+            (ui/text "Prefetch Log:" {:size 13 :weight :bold})
+            (if (empty? log)
+              (ui/text "(scroll to trigger)" {:size 12 :color :grey})
+              (ui/text (str "Last: " (str/join ", " (take-last 8 log)))
+                       {:size 12 :color :grey})))
+           (ui/padding 8)
+           (ui/sized :h 60))
+      (->> (ui/custom-scroll-view
+            (ui/sliver-collection
+             200
+             :item-extent 60
+             :on-prefetch (fn [i]
+                            (swap! $log #(conj % (str "idx=" i))))
+             :prefetch-distance 10
+             (fn [_ i]
+               (color-tile (str "Item " i) (nth colors (mod i (count colors))) 60))))
+           (ui/expanded)))))
+
+;; ====== 6. REORDER ======
+
+(def ^:private initial-reorder-items
+  (vec (map-indexed (fn [i _] {:id i :label (str "Drag me " i)})
+                    (range 15))))
+
+(defn reorder-preview []
+  (f/widget
+   :watch [items (atom initial-reorder-items) :as $items]
+   (ui/custom-scroll-view
+      (action-bar
+       (btn "Reset" (fn [] (reset! $items initial-reorder-items)))
+       (btn "Shuffle" (fn [] (swap! $items shuffle))))
+      (ui/sliver-padding 8
+       (ui/sliver-collection
+        items
+        :key-fn :id
+        :reorderable true
+        :on-reorder (fn [old-idx new-idx]
+                      (swap! $items
+                             (fn [items]
+                               (let [item (nth items old-idx)
+                                     removed (vec (concat (subvec items 0 old-idx)
+                                                          (subvec items (inc old-idx))))
+                                     adj-new (if (> new-idx old-idx) (dec new-idx) new-idx)]
+                                 (vec (concat (subvec removed 0 adj-new)
+                                              [item]
+                                              (subvec removed adj-new)))))))
+        (fn [_ item]
+          (->> (ui/row
+                (ui/text "≡ " {:size 20 :color :white})
+                (ui/text (:label item) {:size 16 :weight :bold :color :white}))
+               (ui/padding {:h 12})
+               (ui/align :center-left)
+               (ui/sized :h 52)
+               (ui/clip-corners :all 8)
+               (ui/colored (nth colors (mod (:id item) (count colors))))
+               (ui/padding {:b 4}))))))))
+
+;; ====== 7. SCROLL OFFSET CORRECTION ======
+;; Insert items above viewport — list should stay in place
+
+(defn offset-correction-preview []
+  (f/widget
+   :watch [items (atom (vec (map #(make-item % (str "Original " %)) (range 30)))) :as $items
+           next-id (atom 30) :as $next-id]
+   (ui/column
+      :cross-axis-alignment :stretch
+      (->> (ui/text "Scroll down, then tap 'Insert at Top'. List should stay in place."
+                     {:size 12 :color :grey})
+           (ui/padding 8))
+      (->> (ui/row
+            :main-axis-alignment :space-evenly
+            (btn "Insert 5 at Top"
+                 (fn []
+                   (let [new-items (vec (for [i (range 5)]
+                                          {:id (+ next-id i)
+                                           :label (str "Inserted " (+ next-id i))}))]
+                     (swap! $items #(vec (concat new-items %)))
+                     (swap! $next-id + 5))))
+            (btn "Reset"
+                 (fn []
+                   (reset! $items (vec (map #(make-item % (str "Original " %)) (range 30))))
+                   (reset! $next-id 30))))
+           (ui/padding {:v 4}))
+      (->> (ui/custom-scroll-view
+            (ui/sliver-collection
+             items
+             :key-fn :id
+             :item-extent 56
+             :animate true
+             (fn [_ item]
+               (->> (ui/text (:label item) {:size 14 :weight :bold :color :white})
+                    (ui/center)
+                    (ui/sized :h 56)
+                    (ui/colored (if (str/starts-with? (:label item) "Inserted")
+                                  :green :blue))))))
+           (ui/expanded)))))
+
+;; ====== 8. MIXED LAYOUTS in one scroll view ======
+
+(defn mixed-layouts-preview []
+  (ui/custom-scroll-view
+   ;; Header
+   (ui/sliver-to-box-adapter
+    (->> (ui/text "List Section" {:size 18 :weight :bold})
+         (ui/padding {:l 12 :t 12 :b 4})))
+   ;; List section
+   (ui/sliver-collection
+    8 :item-extent 48
+    (fn [_ i]
+      (color-tile (str "List " i) (nth colors (mod i (count colors))) 48)))
+   ;; Header
+   (ui/sliver-to-box-adapter
+    (->> (ui/text "Grid Section" {:size 18 :weight :bold})
+         (ui/padding {:l 12 :t 12 :b 4})))
+   ;; Grid section
+   (ui/sliver-padding 8
+    (ui/sliver-collection
+     12
+     :layout :grid
+     :cross-axis-count 3
+     :main-axis-spacing 4
+     :cross-axis-spacing 4
+     (fn [_ i]
+       (color-tile i (nth colors (mod i (count colors))) 80))))
+   ;; Header
+   (ui/sliver-to-box-adapter
+    (->> (ui/text "Another List" {:size 18 :weight :bold})
+         (ui/padding {:l 12 :t 12 :b 4})))
+   ;; Another list
+   (ui/sliver-collection
+    20
+    (fn [_ i]
+      (color-tile (str "More " i) (nth colors (mod (+ i 3) (count colors))) 64)))))
+
+;; ====== 9. GRADIENT COLOR SPACES ======
 
 (defn- rand-color ^dart-ui/Color []
   (let [rng (math/Random)]
@@ -59,9 +348,52 @@
                               .fontWeight c/FontWeight.w600))
        .onPressed #(reset! -palette (rand-palette 3))))))))
 
+;; ====== PREVIEW SWITCHER ======
+
+(def previews
+  [["List"       list-layout-preview]
+   ["Grid"       grid-layout-preview]
+   ["Animate"    animation-preview]
+   ["Grid+Anim"  grid-animation-preview]
+   ["Prefetch"   prefetch-preview]
+   ["Reorder"    reorder-preview]
+   ["Offset Fix" offset-correction-preview]
+   ["Mixed"      mixed-layouts-preview]
+   ["Gradients"  gradient-comparison]])
+
+(defn preview-switcher []
+  (f/widget
+   :watch [idx (atom 0) :as $idx]
+   (let [[_ builder] (nth previews idx)]
+     (ui/column
+      :cross-axis-alignment :stretch
+      ;; Tab bar
+      (->> (ui/single-child-scroll-view
+            :axis :horizontal
+            (apply ui/row
+                   (map-indexed
+                    (fn [i [label _]]
+                      (ui/button #(reset! $idx i)
+                        (->> (ui/text label {:size 12
+                                             :weight (if (= i idx) :bold :normal)
+                                             :color (if (= i idx) :white :black)})
+                             (ui/padding {:h 10 :v 6})
+                             (ui/clip-corners :all 6)
+                             (ui/colored (if (= i idx)
+                                           (c/CupertinoColors.activeBlue)
+                                           (c/CupertinoColors.systemGrey5))))))
+                    previews)))
+           (ui/padding {:h 4 :v 4})
+           (ui/colored (c/CupertinoColors.systemGrey6)))
+      ;; Content
+      (->> (w/KeyedSubtree
+            .key (w/ValueKey idx)
+            .child (builder))
+           (ui/expanded))))))
+
 ;; ==========================================
 
-(def current gradient-comparison)
+(def current preview-switcher)
 
 (defn ^:async main []
   (await (shader/load-oklab-shader!))
@@ -73,7 +405,6 @@
     (f/widget
      :watch [_ (atom false) :as $reload]
      (c/CupertinoPageScaffold
-      .child (ui/center
-              (ui/on-reassemble
-               #(swap! $reload not)
-               (current))))))))
+      .child (ui/on-reassemble
+              #(swap! $reload not)
+              (current)))))))

@@ -60,7 +60,8 @@
    [flutter-cljd.internal.unconstrained :as uc]
    [flutter-cljd.internal.hero :as hr]
    [flutter-cljd.internal.draggable :as drg]
-   [flutter-cljd.internal.scroll :as scrl]))
+   [flutter-cljd.internal.scroll :as scrl]
+   [flutter-cljd.internal.sliver-collection :as scol]))
 
 (defn ^w/Widget absorb-pointer
   "A widget that absorbs pointers during hit testing. 
@@ -2259,3 +2260,50 @@
   `:foreground-color`, `:elevation`, `:toolbar-height`, `:center-title`, `:bottom`."
   [& {:as args}]
   (scrl/sliver-app-bar* args))
+
+(defn ^w/Widget sliver-collection
+  "Powerful data-driven sliver for lists, grids, and custom layouts.
+   Use inside `custom-scroll-view`. Supports diffable animations,
+   reordering, prefetching, and auto keep-alive.
+
+  Data source (first positional arg, optional):
+    - Collection: builder receives `(fn [ctx item] Widget)`
+    - Integer count: builder receives `(fn [ctx index] Widget)`
+    - Omitted: builder receives `(fn [ctx index] Widget)`, requires `:item-count`
+
+  Last positional arg must be the builder function.
+
+  ```clojure
+  (sliver-collection items (fn [ctx item] (text (:name item))))
+  (sliver-collection 1000 :item-extent 48 (fn [ctx i] (text (str i))))
+  (sliver-collection items :layout :grid :cross-axis-count 3
+    (fn [ctx item] (card (:title item))))
+  (sliver-collection items :key-fn :id :animate true
+    (fn [ctx item] (my-card item)))
+  ```
+
+  Layout (default `:list`):
+    `:layout`     `:list` | `:grid` | `SliverGridDelegate`
+    `:item-extent` fixed main-axis extent (enables O(1) index lookup)
+
+  Grid options (when `:layout :grid`):
+    `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
+    `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`
+
+  Diffable animations (off by default, requires `:key-fn`):
+    `:key-fn`   `(fn [item] identity-key)`
+    `:animate`  `true` | config map `{:duration :curve :insert :remove :move}`
+
+  Reorder:
+    `:reorderable`  `true` — enables drag-to-reorder
+    `:on-reorder`   `(fn [old-index new-index])` — called on drop
+    `:proxy-decorator` `(fn [child index animation])` — customize drag proxy
+
+  Prefetch:
+    `:on-prefetch`       `(fn [item-or-index])` — called ahead of viewport
+    `:prefetch-distance` items ahead to prefetch (default 5)
+
+  Keep-alive:
+    `:auto-keep-alive` (default `true`)"
+  [& args]
+  (scol/sliver-collection* args))
