@@ -1,0 +1,29 @@
+(ns flutter-cljd.internal.collection.prefetch
+  "Prefetch callback engine for sliver-collection.
+   Triggers prefetch ahead of viewport to preload data/images."
+  (:require
+   ["package:flutter/widgets.dart" :as w]))
+
+(defn wrap-builder-with-prefetch
+  "Wraps an item builder with prefetch logic.
+   Calls prefetch-cb for items within `distance` ahead of each built item.
+   Tracks already-prefetched indices via prefetched-set (mutable atom-like)."
+  [original-builder data prefetch-cb ^int distance ^int total-count
+   prefetched-ref get-prefetched set-prefetched!]
+  (fn [^w/BuildContext ctx ^int index]
+    (let [prefetched (get-prefetched prefetched-ref)
+          end (min total-count (+ index distance 1))]
+      (loop [i (inc index)]
+        (when (< i end)
+          (when-not (contains? prefetched i)
+            (set-prefetched! prefetched-ref (conj prefetched i))
+            (prefetch-cb (if data
+                           (when (< i (count data)) (nth data i))
+                           i)))
+          (recur (inc i)))))
+    (original-builder ctx index)))
+
+(defn reset-prefetched
+  "Resets prefetched tracking when data changes significantly."
+  []
+  #{})

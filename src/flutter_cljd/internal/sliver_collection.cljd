@@ -1,5 +1,7 @@
 (ns flutter-cljd.internal.sliver-collection
   (:require
+   ["package:flutter/animation.dart" :as a]
+   ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]
    [flutter-cljd.utils :as ut]
@@ -45,6 +47,8 @@
 
 (declare ^:private SliverCollectionState)
 (declare ^:private apply-diff*)
+(declare ^:private apply-moves*)
+(declare ^:private find-child-at-index)
 (declare ^:private rebuild-shadow!)
 
 ;; --- SliverCollection Widget ---
@@ -87,7 +91,9 @@
      ;; reorderInProgress
      false
      ;; prefetchedKeys
-     #{})))
+     #{}
+     ;; sliverGlobalKey
+     nil)))
 
 (deftype SliverCollectionState
   [^:mutable previousUserData   ;; user's data from last update (for diffing)
@@ -95,12 +101,14 @@
    ^:mutable dyingItems         ;; [{:key :item :old-index :controller :animation} ...]
    ^:mutable shadowData         ;; vec of {:type :live/:dying, :key, ...} or nil
    ^:mutable ^bool reorderInProgress
-   ^:mutable prefetchedKeys]
+   ^:mutable prefetchedKeys
+   ^:mutable ^w/GlobalKey? sliverGlobalKey]
   :extends (#/(w/State SliverCollection))
   ^:mixin #/(w/TickerProviderStateMixin SliverCollection)
 
   (initState [^SliverCollectionState this]
     (.initState ^super this)
+    (.-sliverGlobalKey! this (w/GlobalKey))
     (rebuild-shadow! this))
 
   (didUpdateWidget [^SliverCollectionState this ^SliverCollection oldWidget]
@@ -122,6 +130,10 @@
     nil)
 
   (dispose [^SliverCollectionState this]
+    ;; Remove overlay entries for move animations
+    (doseq [[_ anim-state] (.-activeAnims this)]
+      (when (and (= :move (:type anim-state)) (:overlay-entry anim-state))
+        (.remove ^w/OverlayEntry (:overlay-entry anim-state))))
     (an/dispose-all-anims (.-activeAnims this))
     (doseq [dying (.-dyingItems this)]
       (an/dispose-anim dying))
@@ -157,14 +169,21 @@
                      .key (w/ValueKey k)
                      .child (an/wrap-with-remove-transition
                              anim-config entry child)))
-                  ;; Live item — possibly with insert animation
-                  (let [child (item-builder ctx (:data-index entry))
-                        anim-state (get active k)]
-                    (w/KeyedSubtree
-                     .key (w/ValueKey k)
-                     .child (if (and anim-state (= :insert (:type anim-state)))
-                              (an/wrap-with-insert-transition anim-config anim-state child)
-                              child))))))
+                  ;; Live item — possibly with insert or move animation
+                  (let [anim-state (get active k)]
+                    (if (and anim-state (= :move (:type anim-state)))
+                      ;; Move: render actual content but invisible (overlay shows the flying copy)
+                      (let [child (item-builder ctx (:data-index entry))]
+                        (w/KeyedSubtree
+                         .key (w/ValueKey k)
+                         .child (w/Opacity .opacity 0.0 .child child)))
+                      ;; Normal or insert
+                      (let [child (item-builder ctx (:data-index entry))]
+                        (w/KeyedSubtree
+                         .key (w/ValueKey k)
+                         .child (if (and anim-state (= :insert (:type anim-state)))
+                                  (an/wrap-with-insert-transition anim-config anim-state child)
+                                  child))))))))
             ;; Non-animated / no shadow — simple builder with optional keys
             (if (and key-fn data)
               (fn [^w/BuildContext ctx ^int index]
@@ -234,7 +253,9 @@
          final-builder
          item-count
          (.-layoutImpl widget)
-         layout-opts)))))
+         (if-let [gk (.-sliverGlobalKey this)]
+           (assoc layout-opts :key gk)
+           layout-opts))))))
 
 ;; --- Shadow-data helpers ---
 
@@ -249,10 +270,104 @@
       (.-shadowData! state (an/build-shadow-data data key-fn dying))
       (.-shadowData! state nil))))
 
+(defn- find-child-at-index
+  "Finds a child RenderBox in the render sliver at the given index."
+  ^r/RenderBox [^r/RenderSliverMultiBoxAdaptor sliver ^int index]
+  (loop [child (.-firstChild sliver)]
+    (when child
+      (if (= (.indexOf sliver child) index)
+        child
+        (recur (.childAfter sliver child))))))
+
+(defn- apply-moves*
+  "Creates overlay flying animations for moved items.
+   Live item at new position rendered invisible; overlay flies from old to new."
+  [^SliverCollectionState this old-data diff-result anim-config old-key->shadow-idx]
+  (when-let [move-config (:move anim-config)]
+    (when (and old-key->shadow-idx (seq (:moves diff-result)))
+      (when-let [^w/GlobalKey gk (.-sliverGlobalKey this)]
+        (when-let [^r/RenderSliverMultiBoxAdaptor sliver
+                   (some-> gk .-currentContext .findRenderObject)]
+          (let [^SliverCollection widget (.-widget this)
+                user-builder-fn (.-userBuilder widget)]
+            (doseq [{:keys [key old-index new-index]} (:moves diff-result)]
+              (let [old-shadow-idx (get old-key->shadow-idx key)]
+                (when old-shadow-idx
+                  (when-let [^r/RenderBox old-child
+                             (find-child-at-index sliver (int old-shadow-idx))]
+                    (let [^w/Offset global-pos (.localToGlobal old-child w/Offset.zero)
+                          ^double height (.-height (.-size old-child))
+                          ^double width (.-width (.-size old-child))
+                          ^double old-x (.-dx global-pos)
+                          ^double old-y (.-dy global-pos)
+                          ^double new-y (+ old-y (* (double (- ^int new-index ^int old-index)) height))
+                          item-data (nth old-data old-index)
+
+                          ;; Move controller (0→1: overlay position interpolation)
+                          ^a/AnimationController move-ctrl
+                          (an/create-controller this (:duration move-config))
+                          ^a/CurvedAnimation move-anim
+                          (an/create-curved-animation move-ctrl (:curve move-config))
+
+                          ;; Overlay entry — actual content flying from old to new position
+                          ^w/OverlayEntry overlay-entry
+                          (w/OverlayEntry
+                            .builder
+                            (fn [^w/BuildContext ctx]
+                              (w/AnimatedBuilder
+                                .animation move-anim
+                                .child (user-builder-fn ctx item-data)
+                                .builder
+                                (fn [^w/BuildContext _ ^w/Widget? child]
+                                  (let [^double t (.-value move-anim)
+                                        ^double y (+ old-y (* t (- new-y old-y)))]
+                                    (w/IgnorePointer
+                                      .child
+                                      (w/Align
+                                        .alignment w/Alignment.topLeft
+                                        .child
+                                        (w/Transform.translate
+                                          .offset (w/Offset old-x y)
+                                          .child (w/SizedBox .width width .height height
+                                                             .child child)))))))))]
+
+                      ;; Dispose existing animation for this key
+                      (when-let [existing (get (.-activeAnims this) key)]
+                        (when (and (= :move (:type existing)) (:overlay-entry existing))
+                          (.remove ^w/OverlayEntry (:overlay-entry existing)))
+                        (an/dispose-anim existing))
+
+                      ;; Move → activeAnims (no ghost, just overlay + controller)
+                      (.-activeAnims! this
+                        (assoc (.-activeAnims this) key
+                               {:type :move :controller move-ctrl :animation move-anim
+                                :overlay-entry overlay-entry}))
+
+                      ;; On completion: remove overlay, dispose, make live item visible
+                      (.addStatusListener move-ctrl
+                        (fn [^a/AnimationStatus status]
+                          (when (.-isCompleted status)
+                            (when (.-mounted this)
+                              (.setState this
+                                (fn []
+                                  (.remove overlay-entry)
+                                  (an/dispose-anim (get (.-activeAnims this) key))
+                                  (.-activeAnims! this (dissoc (.-activeAnims this) key))))))))
+
+                      ;; Insert overlay and start animation after layout
+                      (.addPostFrameCallback w/WidgetsBinding.instance
+                        (fn [_]
+                          (when (.-mounted this)
+                            (.insert (w/Overlay.of (.-context this)) overlay-entry)
+                            (.forward move-ctrl))
+                          nil)))))))))))))
+
 (defn- apply-diff*
-  "Applies diff result: creates dying items for removes, insert anims for inserts."
+  "Applies diff: dying items for removes, insert anims, move anims with overlay."
   [^SliverCollectionState this old-data new-data key-fn anim-config]
-  (let [diff-result (diff/compute-diff old-data new-data key-fn)]
+  (let [old-shadow (.-shadowData this)
+        old-key->shadow-idx (when old-shadow (an/shadow-key->index old-shadow))
+        diff-result (diff/compute-diff old-data new-data key-fn)]
     ;; --- Removes → create dying items ---
     (doseq [{:keys [key old-index item]} (:removes diff-result)]
       ;; Dispose existing animation for this key if any
@@ -289,7 +404,10 @@
                       (.setState this
                         (fn []
                           (.-activeAnims! this (dissoc (.-activeAnims this) key)))))))]
-        (.-activeAnims! this (assoc (.-activeAnims this) key insert-entry))))))
+        (.-activeAnims! this (assoc (.-activeAnims this) key insert-entry))))
+
+    ;; --- Moves → ghost + overlay ---
+    (apply-moves* this old-data diff-result anim-config old-key->shadow-idx)))
 
 ;; --- Public API ---
 
