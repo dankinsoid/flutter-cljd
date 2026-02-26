@@ -20,7 +20,7 @@ uniform vec2 uPositions[64];
 // 135-390
 uniform vec4 uColors[64];
 // 391
-uniform float uColorSpace; // 0=oklab, 1=oklch
+uniform float uColorSpace; // 0=oklab, 1=oklch-shorter, 2=oklch-longer, 3=oklch-increasing, 4=oklch-decreasing
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
 
@@ -133,13 +133,18 @@ vec4 catmullRomWeights(float t) {
 }
 
 // Get OKLab or OKLCH + alpha at grid position, clamped to grid bounds
+// Uniform path: colors already preconverted to OKLab or OKLCH on CPU
+// Texture path: convert from sRGB
 vec4 gridColorLab(int row, int col, int gw, int gh) {
     int r = clamp(row, 0, gh - 1);
     int c = clamp(col, 0, gw - 1);
-    vec4 srgb = getMeshColor(r * gw + c);
-    vec3 lab = linearToOklab(srgbToLinearV(srgb.rgb));
+    vec4 src = getMeshColor(r * gw + c);
+    if (uUseTexture < 0.5) {
+        return src;
+    }
+    vec3 lab = linearToOklab(srgbToLinearV(src.rgb));
     if (uColorSpace > 0.5) lab = oklabToOklch(lab);
-    return vec4(lab, srgb.a);
+    return vec4(lab, src.a);
 }
 
 // --- Coons patch (cubic Bezier boundaries) ---
