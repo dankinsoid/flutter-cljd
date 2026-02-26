@@ -310,19 +310,23 @@
 
 (def -palette (atom (rand-palette 3)))
 
-(defn- gradient-strip [colors cs]
-  (ui/row
-   :cross-axis-alignment :center
-   (ui/sized {:w 56}
-             (ui/text (name cs) :style {:family "monospace" :size 13}))
-   (->> (ui/decorated {:gradient {:type :linear
-                                  :colors colors
-                                  :begin :left
-                                  :end :right
-                                  :color-space cs}
-                       :border-radius 8})
-        (ui/sized {:h 52})
-        ui/expanded)))
+(defn- gradient-strip
+  ([colors cs] (gradient-strip colors cs nil))
+  ([colors cs hue]
+   (ui/row
+    :cross-axis-alignment :center
+    (ui/sized {:w 76}
+              (ui/text (if hue (str (name cs) " " (name hue)) (name cs))
+                       :style {:family "monospace" :size 13}))
+    (->> (ui/decorated {:gradient {:type :linear
+                                   :colors colors
+                                   :begin :left
+                                   :end :right
+                                   :color-space cs
+                                   :hue hue}
+                        :border-radius 8})
+         (ui/sized {:h 52})
+         ui/expanded))))
 
 (defn gradient-comparison []
   (f/widget
@@ -337,6 +341,12 @@
      (gradient-strip colors :oklab)
      (ui/sized {:h 10})
      (gradient-strip colors :oklch)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklch :longer)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklch :increasing)
+     (ui/sized {:h 10})
+     (gradient-strip colors :oklch :decreasing)
      (ui/sized {:h 24})
      (ui/center
       (c/CupertinoButton

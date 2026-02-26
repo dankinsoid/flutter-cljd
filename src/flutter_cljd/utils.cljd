@@ -270,13 +270,15 @@
   "Expands gradient colors in the given color space.
    Returns `[colors stops]`. Override for custom color spaces.
 
-   Dispatches on `color-space` keyword (`:oklab`, `:srgb`, etc.)."
-  (fn [color-space colors stops steps] color-space))
+   Dispatches on `color-space` keyword (`:oklab`, `:srgb`, etc.).
+   The optional `hue-method` arg (`:shorter`, `:longer`, `:increasing`, `:decreasing`)
+   controls hue traversal direction for OKLCH."
+  (fn [color-space colors stops steps hue-method] color-space))
 
-(defmethod expand-gradient-colors :srgb [_ colors stops _steps]
+(defmethod expand-gradient-colors :srgb [_ colors stops _steps _hue]
   [colors stops])
 
-(defmethod expand-gradient-colors :oklab [_ colors stops steps]
+(defmethod expand-gradient-colors :oklab [_ colors stops steps _hue]
   (let [n (count colors)
         stops (or stops (mapv #(/ (double %) (dec n)) (range n)))
         result (mapcat
@@ -330,40 +332,67 @@
          H (double H)]
      (oklab->color L (* C (math/cos H)) (* C (math/sin H)) alpha))))
 
-(defn- lerp-hue ^double [^double h1 ^double h2 ^double t]
+(defn- hue-id ^long [hue-method]
+  (case hue-method
+    :longer 2
+    :increasing 3
+    :decreasing 4
+    1))
+
+(defn- lerp-hue ^double [^double h1 ^double h2 ^double t ^long hid]
   (let [diff (- h2 h1)
-        diff (cond
-               (> diff math/pi) (- diff (* 2 math/pi))
-               (< diff (- math/pi)) (+ diff (* 2 math/pi))
-               :else diff)]
+        two-pi (* 2 math/pi)
+        diff (case hid
+               2 (cond
+                   (and (pos? diff) (< diff math/pi)) (- diff two-pi)
+                   (and (neg? diff) (> diff (- math/pi))) (+ diff two-pi)
+                   :else diff)
+               3 (if (neg? diff) (+ diff two-pi) diff)
+               4 (if (pos? diff) (- diff two-pi) diff)
+               (cond
+                 (> diff math/pi) (- diff two-pi)
+                 (< diff (- math/pi)) (+ diff two-pi)
+                 :else diff))]
     (+ h1 (* t diff))))
 
 (defn oklch-lerp
   "Interpolates between two colors in OKLCH color space.
-   Hue is interpolated along the shortest arc.
+
+   The optional `hue-method` controls how the hue angle is traversed:
+   - `:shorter` (default) — shortest arc
+   - `:longer` — longest arc
+   - `:increasing` — always increase hue angle
+   - `:decreasing` — always decrease hue angle
 
    ```clojure
    (oklch-lerp Colors.red Colors.blue 0.5)
-   ((oklch-lerp Colors.red Colors.blue) 0.5) ; curried form for animations
+   ((oklch-lerp Colors.red Colors.blue) 0.5)          ; curried, shortest arc
+   ((oklch-lerp Colors.red Colors.blue :longer) 0.5)  ; curried, longer arc
+   (oklch-lerp Colors.red Colors.blue :longer 0.5)    ; direct form
    ```"
-  ([from to t]
-   ((oklch-lerp from to) (double t)))
   ([from to]
-   (let [[l1 c1 h1 alpha1] (color->oklch from)
-         [l2 c2 h2 alpha2] (color->oklch to)]
-     (fn [^double t]
-       (oklch->color
-        (+ l1 (* t (- l2 l1)))
-        (+ c1 (* t (- c2 c1)))
-        (lerp-hue h1 h2 t)
-        (+ alpha1 (* t (- alpha2 alpha1))))))))
+   (oklch-lerp from to :shorter))
+  ([from to x]
+   (if (keyword? x)
+     (let [hid (hue-id x)
+           [l1 c1 h1 alpha1] (color->oklch from)
+           [l2 c2 h2 alpha2] (color->oklch to)]
+       (fn [^double t]
+         (oklch->color
+          (+ l1 (* t (- l2 l1)))
+          (+ c1 (* t (- c2 c1)))
+          (lerp-hue h1 h2 t hid)
+          (+ alpha1 (* t (- alpha2 alpha1))))))
+     ((oklch-lerp from to) (double x))))
+  ([from to hue-method t]
+   ((oklch-lerp from to hue-method) (double t))))
 
-(defmethod expand-gradient-colors :oklch [_ colors stops steps]
+(defmethod expand-gradient-colors :oklch [_ colors stops steps hue-method]
   (let [n (count colors)
         stops (or stops (mapv #(/ (double %) (dec n)) (range n)))
         result (mapcat
                 (fn [i]
-                  (let [f (oklch-lerp (nth colors i) (nth colors (inc i)))
+                  (let [f (oklch-lerp (nth colors i) (nth colors (inc i)) (or hue-method :shorter))
                         s1 (nth stops i)
                         s2 (nth stops (inc i))
                         end (if (= i (- n 2)) (inc steps) steps)]

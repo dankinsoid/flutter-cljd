@@ -23,7 +23,7 @@ uniform vec4 uColors[32];
 // 138-169
 uniform float uStops[32];
 // 170
-uniform float uColorSpace; // 0=oklab, 1=oklch
+uniform float uColorSpace; // 0=oklab, 1=oklch-shorter, 2=oklch-longer, 3=oklch-increasing, 4=oklch-decreasing
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
 
@@ -212,16 +212,32 @@ void main() {
     vec3 labMix;
     if (uColorSpace < 0.5) {
         // OKLab: linear interpolation in Lab
-        vec3 labA = linearToOklab(srgbToLinearV(cA.rgb));
-        vec3 labB = linearToOklab(srgbToLinearV(cB.rgb));
+        // Uniform path: colors already in OKLab (L,a,b); texture path: convert from sRGB
+        vec3 labA = uUseTexture < 0.5 ? cA.rgb : linearToOklab(srgbToLinearV(cA.rgb));
+        vec3 labB = uUseTexture < 0.5 ? cB.rgb : linearToOklab(srgbToLinearV(cB.rgb));
         labMix = mix(labA, labB, localT);
     } else {
-        // OKLCH: interpolate L, C linearly; hue along shortest arc
-        vec3 lchA = oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
-        vec3 lchB = oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
+        // OKLCH: interpolate L, C linearly; hue direction per uColorSpace
+        // Uniform path: colors already in OKLCH (L,C,H); texture path: convert from sRGB
+        vec3 lchA = uUseTexture < 0.5 ? cA.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
+        vec3 lchB = uUseTexture < 0.5 ? cB.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
         float dH = lchB.z - lchA.z;
-        if (dH >  3.14159265) dH -= 6.28318530;
-        if (dH < -3.14159265) dH += 6.28318530;
+        float cs = uColorSpace;
+        if (cs < 1.5) {
+            // shorter (1): smallest arc
+            if (dH >  3.14159265) dH -= 6.28318530;
+            if (dH < -3.14159265) dH += 6.28318530;
+        } else if (cs < 2.5) {
+            // longer (2): largest arc
+            if (dH > 0.0 && dH < 3.14159265) dH -= 6.28318530;
+            else if (dH < 0.0 && dH > -3.14159265) dH += 6.28318530;
+        } else if (cs < 3.5) {
+            // increasing (3): always increase hue
+            if (dH < 0.0) dH += 6.28318530;
+        } else {
+            // decreasing (4): always decrease hue
+            if (dH > 0.0) dH -= 6.28318530;
+        }
         labMix = oklchToOklab(vec3(
             mix(lchA.x, lchB.x, localT),
             mix(lchA.y, lchB.y, localT),
