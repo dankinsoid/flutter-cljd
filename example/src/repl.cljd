@@ -347,7 +347,18 @@
            (ui/sized {:h 28})
            ui/expanded)))))
 
-(defn gradient-comparison []
+(defn- chroma-mix-strip
+  "Tight gradient strip without label, just the gradient."
+  [colors cs]
+  (->> (ui/decorated {:gradient {:type :linear
+                                 :colors colors
+                                 :begin :left
+                                 :end :right
+                                 :color-space cs}
+                      :border-radius 0})
+       (ui/sized {:h 48})))
+
+(defn gradient-color-page []
   (f/widget
    :watch [colors -palette]
    (ui/padding
@@ -357,15 +368,10 @@
      :main-axis-size :min
      :cross-axis-alignment :stretch
      (gradient-strip colors :oklab)
-     ;(precomputed-gradient-strip colors :oklab 16)
      (gradient-strip colors :oklch)
      (gradient-strip colors :oklch-mix)
-     ;(precomputed-gradient-strip colors :oklch 16)
-     ;(precomputed-gradient-strip colors :oklch-mix 16)
      (gradient-strip colors :oklch :longer)
      (gradient-strip colors :oklch-mix :longer)
-     ;(precomputed-gradient-strip colors :oklch :longer 16)
-     ;(precomputed-gradient-strip colors :oklch-mix :longer 16)
      (ui/center
       (c/CupertinoButton
        .color (dart-ui/Color 0xFF007AFF)
@@ -375,6 +381,48 @@
                               .color (dart-ui/Color 0xFFFFFFFF)
                               .fontWeight c/FontWeight.w600))
        .onPressed #(reset! -palette (rand-palette 2))))))))
+
+(defn gradient-comparison []
+  (f/widget
+   :watch [^double t (atom 0.0) :as $t]
+   (let [;; Two base hues in OKLCH: orange-red and blue
+         ;; t controls desaturation: 0 = both saturated, 0.5 = mixed, 1 = both grey
+         c1-chroma (/ (min (max 0.01 (- 1.0 (* t 2.0))) 0.99) 3.0)
+         c2-chroma (/ (min (max 0.01 (- 2.0 (* t 2.0))) 0.99) 3.0)
+         c1 (ut/oklch->color 0.7 c1-chroma 0.7)   ;; warm hue
+         c2 (ut/oklch->color 0.5 c2-chroma 4.5)    ;; cool hue
+         pair [c1 c2]]
+     (ui/padding
+      {:horizontal 24 :vertical 32}
+      (ui/column
+       :main-axis-size :min
+       :cross-axis-alignment :stretch
+       :spacing 2
+       (chroma-mix-strip pair :oklab)
+       (chroma-mix-strip pair :oklch-mix)
+       (chroma-mix-strip pair :oklch)
+       (ui/sized {:h 16})
+       (ui/row
+        :cross-axis-alignment :center
+        (ui/text "saturated" :style {:size 11 :color :grey})
+        (ui/expanded
+         (c/CupertinoSlider
+          .value t
+          .min 0.0 .max 1.0
+          .onChanged #(reset! $t %)))
+        (ui/text "desaturated" :style {:size 11 :color :grey}))
+       (ui/sized {:h 8})
+       (ui/row
+        :main-axis-alignment :space-around
+        (ui/sized {:w 48 :h 48}
+                  (ui/decorated {:color c1 :border-radius 8}))
+        (ui/column
+         :cross-axis-alignment :start
+         (ui/text "oklab" :style {:size 12 :color :grey})
+         (ui/text "oklch-mix" :style {:size 12 :weight :bold})
+         (ui/text "oklch" :style {:size 12 :color :grey}))
+        (ui/sized {:w 48 :h 48}
+                  (ui/decorated {:color c2 :border-radius 8}))))))))
 
 ;; ====== PREVIEW SWITCHER ======
 
@@ -387,7 +435,8 @@
    ["Reorder"    reorder-preview]
    ["Offset Fix" offset-correction-preview]
    ["Mixed"      mixed-layouts-preview]
-   ["Gradients"  gradient-comparison]])
+   ["Gradients"  gradient-color-page]
+   ["Chroma"    gradient-comparison]])
 
 (defn preview-switcher []
   (f/widget

@@ -424,6 +424,43 @@
        (/ (mod (.-millisecondsSinceEpoch (dc/DateTime.now)) ms) ms)))
    #(str "(synced " duration " " curve ")")))
 
+;; @ai-generated(guided)
+(defn polyline
+  "Creates a curve from Y values connected by straight lines.
+
+   Takes a sequence of Y values evenly spaced along the time axis.
+   At t=0 returns the first value, at t=1 returns the last value,
+   and linearly interpolates between adjacent values in between.
+
+   Unlike `concat` (which chains sub-curves), `polyline` defines
+   the output shape directly via control points.
+
+   Args:
+    - ys: sequence of 2+ double values (Y coordinates at evenly-spaced t)
+
+   Returns: a Curve that linearly interpolates through the given points.
+
+   ```clojure
+   (polyline [0 1 0])           ;; triangle: 0→1→0
+   (polyline [0 0.3 1.0 0.5])   ;; 4-point polyline
+   ```"
+  [ys]
+  (let [ys (mapv double ys)
+        segments (dec (count ys))]
+    (assert (>= segments 1) "polyline requires at least 2 values")
+    (t/AnyCurve
+     (fn [^double t]
+       (cond
+         (<= t 0.0) (nth ys 0)
+         (>= t 1.0) (nth ys segments)
+         :else
+         (let [k (* t segments)
+               i (min (int k) (dec segments))
+               local (- k (double i))]
+           (+ (* (- 1.0 local) (nth ys i))
+              (* local (nth ys (inc i)))))))
+     #(str "(polyline " ys ")"))))
+
 (def linear a/Curves.linear)
 (def bounce-in a/Curves.bounceIn)
 (def bounce-in-out a/Curves.bounceInOut)
