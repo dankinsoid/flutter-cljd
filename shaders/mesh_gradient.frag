@@ -20,7 +20,7 @@ uniform vec2 uPositions[64];
 // 135-390
 uniform vec4 uColors[64];
 // 391
-uniform float uColorSpace; // 0=oklab, 1=oklch-shorter, 2=oklch-longer, 3=oklch-increasing, 4=oklch-decreasing
+uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
 
@@ -137,6 +137,7 @@ vec4 catmullRomWeights(float t) {
 // Get OKLab or OKLCH + alpha at grid position, clamped to grid bounds
 // Uniform path: colors already preconverted to OKLab or OKLCH on CPU
 // Texture path: convert from sRGB
+// uColorSpace 1-4 and 5-8 both use OKLCH storage (5-8 = mix mode, handled at blend time)
 vec4 gridColorLab(int row, int col, int gw, int gh) {
     int r = clamp(row, 0, gh - 1);
     int c = clamp(col, 0, gw - 1);

@@ -23,7 +23,7 @@ uniform vec4 uColors[32];
 // 138-169
 uniform float uStops[32];
 // 170
-uniform float uColorSpace; // 0=oklab, 1=oklch-shorter, 2=oklch-longer, 3=oklch-increasing, 4=oklch-decreasing
+uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
 
@@ -220,11 +220,13 @@ void main() {
         labMix = mix(labA, labB, localT);
     } else {
         // OKLCH: interpolate L, C linearly; hue direction per uColorSpace
+        // cs 1-4 = pure OKLCH, 5-8 = OKLCH-mix (blend with OKLab by chroma delta)
         // Uniform path: colors already in OKLCH (L,C,H); texture path: convert from sRGB
         vec3 lchA = uUseTexture < 0.5 ? cA.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
         vec3 lchB = uUseTexture < 0.5 ? cB.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
         float dH = lchB.z - lchA.z;
-        float cs = uColorSpace;
+        // Normalize cs: 5-8 maps to same hue logic as 1-4
+        float cs = uColorSpace > 4.5 ? uColorSpace - 4.0 : uColorSpace;
         if (cs < 1.5) {
             // shorter (1): smallest arc
             if (dH >  3.14159265) dH -= 6.28318530;
@@ -240,11 +242,26 @@ void main() {
             // decreasing (4): always decrease hue
             if (dH > 0.0) dH -= 6.28318530;
         }
-        labMix = oklchToOklab(vec3(
+        vec3 lchResult = oklchToOklab(vec3(
             mix(lchA.x, lchB.x, localT),
             mix(lchA.y, lchB.y, localT),
             lchA.z + localT * dH
         ));
+        if (uColorSpace > 4.5) {
+            // OKLCH-mix: blend OKLCH path with OKLab path based on chroma difference.
+            // When chromas are similar → pure OKLCH (good hue arc).
+            // When chromas differ a lot → OKLab (avoids oversaturated intermediates).
+            vec3 labA = oklchToOklab(lchA);
+            vec3 labB = oklchToOklab(lchB);
+            vec3 labResult = mix(labA, labB, localT);
+            // Smoothstep curve: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
+            float x = min(1.0, abs(lchA.y - lchB.y) / 0.3);
+            float x3 = x * x * x;
+            float strength = x3 * (x * (6.0 * x - 15.0) + 10.0);
+            labMix = mix(lchResult, labResult, strength);
+        } else {
+            labMix = lchResult;
+        }
     }
 
     // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)

@@ -333,11 +333,7 @@
   "sRGB gradient with n stops precomputed from OKLab/OKLCH lerp."
   ([colors cs n] (precomputed-gradient-strip colors cs nil n))
   ([colors cs hue n]
-   (let [lerp-fn (case cs
-                   :oklab (ut/oklab-lerp (first colors) (second colors))
-                   :oklch (ut/oklch-lerp (first colors) (second colors)
-                                         (or hue :shorter)))
-         pre-colors (mapv #(lerp-fn (/ (double %) (dec n))) (range n))]
+   (let [[pre-colors] (ut/expand-gradient-colors cs colors nil n hue)]
      (ui/row
       :cross-axis-alignment :center
       (ui/sized {:w 76}
@@ -357,20 +353,19 @@
    (ui/padding
     {:horizontal 24 :vertical 32}
     (ui/column
+     :spacing 24
      :main-axis-size :min
      :cross-axis-alignment :stretch
      (gradient-strip colors :oklab)
-     (precomputed-gradient-strip colors :oklab 3)
-     (precomputed-gradient-strip colors :oklab 8)
-     (precomputed-gradient-strip colors :oklab 16)
+     ;(precomputed-gradient-strip colors :oklab 16)
      (gradient-strip colors :oklch)
-     (precomputed-gradient-strip colors :oklch 3)
-     (precomputed-gradient-strip colors :oklch 8)
-     (precomputed-gradient-strip colors :oklch 16)
+     (gradient-strip colors :oklch-mix)
+     ;(precomputed-gradient-strip colors :oklch 16)
+     ;(precomputed-gradient-strip colors :oklch-mix 16)
      (gradient-strip colors :oklch :longer)
-     (precomputed-gradient-strip colors :oklch :longer 3)
-     (precomputed-gradient-strip colors :oklch :longer 8)
-     (precomputed-gradient-strip colors :oklch :longer 16)
+     (gradient-strip colors :oklch-mix :longer)
+     ;(precomputed-gradient-strip colors :oklch :longer 16)
+     ;(precomputed-gradient-strip colors :oklch-mix :longer 16)
      (ui/center
       (c/CupertinoButton
        .color (dart-ui/Color 0xFF007AFF)

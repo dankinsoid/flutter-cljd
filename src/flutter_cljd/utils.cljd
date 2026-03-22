@@ -304,14 +304,6 @@
                 (range (dec n)))]
     [(mapv first result) (mapv second result)]))
 
-(extend-protocol f/ITweenable
-  ui/Color
-  (-tween [end]
-    (f/tween-with
-     (fn [begin end]
-       (oklab-lerp begin end))
-     end)))
-
 ;;; OKLCH color space (OKLab in polar coordinates)
 
 (defn color->oklch
@@ -396,6 +388,80 @@
      ((oklch-lerp from to) (double x))))
   ([from to hue-method t]
    ((oklch-lerp from to hue-method) (double t))))
+
+(defn oklch-mix
+  "Chroma-adaptive interpolation between two colors.
+   Blends OKLCH (good hue path) with OKLab (good lightness/chroma path)
+   based on chroma difference: when chromas are similar → pure OKLCH;
+   when they differ a lot → shifts toward OKLab to avoid oversaturated intermediates.
+
+   Accepts the same `hue-method` as `oklch-lerp`.
+
+   ```clojure
+   (oklch-mix Colors.red Colors.white 0.5)            ; high deltaC → mostly OKLab path
+   (oklch-mix Colors.red Colors.blue 0.5)              ; similar C → mostly OKLCH path
+   ((oklch-mix Colors.red Colors.white) 0.5)           ; curried
+   ((oklch-mix Colors.red Colors.white :longer) 0.5)   ; curried with hue method
+   ```"
+  ([from to]
+   (oklch-mix from to :shorter))
+  ([from to x]
+   (if (keyword? x)
+     (let [hid (hue-id x)
+           [l1 c1 h1 alpha1] (color->oklch from)
+           [l2 c2 h2 alpha2] (color->oklch to)
+           ;; OKLab a,b for the straight-line path (L is same as OKLCH L)
+           [_ aa1 ba1 _] (color->oklab from)
+           [_ aa2 ba2 _] (color->oklab to)
+           ;; Smoothstep: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
+           x (min 1.0 (/ (.abs (- c1 c2)) 0.3))
+           x3 (* x x x)
+           strength (* x3 (+ (* x (- (* 6.0 x) 15.0)) 10.0))]
+       (fn [^double t]
+         (let [;; OKLCH path: interpolate L, C, H separately
+               lch-l (+ l1 (* t (- l2 l1)))
+               lch-c (+ c1 (* t (- c2 c1)))
+               lch-h (lerp-hue h1 h2 t hid)
+               ;; Convert OKLCH result to OKLab for blending
+               lch-a (* lch-c (math/cos lch-h))
+               lch-b (* lch-c (math/sin lch-h))
+               ;; OKLab path: straight-line interpolation
+               lab-a (+ aa1 (* t (- aa2 aa1)))
+               lab-b (+ ba1 (* t (- ba2 ba1)))
+               ;; Blend the two paths in OKLab space
+               s strength
+               final-l lch-l ;; L is identical in both paths
+               final-a (+ lch-a (* s (- lab-a lch-a)))
+               final-b (+ lch-b (* s (- lab-b lch-b)))
+               final-alpha (+ alpha1 (* t (- alpha2 alpha1)))]
+           (oklab->color final-l final-a final-b final-alpha))))
+     ((oklch-mix from to) (double x))))
+  ([from to hue-method t]
+   ((oklch-mix from to hue-method) (double t))))
+
+(extend-protocol f/ITweenable
+  ui/Color
+  (-tween [end]
+    (f/tween-with
+     (fn [begin end]
+       (oklch-mix begin end))
+     end)))
+
+(defmethod expand-gradient-colors :oklch-mix [_ colors stops steps hue-method]
+  (let [n (count colors)
+        stops (or stops (mapv #(/ (double %) (dec n)) (range n)))
+        result (mapcat
+                (fn [i]
+                  (let [f (oklch-mix (nth colors i) (nth colors (inc i)) (or hue-method :shorter))
+                        s1 (nth stops i)
+                        s2 (nth stops (inc i))
+                        end (if (= i (- n 2)) (inc steps) steps)]
+                    (map (fn [j]
+                           (let [t (/ (double j) steps)]
+                             [(f t) (+ s1 (* t (- s2 s1)))]))
+                         (range end))))
+                (range (dec n)))]
+    [(mapv first result) (mapv second result)]))
 
 (defmethod expand-gradient-colors :oklch [_ colors stops steps hue-method]
   (let [n (count colors)

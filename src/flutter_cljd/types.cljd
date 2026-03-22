@@ -965,12 +965,21 @@
    gradient-type tm-id
    begin-align end-align center-align radius-val start-angle end-angle cs-id))
 
-(defn- oklch-cs-id [hue]
-  (case hue
-    :longer 2
-    :increasing 3
-    :decreasing 4
-    1))
+(def ^:private shader-color-spaces
+  "Color spaces that use the OKLab/OKLCH shader path (vs native sRGB fallback)."
+  #{:oklab :oklch :oklch-mix})
+
+(defn- oklch-cs-id
+  "Returns shader uColorSpace id for OKLCH mode.
+   hue: :shorter (default), :longer, :increasing, :decreasing.
+   mix?: when true, adds +4 offset to enable OKLab/OKLCH chroma-adaptive blending."
+  [hue mix?]
+  (+ (case hue
+       :longer 2
+       :increasing 3
+       :decreasing 4
+       1)
+     (if mix? 4 0)))
 
 (defn ^m/Gradient linear-gradient
   "Creates a LinearGradient. OKLab/OKLCH requires `(shader/load-shaders!)`; falls back to sRGB.
@@ -980,9 +989,12 @@
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`
+   - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
+     `:oklch-mix` blends OKLCH with OKLab interpolation based on chroma difference,
+     avoiding oversaturated intermediates when mixing saturated and desaturated colors.
+     Use `:oklch` for classic OKLCH lerp.
    - `:hue` (keyword, default: :shorter): `:shorter`, `:longer`, `:increasing`, `:decreasing`
-     Controls hue traversal direction when `:color-space` is `:oklch`."
+     Controls hue traversal direction when `:color-space` is `:oklch` or `:oklch-mix`."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -990,16 +1002,18 @@
       args
 
       (map? args)
-      (let [cs (:color-space args :oklab)
+      (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
             colors (vec (gradient-colors (:colors args)))
             stops (:stops args)
             tm (:tile-mode args :clamp)
             begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
-            end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))]
-        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
+            end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))
+            oklch? (#{:oklch :oklch-mix} cs)]
+        (if (and (shader-color-spaces cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops 0 (tile-mode-id tm)
-                           begin end nil 0.0 0.0 0.0 (if (= cs :oklch) (oklch-cs-id hue) 0))
+                           begin end nil 0.0 0.0 0.0
+                           (if oklch? (oklch-cs-id hue (= cs :oklch-mix)) 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16) hue)]
             (m/LinearGradient
@@ -1019,9 +1033,10 @@
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`
+   - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
+     (see `linear-gradient` for `:oklch-mix` description)
    - `:hue` (keyword, default: :shorter): `:shorter`, `:longer`, `:increasing`, `:decreasing`
-     Controls hue traversal direction when `:color-space` is `:oklch`."
+     Controls hue traversal direction when `:color-space` is `:oklch` or `:oklch-mix`."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -1029,17 +1044,19 @@
       args
 
       (map? args)
-      (let [cs (:color-space args :oklab)
+      (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
             colors (vec (gradient-colors (:colors args)))
             stops (:stops args)
             tm (:tile-mode args :clamp)
             center (alignment-geometry (:center args m/Alignment.center))
             sa (double (:start-angle args 0))
-            ea (double (:end-angle args (* 2 π)))]
-        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
+            ea (double (:end-angle args (* 2 π)))
+            oklch? (#{:oklch :oklch-mix} cs)]
+        (if (and (shader-color-spaces cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops 2 (tile-mode-id tm)
-                           nil nil center 0.0 sa ea (if (= cs :oklch) (oklch-cs-id hue) 0))
+                           nil nil center 0.0 sa ea
+                           (if oklch? (oklch-cs-id hue (= cs :oklch-mix)) 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16) hue)]
             (m/SweepGradient
@@ -1062,9 +1079,10 @@
    - `:colors` (list of colors, default: [:transparent :transparent])
    - `:stops` (list of numbers, default: nil)
    - `:tile-mode` (tile-mode, default: :clamp)
-   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:srgb`
+   - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
+     (see `linear-gradient` for `:oklch-mix` description)
    - `:hue` (keyword, default: :shorter): `:shorter`, `:longer`, `:increasing`, `:decreasing`
-     Controls hue traversal direction when `:color-space` is `:oklch`."
+     Controls hue traversal direction when `:color-space` is `:oklch` or `:oklch-mix`."
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))]
     (cond
@@ -1072,7 +1090,7 @@
       args
 
       (map? args)
-      (let [cs (:color-space args :oklab)
+      (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
             colors (vec (gradient-colors (:colors args)))
             stops (:stops args)
@@ -1080,10 +1098,12 @@
             center (alignment-geometry (:center args m/Alignment.center))
             r (double (:radius args 0.5))
             sr (double (:start-radius args 0))
-            gtype (if (= (:shape args) :diamond) 3 1)]
-        (if (and (#{:oklab :oklch} cs) (shader/oklab-shader-loaded?))
+            gtype (if (= (:shape args) :diamond) 3 1)
+            oklch? (#{:oklch :oklch-mix} cs)]
+        (if (and (shader-color-spaces cs) (shader/oklab-shader-loaded?))
           (->oklab-gradient colors stops gtype (tile-mode-id tm)
-                           nil nil center r sr 0.0 (if (= cs :oklch) (oklch-cs-id hue) 0))
+                           nil nil center r sr 0.0
+                           (if oklch? (oklch-cs-id hue (= cs :oklch-mix)) 0))
           (let [[colors stops] (ut/expand-gradient-colors
                                 cs colors stops (:steps args 16) hue)]
             (m/RadialGradient
@@ -1215,9 +1235,10 @@
    - `:colors` (vector of colors, required): one color per grid point, row-major
    - `:points` (vector of [x y], optional): positions in [0,1] space, row-major.
      Defaults to a regular evenly-spaced grid.
-   - `:color-space` (keyword, default: :oklab): `:oklab` or `:oklch`
+   - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, or `:oklch-mix`
+     (see `linear-gradient` for `:oklch-mix` description)
    - `:hue` (keyword, default: :shorter): `:shorter`, `:longer`, `:increasing`, `:decreasing`
-     Controls hue traversal direction when `:color-space` is `:oklch`.
+     Controls hue traversal direction when `:color-space` is `:oklch` or `:oklch-mix`.
 
    ```clojure
    (mesh-gradient {:width 3 :height 3
@@ -1235,17 +1256,19 @@
       (let [w (int (:width args))
             h (int (:height args))
             n (* w h)
-            cs (:color-space args :oklab)
+            cs (:color-space args :oklch-mix)
             hue (:hue args)
             colors (vec (map color (:colors args)))
-            points (or (:points args) (default-mesh-points w h))]
+            points (or (:points args) (default-mesh-points w h))
+            oklch? (#{:oklch :oklch-mix} cs)]
         (assert (>= w 2) "mesh-gradient: width must be >= 2")
         (assert (>= h 2) "mesh-gradient: height must be >= 2")
         (assert (<= n 256) "mesh-gradient: grid too large (max 256 points = 16x16)")
         (assert (= (count colors) n) "mesh-gradient: colors count must equal width * height")
         (assert (= (count points) n) "mesh-gradient: points count must equal width * height")
         (if (shader/mesh-shader-loaded?)
-          (->oklab-mesh-gradient colors w h points (if (= cs :oklch) (oklch-cs-id hue) 0))
+          (->oklab-mesh-gradient colors w h points
+                                (if oklch? (oklch-cs-id hue (= cs :oklch-mix)) 0))
           (m/LinearGradient
            .begin m/Alignment.topLeft .end m/Alignment.bottomRight
            .colors [(first colors) (last colors)]
