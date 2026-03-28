@@ -434,9 +434,9 @@
            [_ aa1 ba1 _] (color->oklab from)
            [_ aa2 ba2 _] (color->oklab to)
            ;; Smoothstep: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
-           ;; Low min-chroma → OKLab (stable for grays & desaturated),
-           ;; high min-chroma → OKLCH (better hue path)
-           x (- 1.0 (min 1.0 (/ (min c1 c2) 0.25)))
+           ;; High chroma difference → OKLab (avoids oversaturated intermediates),
+           ;; similar chroma → OKLCH (better hue path)
+           x (min 1.0 (/ (.abs (- c1 c2)) 0.25))
            x3 (* x x x)
            strength (* x3 (+ (* x (- (* 6.0 x) 15.0)) 10.0))]
        (fn [^double t]
