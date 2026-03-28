@@ -265,11 +265,11 @@ void main() {
             vec3 labA = oklchToOklab(lchA);
             vec3 labB = oklchToOklab(lchB);
             vec3 labResult = mix(labA, labB, tAlpha);
-            // Smoothstep curve: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
+            // Smoothstep: 3x² - 2x³
             float dc = abs(lchA.y - lchB.y);
             float x = dc / (min(lchA.y, lchB.y) + dc + 0.03);
-            float x3 = x * x * x;
-            float strength = x3 * (x * (6.0 * x - 15.0) + 10.0);
+            float x2 = x * x;
+            float strength = 3.0 * x2 - 2.0 * x2 * x;
             labMix = mix(lchResult, labResult, strength);
         } else {
             labMix = lchResult;

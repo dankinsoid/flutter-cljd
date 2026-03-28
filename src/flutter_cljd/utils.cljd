@@ -438,8 +438,9 @@
            ;; 1 = one much grayer → OKLab. ε dampens noise near zero.
            dc (.abs (- c1 c2))
            x (/ dc (+ (min c1 c2) dc 0.03))
-           x3 (* x x x)
-           strength (* x3 (+ (* x (- (* 6.0 x) 15.0)) 10.0))]
+           ;; Smoothstep: 3x² - 2x³
+           x2 (* x x)
+           strength (- (* 3.0 x2) (* 2.0 x2 x))]
        (fn [^double t]
          (let [ta (alpha-weighted-t t alpha1 alpha2)
                ;; OKLCH path: interpolate L, C, H separately
