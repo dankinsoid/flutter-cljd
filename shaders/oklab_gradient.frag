@@ -267,7 +267,7 @@ void main() {
             vec3 labResult = mix(labA, labB, tAlpha);
             // Smoothstep: 3x² - 2x³
             float dc = abs(lchA.y - lchB.y);
-            float x = dc / (min(lchA.y, lchB.y) + dc + 0.03);
+            float x = dc / (min(lchA.y, lchB.y) + dc + 0.0001);
             float x2 = x * x;
             float strength = 3.0 * x2 - 2.0 * x2 * x;
             labMix = mix(lchResult, labResult, strength);
