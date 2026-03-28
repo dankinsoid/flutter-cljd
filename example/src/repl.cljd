@@ -424,6 +424,41 @@
         (ui/sized {:w 48 :h 48}
                   (ui/decorated {:color c2 :border-radius 8}))))))))
 
+;; ====== 10. ALPHA-WEIGHTED INTERPOLATION ======
+
+(defn alpha-gradient-page
+  "Demonstrates alpha-weighted interpolation: transparent colors
+   don't pollute hue/lightness of opaque neighbors."
+  []
+  (ui/padding
+   {:horizontal 24 :vertical 32}
+   (ui/column
+    :main-axis-size :min
+    :cross-axis-alignment :stretch
+    :spacing 16
+    ;; Red → transparent black: should stay pure red, not darken
+    (ui/text "red → transparent black" :style {:size 13 :weight :bold})
+    (->> (ui/decorated {:gradient {:type :linear
+                                   :colors [0xFFFF0000 0x00000000]
+                                   :begin :left :end :right}
+                        :border-radius 8})
+         (ui/sized {:h 48}))
+    ;; Blue → transparent → yellow: no dark band in the middle
+    (ui/text "blue → transparent → yellow" :style {:size 13 :weight :bold})
+    (->> (ui/decorated {:gradient {:type :linear
+                                   :colors [0xFF2196F3 0x00000000 0xFFFFEB3B]
+                                   :stops [0.0 0.5 1.0]
+                                   :begin :left :end :right}
+                        :border-radius 8})
+         (ui/sized {:h 48}))
+    ;; Orange → transparent orange: fade without darkening
+    (ui/text "orange → transparent orange" :style {:size 13 :weight :bold})
+    (->> (ui/decorated {:gradient {:type :radial
+                                   :colors [0xFFFF9800 0x00FF9800]
+                                   :radius 0.8}
+                        :border-radius 8})
+         (ui/sized {:h 120})))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
@@ -436,7 +471,8 @@
    ["Offset Fix" offset-correction-preview]
    ["Mixed"      mixed-layouts-preview]
    ["Gradients"  gradient-color-page]
-   ["Chroma"    gradient-comparison]])
+   ["Chroma"     gradient-comparison]
+   ["Alpha"      alpha-gradient-page]])
 
 (defn preview-switcher []
   (f/widget
