@@ -149,7 +149,40 @@
                    :begin :top-left
                    :end :bottom-right}
         :border-radius 12}
-       (f/sized {:w 280 :h 120})))})
+       (f/sized {:w 280 :h 120})))
+
+   ;; --- Alpha-weighted interpolation ---
+   ;; Transparent colors don't pollute hue/lightness of opaque neighbors
+
+   :alpha-fade-red
+   (mk-example "Alpha fade" "Red → transparent: stays pure red while fading out"
+     (f/decorated
+       {:gradient {:type :linear
+                   :colors [0xFFFF0000 0x00000000]
+                   :begin :center-start
+                   :end :center-end}
+        :border-radius 12}
+       (f/sized {:w 280 :h 80})))
+
+   :alpha-fade-blue-yellow
+   (mk-example "Alpha middle" "Blue → transparent → yellow: no dark band in the middle"
+     (f/decorated
+       {:gradient {:type :linear
+                   :colors [0xFF2196F3 0x00000000 0xFFFFEB3B]
+                   :stops [0.0 0.5 1.0]
+                   :begin :center-start
+                   :end :center-end}
+        :border-radius 12}
+       (f/sized {:w 280 :h 80})))
+
+   :alpha-radial
+   (mk-example "Alpha radial" "Radial: orange center fading to transparent without darkening"
+     (f/decorated
+       {:gradient {:type :radial
+                   :colors [0xFFFF9800 0x00FF9800]
+                   :radius 0.7}
+        :border-radius 12}
+       (f/sized {:w 200 :h 200})))})
 
 (defn get-example [widget-id]
   (get examples widget-id))
