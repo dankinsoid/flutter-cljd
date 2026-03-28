@@ -259,15 +259,15 @@ void main() {
             lchA.z + tAlpha * dH
         ));
         if (uColorSpace > 4.5) {
-            // OKLCH-mix: two independent OKLab triggers (max = either suffices):
-            // - high chroma difference → OKLab (avoids oversaturated intermediates)
-            // - low min-chroma → OKLab (hue unstable near gray)
+            // Chroma ratio: how much closer is the weaker color to gray
+            // than to the other color. 0 = both similar → OKLCH,
+            // 1 = one much grayer → OKLab. ε dampens noise near zero.
             vec3 labA = oklchToOklab(lchA);
             vec3 labB = oklchToOklab(lchB);
             vec3 labResult = mix(labA, labB, tAlpha);
             // Smoothstep curve: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
-            float x = max(min(1.0, abs(lchA.y - lchB.y) / 0.25),
-                          1.0 - min(1.0, min(lchA.y, lchB.y) / 0.25));
+            float dc = abs(lchA.y - lchB.y);
+            float x = dc / (min(lchA.y, lchB.y) + dc + 0.03);
             float x3 = x * x * x;
             float strength = x3 * (x * (6.0 * x - 15.0) + 10.0);
             labMix = mix(lchResult, labResult, strength);
