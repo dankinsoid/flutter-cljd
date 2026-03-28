@@ -256,9 +256,27 @@
       (.round (* bl 255))
       (double alpha)))))
 
+(defn- ^double alpha-weighted-t
+  "Alpha-weighted interpolation parameter: transparent colors contribute less.
+   Equivalent to premultiplied alpha for linear components,
+   but expressed as reweighted t — works for angular components (hue) too.
+
+   ```clojure
+   (alpha-weighted-t 0.5 1.0 0.0) ; => 0.0 (transparent second color has no influence)
+   (alpha-weighted-t 0.5 0.0 1.0) ; => 1.0 (transparent first color has no influence)
+   (alpha-weighted-t 0.5 1.0 1.0) ; => 0.5 (equal alpha — same as unweighted t)
+   ```"
+  [^double t ^double a1 ^double a2]
+  (let [w1 (* (- 1.0 t) a1)
+        w2 (* t a2)
+        wsum (+ w1 w2)]
+    ;; When both nearly transparent, fall back to unweighted t (color irrelevant anyway)
+    (if (> wsum 0.001) (/ w2 wsum) t)))
+
 (defn oklab-lerp
   "Interpolates between two colors in OKLab color space.
    Produces perceptually uniform transitions unlike `Color.lerp` (which uses sRGB).
+   Uses alpha-weighted interpolation so transparent colors don't pollute the result.
 
    ```clojure
    (oklab-lerp Colors.red Colors.blue 0.5)
@@ -270,11 +288,12 @@
    (let [[l1 a1 b1 alpha1] (color->oklab from)
          [l2 a2 b2 alpha2] (color->oklab to)]
      (fn [^double t]
-       (oklab->color
-        (+ l1 (* t (- l2 l1)))
-        (+ a1 (* t (- a2 a1)))
-        (+ b1 (* t (- b2 b1)))
-        (+ alpha1 (* t (- alpha2 alpha1))))))))
+       (let [ta (alpha-weighted-t t alpha1 alpha2)]
+         (oklab->color
+          (+ l1 (* ta (- l2 l1)))
+          (+ a1 (* ta (- a2 a1)))
+          (+ b1 (* ta (- b2 b1)))
+          (+ alpha1 (* t (- alpha2 alpha1)))))))))
 
 (defmulti expand-gradient-colors
   "Expands gradient colors in the given color space.
@@ -380,11 +399,12 @@
            [l1 c1 h1 alpha1] (color->oklch from)
            [l2 c2 h2 alpha2] (color->oklch to)]
        (fn [^double t]
-         (oklch->color
-          (+ l1 (* t (- l2 l1)))
-          (+ c1 (* t (- c2 c1)))
-          (lerp-hue h1 h2 t hid)
-          (+ alpha1 (* t (- alpha2 alpha1))))))
+         (let [ta (alpha-weighted-t t alpha1 alpha2)]
+           (oklch->color
+            (+ l1 (* ta (- l2 l1)))
+            (+ c1 (* ta (- c2 c1)))
+            (lerp-hue h1 h2 ta hid)
+            (+ alpha1 (* t (- alpha2 alpha1)))))))
      ((oklch-lerp from to) (double x))))
   ([from to hue-method t]
    ((oklch-lerp from to hue-method) (double t))))
@@ -420,16 +440,17 @@
            x3 (* x x x)
            strength (* x3 (+ (* x (- (* 6.0 x) 15.0)) 10.0))]
        (fn [^double t]
-         (let [;; OKLCH path: interpolate L, C, H separately
-               lch-l (+ l1 (* t (- l2 l1)))
-               lch-c (+ c1 (* t (- c2 c1)))
-               lch-h (lerp-hue h1 h2 t hid)
+         (let [ta (alpha-weighted-t t alpha1 alpha2)
+               ;; OKLCH path: interpolate L, C, H separately
+               lch-l (+ l1 (* ta (- l2 l1)))
+               lch-c (+ c1 (* ta (- c2 c1)))
+               lch-h (lerp-hue h1 h2 ta hid)
                ;; Convert OKLCH result to OKLab for blending
                lch-a (* lch-c (math/cos lch-h))
                lch-b (* lch-c (math/sin lch-h))
                ;; OKLab path: straight-line interpolation
-               lab-a (+ aa1 (* t (- aa2 aa1)))
-               lab-b (+ ba1 (* t (- ba2 ba1)))
+               lab-a (+ aa1 (* ta (- aa2 aa1)))
+               lab-b (+ ba1 (* ta (- ba2 ba1)))
                ;; Blend the two paths in OKLab space
                s strength
                final-l lch-l ;; L is identical in both paths

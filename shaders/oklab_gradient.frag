@@ -210,14 +210,25 @@ void main() {
     vec4 cA = getColor(idx);
     vec4 cB = getColor(idx + 1);
 
-    float alphaMix = mix(cA.a, cB.a, localT);
+    float aA = cA.a;
+    float aB = cB.a;
+    float alphaMix = mix(aA, aB, localT);
+
+    // Alpha-weighted t: transparent colors contribute less to the result.
+    // Equivalent to premultiplied alpha for linear components,
+    // but also works for angular components (hue) where multiply/divide breaks down.
+    float wA = (1.0 - localT) * aA;
+    float wB = localT * aB;
+    float wSum = wA + wB;
+    float tAlpha = wSum > 0.001 ? wB / wSum : localT; // fallback to unweighted when both ~transparent
+
     vec3 labMix;
     if (uColorSpace < 0.5) {
         // OKLab: linear interpolation in Lab
         // Uniform path: colors already in OKLab (L,a,b); texture path: convert from sRGB
         vec3 labA = uUseTexture < 0.5 ? cA.rgb : linearToOklab(srgbToLinearV(cA.rgb));
         vec3 labB = uUseTexture < 0.5 ? cB.rgb : linearToOklab(srgbToLinearV(cB.rgb));
-        labMix = mix(labA, labB, localT);
+        labMix = mix(labA, labB, tAlpha);
     } else {
         // OKLCH: interpolate L, C linearly; hue direction per uColorSpace
         // cs 1-4 = pure OKLCH, 5-8 = OKLCH-mix (blend with OKLab by chroma delta)
@@ -243,9 +254,9 @@ void main() {
             if (dH > 0.0) dH -= 6.28318530;
         }
         vec3 lchResult = oklchToOklab(vec3(
-            mix(lchA.x, lchB.x, localT),
-            mix(lchA.y, lchB.y, localT),
-            lchA.z + localT * dH
+            mix(lchA.x, lchB.x, tAlpha),
+            mix(lchA.y, lchB.y, tAlpha),
+            lchA.z + tAlpha * dH
         ));
         if (uColorSpace > 4.5) {
             // OKLCH-mix: blend OKLCH path with OKLab path based on min chroma.
@@ -253,7 +264,7 @@ void main() {
             // High min-chroma → OKLCH (better hue path).
             vec3 labA = oklchToOklab(lchA);
             vec3 labB = oklchToOklab(lchB);
-            vec3 labResult = mix(labA, labB, localT);
+            vec3 labResult = mix(labA, labB, tAlpha);
             // Smoothstep curve: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
             float x = 1.0 - min(1.0, min(lchA.y, lchB.y) / 0.25);
             float x3 = x * x * x;
@@ -267,6 +278,6 @@ void main() {
     // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
     vec3 rgb = linearToSrgbV(oklabToLinear(labMix));
 
-    // Premultiplied alpha
+    // Premultiplied alpha output
     fragColor = vec4(rgb * alphaMix, alphaMix);
 }

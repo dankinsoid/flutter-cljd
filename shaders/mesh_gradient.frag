@@ -305,6 +305,8 @@ void main() {
             if (!accepted) continue;
 
             // Bicubic Catmull-Rom color interpolation in OKLab
+            // Premultiplied alpha: multiply color by alpha before interpolation,
+            // so transparent grid points don't pollute the color of nearby opaque ones
             vec4 wu = catmullRomWeights(u);
             vec4 wv = catmullRomWeights(v);
 
@@ -316,15 +318,16 @@ void main() {
                 float rowA = 0.0;
                 for (int i = 0; i < 4; i++) {
                     vec4 labA = gridColorLab(row + j - 1, col + i - 1, gw, gh);
-                    rowLab += labA.xyz * wu[i];
-                    rowA += labA.w * wu[i];
+                    float a = labA.w;
+                    rowLab += labA.xyz * a * wu[i];
+                    rowA += a * wu[i];
                 }
                 labFinal += rowLab * wv[j];
                 alpha += rowA * wv[j];
             }
 
             alpha = clamp(alpha, 0.0, 1.0);
-            vec3 lab = labFinal;
+            vec3 lab = alpha > 0.001 ? labFinal / alpha : labFinal;
             if (uColorSpace > 0.5) lab = oklchToOklab(lab);
             // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
             vec3 rgb = linearToSrgbV(oklabToLinear(lab));
