@@ -259,14 +259,15 @@ void main() {
             lchA.z + tAlpha * dH
         ));
         if (uColorSpace > 4.5) {
-            // OKLCH-mix: blend OKLCH path with OKLab path based on chroma difference.
-            // High chroma difference → OKLab (avoids oversaturated intermediates).
-            // Similar chroma → OKLCH (better hue path).
+            // OKLCH-mix: two independent OKLab triggers (max = either suffices):
+            // - high chroma difference → OKLab (avoids oversaturated intermediates)
+            // - low min-chroma → OKLab (hue unstable near gray)
             vec3 labA = oklchToOklab(lchA);
             vec3 labB = oklchToOklab(lchB);
             vec3 labResult = mix(labA, labB, tAlpha);
             // Smoothstep curve: 6x⁵ - 15x⁴ + 10x³ — smooth onset and plateau
-            float x = min(1.0, abs(lchA.y - lchB.y) / 0.25);
+            float x = max(min(1.0, abs(lchA.y - lchB.y) / 0.25),
+                          1.0 - min(1.0, min(lchA.y, lchB.y) / 0.25));
             float x3 = x * x * x;
             float strength = x3 * (x * (6.0 * x - 15.0) + 10.0);
             labMix = mix(lchResult, labResult, strength);
