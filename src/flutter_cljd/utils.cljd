@@ -341,25 +341,37 @@
     [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha]))
 
 (defn oklab->oklch
-  "Converts OKLab vector to OKLCH vector. No gamut clamp.
+  "Converts OKLab to OKLCH vector. No gamut clamp.
 
    ```clojure
-   (oklab->oklch [0.5 0.1 -0.05 1.0]) ; => [0.5 0.1118… -0.4636… 1.0]
+   (oklab->oklch [0.5 0.1 -0.05 1.0])
+   (oklab->oklch 0.5 0.1 -0.05 1.0)
+   (oklab->oklch 0.5 0.1 -0.05)        ; alpha defaults to 1.0
    ```"
   ;; @ai-generated(solo)
-  [[L a b alpha]]
-  [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha])
+  ([[L a b alpha]]
+   (oklab->oklch L a b alpha))
+  ([L a b]
+   (oklab->oklch L a b 1.0))
+  ([L a b alpha]
+   [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha]))
 
 (defn oklch->oklab
-  "Converts OKLCH vector to OKLab vector. No gamut clamp.
+  "Converts OKLCH to OKLab vector. No gamut clamp.
 
    ```clojure
-   (oklch->oklab [0.5 0.1 0.5 1.0]) ; => [0.5 0.0877… 0.0479… 1.0]
+   (oklch->oklab [0.5 0.1 0.5 1.0])
+   (oklch->oklab 0.5 0.1 0.5 1.0)
+   (oklch->oklab 0.5 0.1 0.5)           ; alpha defaults to 1.0
    ```"
   ;; @ai-generated(solo)
-  [[L C H alpha]]
-  (let [C (double C) H (double H)]
-    [L (* C (math/cos H)) (* C (math/sin H)) alpha]))
+  ([[L C H alpha]]
+   (oklch->oklab L C H alpha))
+  ([L C H]
+   (oklch->oklab L C H 1.0))
+  ([L C H alpha]
+   (let [C (double C) H (double H)]
+     [L (* C (math/cos H)) (* C (math/sin H)) alpha])))
 
 (defn oklch->color
   "Converts OKLCH values to a `Color`.
