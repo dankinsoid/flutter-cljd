@@ -278,15 +278,19 @@
    Produces perceptually uniform transitions unlike `Color.lerp` (which uses sRGB).
    Uses alpha-weighted interpolation so transparent colors don't pollute the result.
 
+   `from` and `to` accept either `Color` or `[L a b alpha]` vectors.
+   Vectors bypass the sRGB gamut clamp on input, preserving out-of-gamut hue/chroma.
+
    ```clojure
    (oklab-lerp Colors.red Colors.blue 0.5)
-   ((oklab-lerp Colors.red Colors.blue) 0.5) ; curried form for animations
+   ((oklab-lerp Colors.red Colors.blue) 0.5)           ; curried form
+   ((oklab-lerp [0.7 0.1 0.05 1.0] [0.5 -0.05 -0.1 1.0]) 0.5) ; vector form
    ```"
   ([from to t]
    ((oklab-lerp from to) (double t)))
   ([from to]
-   (let [[l1 a1 b1 alpha1] (color->oklab from)
-         [l2 a2 b2 alpha2] (color->oklab to)]
+   (let [[l1 a1 b1 alpha1] (ensure-oklab from)
+         [l2 a2 b2 alpha2] (ensure-oklab to)]
      (fn [^double t]
        (let [ta (alpha-weighted-t t alpha1 alpha2)]
          (oklab->color
@@ -336,6 +340,27 @@
   (let [[L a b alpha] (color->oklab color)]
     [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha]))
 
+(defn oklab->oklch
+  "Converts OKLab vector to OKLCH vector. No gamut clamp.
+
+   ```clojure
+   (oklab->oklch [0.5 0.1 -0.05 1.0]) ; => [0.5 0.1118… -0.4636… 1.0]
+   ```"
+  ;; @ai-generated(solo)
+  [[L a b alpha]]
+  [L (math/sqrt (+ (* a a) (* b b))) (math/atan2 b a) alpha])
+
+(defn oklch->oklab
+  "Converts OKLCH vector to OKLab vector. No gamut clamp.
+
+   ```clojure
+   (oklch->oklab [0.5 0.1 0.5 1.0]) ; => [0.5 0.0877… 0.0479… 1.0]
+   ```"
+  ;; @ai-generated(solo)
+  [[L C H alpha]]
+  (let [C (double C) H (double H)]
+    [L (* C (math/cos H)) (* C (math/sin H)) alpha]))
+
 (defn oklch->color
   "Converts OKLCH values to a `Color`.
 
@@ -352,6 +377,18 @@
    (let [C (double C)
          H (double H)]
      (oklab->color L (* C (math/cos H)) (* C (math/sin H)) alpha))))
+
+;; @ai-generated(solo)
+(defn- ensure-oklab
+  "Returns [L a b alpha] from either a Color or an OKLab vector."
+  [x]
+  (if (vector? x) x (color->oklab x)))
+
+;; @ai-generated(solo)
+(defn- ensure-oklch
+  "Returns [L C H alpha] from either a Color or an OKLCH vector."
+  [x]
+  (if (vector? x) x (color->oklch x)))
 
 (defn- hue-id ^int [hue-method]
   (case hue-method
@@ -379,6 +416,9 @@
 (defn oklch-lerp
   "Interpolates between two colors in OKLCH color space.
 
+   `from` and `to` accept either `Color` or `[L C H alpha]` vectors.
+   Vectors bypass the sRGB gamut clamp on input, preserving out-of-gamut hue/chroma.
+
    The optional `hue-method` controls how the hue angle is traversed:
    - `:shorter` (default) — shortest arc
    - `:longer` — longest arc
@@ -389,15 +429,15 @@
    (oklch-lerp Colors.red Colors.blue 0.5)
    ((oklch-lerp Colors.red Colors.blue) 0.5)          ; curried, shortest arc
    ((oklch-lerp Colors.red Colors.blue :longer) 0.5)  ; curried, longer arc
-   (oklch-lerp Colors.red Colors.blue :longer 0.5)    ; direct form
+   ((oklch-lerp [0.7 0.15 1.7 1.0] [0.5 0.2 4.5 1.0]) 0.5) ; vector form
    ```"
   ([from to]
    (oklch-lerp from to :shorter))
   ([from to x]
    (if (keyword? x)
      (let [hid (hue-id x)
-           [l1 c1 h1 alpha1] (color->oklch from)
-           [l2 c2 h2 alpha2] (color->oklch to)]
+           [l1 c1 h1 alpha1] (ensure-oklch from)
+           [l2 c2 h2 alpha2] (ensure-oklch to)]
        (fn [^double t]
          (let [ta (alpha-weighted-t t alpha1 alpha2)]
            (oklch->color
@@ -415,24 +455,29 @@
    based on chroma difference: when chromas are similar → pure OKLCH;
    when they differ a lot → shifts toward OKLab to avoid oversaturated intermediates.
 
+   `from` and `to` accept either `Color` or `[L C H alpha]` vectors.
+   Vectors bypass the sRGB gamut clamp on input, preserving out-of-gamut hue/chroma.
+
    Accepts the same `hue-method` as `oklch-lerp`.
 
    ```clojure
    (oklch-mix Colors.red Colors.white 0.5)            ; high deltaC → mostly OKLab path
    (oklch-mix Colors.red Colors.blue 0.5)              ; similar C → mostly OKLCH path
    ((oklch-mix Colors.red Colors.white) 0.5)           ; curried
-   ((oklch-mix Colors.red Colors.white :longer) 0.5)   ; curried with hue method
+   ((oklch-mix [0.7 0.15 1.7 1.0] [0.5 0.2 4.5 1.0]) 0.5) ; vector form
    ```"
   ([from to]
    (oklch-mix from to :shorter))
   ([from to x]
    (if (keyword? x)
      (let [hid (hue-id x)
-           [l1 c1 h1 alpha1] (color->oklch from)
-           [l2 c2 h2 alpha2] (color->oklch to)
-           ;; OKLab a,b for the straight-line path (L is same as OKLCH L)
-           [_ aa1 ba1 _] (color->oklab from)
-           [_ aa2 ba2 _] (color->oklab to)
+           [l1 c1 h1 alpha1] (ensure-oklch from)
+           [l2 c2 h2 alpha2] (ensure-oklch to)
+           ;; Derive OKLab a,b directly from OKLCH (no second Color conversion)
+           aa1 (* (double c1) (math/cos (double h1)))
+           ba1 (* (double c1) (math/sin (double h1)))
+           aa2 (* (double c2) (math/cos (double h2)))
+           ba2 (* (double c2) (math/sin (double h2)))
            ;; Chroma ratio: how much closer is the weaker color to gray
            ;; than to the other color. 0 = both similar → OKLCH,
            ;; 1 = one much grayer → OKLab. ε guards against 0/0.
