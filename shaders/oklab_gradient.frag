@@ -24,6 +24,8 @@ uniform vec4 uColors[32];
 uniform float uStops[32];
 // 170
 uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
+// 171-298 (only populated for oklch-mix uniform path, cs 5-8)
+uniform vec4 uLabColors[32]; // OKLab (L,a,b,_) — avoids per-pixel oklchToOklab in mix path
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
 
@@ -240,10 +242,10 @@ void main() {
         if (uUseTexture < 0.5) {
             lchA = cA.rgb;
             lchB = cB.rgb;
-            // Uniform path sends OKLCH; recover OKLab only when needed (cs 5-8)
+            // Uniform path: OKLab precomputed by CPU in uLabColors (cs 5-8)
             if (uColorSpace > 4.5) {
-                labA = oklchToOklab(lchA);
-                labB = oklchToOklab(lchB);
+                labA = uLabColors[idx].rgb;
+                labB = uLabColors[idx + 1].rgb;
             }
         } else if (uColorSpace > 4.5) {
             // Texture path + oklch-mix: keep OKLab intermediate to avoid redundant trig

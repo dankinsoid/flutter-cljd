@@ -871,23 +871,39 @@
       (do
         (.setFloat shader 5 0.0)
         ;; Colors (indices 10..137, 32 slots × 4 components)
-        ;; Preconvert to OKLab (L,a,b) or OKLCH (L,C,H) so shader skips conversion per-pixel
-        (dotimes [i 32]
-          (let [base (+ 10 (* i 4))]
-            (if (< i n)
-              (let [^ui/Color c (nth colors i)
-                    [x y z a] (if (zero? cs-id)
-                                (ut/color->oklab c)
-                                (ut/color->oklch c))]
-                (.setFloat shader base x)
-                (.setFloat shader (+ base 1) y)
-                (.setFloat shader (+ base 2) z)
-                (.setFloat shader (+ base 3) a))
-              (do
-                (.setFloat shader base 0.0)
-                (.setFloat shader (+ base 1) 0.0)
-                (.setFloat shader (+ base 2) 0.0)
-                (.setFloat shader (+ base 3) 0.0)))))
+        ;; Preconvert to OKLab (L,a,b) or OKLCH (L,C,H) so shader skips conversion per-pixel.
+        ;; For oklch-mix (cs 5-8) also fill uLabColors (171..298) with OKLab
+        ;; so the shader avoids per-pixel oklchToOklab trig.
+        (let [mix? (>= cs-id 5)]
+          (dotimes [i 32]
+            (let [base (+ 10 (* i 4))]
+              (if (< i n)
+                (let [^ui/Color c (nth colors i)]
+                  (if (zero? cs-id)
+                    (let [[l a b alpha] (ut/color->oklab c)]
+                      (.setFloat shader base l)
+                      (.setFloat shader (+ base 1) a)
+                      (.setFloat shader (+ base 2) b)
+                      (.setFloat shader (+ base 3) alpha))
+                    ;; OKLCH modes: compute OKLab once, derive OKLCH from it
+                    (let [[l a b alpha :as lab] (ut/color->oklab c)
+                          [lc cc hc _] (ut/oklab->oklch lab)]
+                      (.setFloat shader base lc)
+                      (.setFloat shader (+ base 1) cc)
+                      (.setFloat shader (+ base 2) hc)
+                      (.setFloat shader (+ base 3) alpha)
+                      ;; oklch-mix: store OKLab in secondary array
+                      (when mix?
+                        (let [lab-base (+ 171 (* i 4))]
+                          (.setFloat shader lab-base l)
+                          (.setFloat shader (+ lab-base 1) a)
+                          (.setFloat shader (+ lab-base 2) b)
+                          (.setFloat shader (+ lab-base 3) 0.0))))))
+                (do
+                  (.setFloat shader base 0.0)
+                  (.setFloat shader (+ base 1) 0.0)
+                  (.setFloat shader (+ base 2) 0.0)
+                  (.setFloat shader (+ base 3) 0.0))))))
         ;; Stops (indices 138..169)
         (dotimes [i 32]
           (.setFloat shader (+ 138 i)
