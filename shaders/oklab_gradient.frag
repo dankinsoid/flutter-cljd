@@ -253,26 +253,24 @@ void main() {
             // decreasing (4): always decrease hue
             if (dH > 0.0) dH -= 6.28318530;
         }
-        vec3 lchResult = oklchToOklab(vec3(
-            mix(lchA.x, lchB.x, tAlpha),
-            mix(lchA.y, lchB.y, tAlpha),
-            lchA.z + tAlpha * dH
-        ));
         if (uColorSpace > 4.5) {
-            // Chroma ratio: how much closer is the weaker color to gray
-            // than to the other color. 0 = both similar → OKLCH,
-            // 1 = one much grayer → OKLab. ε dampens noise near zero.
-            vec3 labA = oklchToOklab(lchA);
-            vec3 labB = oklchToOklab(lchB);
-            vec3 labResult = mix(labA, labB, tAlpha);
-            // Smoothstep: 3x² - 2x³
-            float dc = abs(lchA.y - lchB.y);
-            float x = dc / (min(lchA.y, lchB.y) + dc + 0.0001);
-            float x2 = x * x;
-            float strength = 3.0 * x2 - 2.0 * x2 * x;
-            labMix = mix(lchResult, labResult, strength);
+            // Chroma-weighted hue: gray colors don't pull hue,
+            // same idea as alpha-weighted t but for chroma.
+            float w1 = (1.0 - tAlpha) * lchA.y;
+            float w2 = tAlpha * lchB.y;
+            float wsum = w1 + w2;
+            float tHue = wsum > 0.001 ? w2 / wsum : tAlpha;
+            labMix = oklchToOklab(vec3(
+                mix(lchA.x, lchB.x, tAlpha),
+                mix(lchA.y, lchB.y, tAlpha),
+                lchA.z + tHue * dH
+            ));
         } else {
-            labMix = lchResult;
+            labMix = oklchToOklab(vec3(
+                mix(lchA.x, lchB.x, tAlpha),
+                mix(lchA.y, lchB.y, tAlpha),
+                lchA.z + tAlpha * dH
+            ));
         }
     }
 
