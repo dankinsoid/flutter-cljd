@@ -233,8 +233,29 @@ void main() {
         // OKLCH: interpolate L, C linearly; hue direction per uColorSpace
         // cs 1-4 = pure OKLCH, 5-8 = OKLCH-mix (blend with OKLab by chroma delta)
         // Uniform path: colors already in OKLCH (L,C,H); texture path: convert from sRGB
-        vec3 lchA = uUseTexture < 0.5 ? cA.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
-        vec3 lchB = uUseTexture < 0.5 ? cB.rgb : oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
+        // For oklch-mix (cs 5-8) we also need OKLab — derive it without extra trig
+        // by keeping the pre-OKLCH OKLab, or converting uniform OKLCH back once.
+        vec3 lchA, lchB;
+        vec3 labA, labB;
+        if (uUseTexture < 0.5) {
+            lchA = cA.rgb;
+            lchB = cB.rgb;
+            // Uniform path sends OKLCH; recover OKLab only when needed (cs 5-8)
+            if (uColorSpace > 4.5) {
+                labA = oklchToOklab(lchA);
+                labB = oklchToOklab(lchB);
+            }
+        } else if (uColorSpace > 4.5) {
+            // Texture path + oklch-mix: keep OKLab intermediate to avoid redundant trig
+            labA = linearToOklab(srgbToLinearV(cA.rgb));
+            labB = linearToOklab(srgbToLinearV(cB.rgb));
+            lchA = oklabToOklch(labA);
+            lchB = oklabToOklch(labB);
+        } else {
+            // Texture path + pure OKLCH: no OKLab needed
+            lchA = oklabToOklch(linearToOklab(srgbToLinearV(cA.rgb)));
+            lchB = oklabToOklch(linearToOklab(srgbToLinearV(cB.rgb)));
+        }
         float dH = lchB.z - lchA.z;
         // Normalize cs: 5-8 maps to same hue logic as 1-4
         float cs = uColorSpace > 4.5 ? uColorSpace - 4.0 : uColorSpace;
@@ -259,12 +280,11 @@ void main() {
             lchA.z + tAlpha * dH
         ));
         if (uColorSpace > 4.5) {
+            // OKLab path: straight-line interpolation (labA/labB precomputed above)
+            vec3 labResult = mix(labA, labB, tAlpha);
             // Chroma ratio: how much closer is the weaker color to gray
             // than to the other color. 0 = both similar → OKLCH,
             // 1 = one much grayer → OKLab. ε dampens noise near zero.
-            vec3 labA = oklchToOklab(lchA);
-            vec3 labB = oklchToOklab(lchB);
-            vec3 labResult = mix(labA, labB, tAlpha);
             // Smoothstep: 3x² - 2x³
             float dc = abs(lchA.y - lchB.y);
             float x = dc / (min(lchA.y, lchB.y) + dc + 0.0001);
