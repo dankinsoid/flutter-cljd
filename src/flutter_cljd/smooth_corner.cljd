@@ -1,257 +1,487 @@
-;; (ns flutter-cljd.smooth-corner
-;;   (:require
-;;    ["package:flutter/painting.dart" :as pt]
-;;    ["dart:math" :as math]
-;;    ["package:vector_math/vector_math.dart" :as v_math]
-;;    [flutter-cljd.utils :refer [π]]
-;;    [clojure.core :as core]))
+;; @ai-generated(guided)
+(ns flutter-cljd.smooth-corner
+  "Figma-style smooth (squircle) corners with support for concave corners.
 
-;; ;; https://github.com/aloisdeniel/figma_squircle/blob/main/lib/src/processed_smooth_radius.dart
-;; (defn smooth-radius-params
-;;   [& {:keys [radius smoothing w h] :as args}]
-;;   (if (or (<= radius 0) (<= w 0) (<= h 0) (<= smoothing 0))
-;;     args
-;;     (let [max-radius (/ (min w h) 2)
-;;           max-radius-half (/ max-radius 2)
-;;           corner-radius (min radius max-radius)
-;;           diff-ratio (if (<= corner-radius max-radius-half)
-;;                        1
-;;                        (- 1 (/ (- corner-radius max-radius-half) max-radius-half)))
-;;           angle-beta (* π 0.5 (- 1 (* smoothing diff-ratio)))
-;;           angle-alpha (* π 0.25 smoothing diff-ratio)
-;;           section-length (* (math/sin (/ angle-beta 2)) corner-radius (math/sqrt 2))
-;;           c (* corner-radius (math/tan (/ (- (/ π 2) angle-beta) 4)) (math/cos angle-alpha))
-;;           d (* c (math/tan angle-alpha))
-;;           b (/ (- (min (* corner-radius (+ 1 smoothing)) max-radius) section-length c d) 3)
-;;           a (* 2 b)]
-;;       {:a a
-;;        :b b
-;;        :c c
-;;        :d d
-;;        :w w
-;;        :h h
-;;        :smoothing smoothing
-;;        :section-length section-length
-;;        :radius corner-radius})))
+   Corner math is a port of figma_squircle
+   (https://github.com/aloisdeniel/figma_squircle), extended with negative
+   radii: a negative radius produces a concave quarter-arc cut into the shape.
+   Concave corners are never smoothed — smoothing is meaningful only for the
+   convex Bézier blend.
 
-;; (defn- add-smooth-top-right [path & {:keys [w h radius smoothing] :as params}]
-;;   (let [abs-radius (min (abs radius) (/ w 2) (/ h 2))
-;;         t abs-radius
-;;         r (- w abs-radius)]
-;;    (cond
-;;      (= radius 0)
-;;      (doto path
-;;        (.moveTo (/ w 2) 0)
-;;        (.lineTo w 0)
-;;        (.lineTo w (/ h 2)))
-     
-;;      (< radius 0)
-;;      (doto path
-;;        (.moveTo (/ w 2) 0)
-;;        (.lineTo r 0)
-;;        (.arcTo (dr/rect [r 0 abs-radius abs-radius]) π (- (/ π 2)) false)
-;;        (.lineTo w t)
-;;        (.lineTo w (/ h 2)))
-     
-;;      (<= smoothing 0)
-;;      (doto path
-;;        (.moveTo (/ w 2) 0)
-;;        (.lineTo r 0)
-;;        (.arcTo (dr/rect [r 0 abs-radius abs-radius]) (* 1.5 π) (/ π 2) false)
-;;        (.lineTo w t)
-;;        (.lineTo w (/ h 2)))
+   Smoothing ranges 0..1 (0 = plain circular arc, ~0.6 ≈ iOS look, 1 = max)."
+  (:require
+   ["package:flutter/material.dart" :as m]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["dart:math" :as math]))
 
-;;      :else
-;;      (let [{:keys [a b c d p section-length]} params]
-;;        (doto path
-;;          (.moveTo (max (/ w 2) (- w p)) 0)
-;;          (.cubicTo
-;;           (- w (- p a)) 0
-;;           (- w (- p a b)) 0
-;;           (- w (- p a b c)) d)
-;;          (.relativeArcToPoint (dr/offset section-length) .radius abs-radius)
-;;          (.cubicTo 
-;;           w (- p a b)
-;;           w (- p a)
-;;           w (min (/ h 2) p)))))))
+;; -------------------------
+;; MARK: Corner spec parsing
+;; -------------------------
 
-;; (defn- add-smooth-bottom-right [path & {:keys [w h radius smoothing] :as params}]
-;;   (let [abs-radius (min (abs radius) (/ w 2) (/ h 2))
-;;         r (- w abs-radius)
-;;         b (- h abs-radius)]
-;;     (cond
-;;       (= radius 0)
-;;       (doto path
-;;         (.lineTo w h)
-;;         (.lineTo (/ w 2) h))
+(def default-smoothing
+  "Smoothing applied to every rounded corner that doesn't specify its own.
+   Set to 0 to make plain circular corners the library-wide default again."
+  (atom 0.6))
 
-;;         (< radius 0)
-;;         (doto path
-;;           (.lineTo w b)
-;;           (.arcTo (dr/rect [r b abs-radius abs-radius]) (* 1.5 π) (- (/ π 2)) false)
-;;           (.lineTo r h)
-;;           (.lineTo (/ w 2) h))
+(defn set-default-smoothing! [value]
+  (reset! default-smoothing (double value)))
 
-;;         (<= smoothing 0)
-;;         (doto path
-;;           (.lineTo w b)
-;;           (.arcTo (dr/rect [r b abs-radius abs-radius]) (/ π 2) (/ π 2) false)
-;;           (.lineTo r h)
-;;           (.lineTo (/ w 2) h))
+(defn- corner-value
+  "Parses one corner into {:radius double :smoothing double}.
+   Elliptical specs ({:x _ :y _} or [x y]) are treated as circular using x,
+   since the smooth path supports circular corners only."
+  [value ^double fallback-smoothing]
+  (let [r (cond
+            (nil? value) 0.0
+            (number? value) (double value)
+            (instance? m/Radius value) (.-x ^m/Radius value)
+            (map? value) (double (or (:radius value) (:x value) (:y value) 0))
+            (or (vector? value) (seq? value)) (double (or (first value) 0))
+            :else (throw (Exception. (str "Invalid corner radius: " value))))
+        s (if (map? value)
+            (double (or (:smoothing value) fallback-smoothing))
+            fallback-smoothing)]
+    ;; smoothing only applies to the convex Bézier blend
+    {:radius r :smoothing (if (pos? r) s 0.0)}))
 
-;;         :else
-;;         (let [{:keys [a b c d p section-length]} params]
-;;           (doto path
-;;             (.lineTo w (max (/ h 2) (- h p)))
-;;             (.cubicTo 
-;;              w (- h (- p a))
-;;              w (- h (- p a b))
-;;             (- w d) (- h (- p a b c)))
-;;             (.relativeArcToPoint (dr/offset (- section-length) section-length) .radius abs-radius)
-;;             (.cubicTo
-;;              (- w (- p a b)) h
-;;              (- w (- p a)) h
-;;              (max (/ w 2) (- w p)) h))))))
+(def ^:private corner-keys [:top-left :top-right :bottom-right :bottom-left])
 
-;; (defn- add-smooth-bottom-left [path & {:keys [w h radius smoothing] :as params}]
-;;   (let [abs-radius (min (abs radius) (/ w 2) (/ h 2))
-;;         l abs-radius
-;;         b (- h abs-radius)]
-;;     (cond
-;;       (= radius 0)
-;;       (doto path
-;;         (.lineTo 0 h)
-;;         (.lineTo 0 (/ h 2)))
+(defn- all-corners [corner]
+  {:top-left corner :top-right corner :bottom-right corner :bottom-left corner})
 
-;;       (< radius 0)
-;;       (doto path
-;;         (.lineTo l h)
-;;         (.arcTo (dr/rect [0 b abs-radius abs-radius]) 0 (- (/ π 2)) false)
-;;         (.lineTo 0 b)
-;;         (.lineTo 0 (/ h 2)))
+(defn corners
+  "Normalizes a corner-radius spec into a map of
+   {:top-left {:radius r :smoothing s} :top-right ... :bottom-right ... :bottom-left ...}.
 
-;;       (<= smoothing 0)
-;;       (doto path
-;;         (.lineTo l h)
-;;         (.arcTo (dr/rect [0 b abs-radius abs-radius]) π (/ π 2) false)
-;;         (.lineTo 0 b)
-;;         (.lineTo 0 (/ h 2)))
+   Accepts everything `flutter-cljd.types/border-radius` accepts, plus:
+   - `:smoothing` (top level or per corner) — 0..1, defaults to @default-smoothing
+   - negative radii — concave corners
+   - `{:radius r :smoothing s}` as a corner value or as the whole spec
 
-;;       :else
-;;       (let [{:keys [a b c d p section-length]} params]
-;;         (doto path
-;;           (.lineTo (min (/ w 2) p) h)
-;;           (.cubicTo
-;;            (- p a) h
-;;            (- p a b) h
-;;            (- p a b c) (- h d))
-;;           (.relativeArcToPoint (dr/offset (- section-length)) .radius abs-radius)
-;;           (.cubicTo
-;;            0 (- h (- p a b))
-;;            0 (- h (- p a))
-;;            0 (max (/ h 2) (- h p))))))))
+   Directional keys (:start/:end etc.) are resolved as LTR: paths have no
+   text direction, unlike BorderRadiusDirectional."
+  [value]
+  (if (and (map? value)
+           (nil? (:radius value))
+           (nil? (some value [:x :y])))
+    (let [fallback (double (or (:smoothing value) @default-smoothing))
+          pick (fn [ks] (corner-value (some value ks) fallback))]
+      {:top-left (pick [:top-left :left-top :top-start :start-top :top :left :start :l :t :s :all])
+       :top-right (pick [:top-right :right-top :top-end :end-top :top :right :end :r :t :e :all])
+       :bottom-right (pick [:bottom-right :right-bottom :bottom-end :end-bottom :bottom :right :end :r :b :e :all])
+       :bottom-left (pick [:bottom-left :left-bottom :bottom-start :start-bottom :bottom :left :start :l :b :s :all])})
+    (all-corners (corner-value value (double (or (when (map? value) (:smoothing value))
+                                                 @default-smoothing))))))
 
-;; (defn- add-smooth-top-left [path & {:keys [w h radius smoothing] :as params}]
-;;   (let [abs-radius (min (abs radius) (/ w 2) (/ h 2))
-;;         l abs-radius
-;;         t abs-radius
-;;         r (- w abs-radius)
-;;         b (- h abs-radius)]
-;;     (cond
-;;       (= radius 0)
-;;       (doto path
-;;         (.lineTo 0 0)
-;;         (.close))
+(defn needs-smooth-path?
+  "True when the corners can't be represented by a plain RRect:
+   any concave corner, or any convex corner with smoothing > 0."
+  [corners]
+  (boolean (some (fn [{:keys [^double radius ^double smoothing]}]
+                   (or (neg? radius) (and (pos? radius) (pos? smoothing))))
+                 (vals corners))))
 
-;;       (< radius 0)
-;;       (doto path
-;;         (.lineTo 0 t)
-;;         (.arcTo (dr/rect [0 0 abs-radius abs-radius]) 0 (- (/ π 2)) false)
-;;         (.lineTo l 0)
-;;         (.lineTo (/ w 2) 0)
-;;         (.close))
+(defn- map-radii [corners f]
+  (into {} (map (fn [[k v]] [k (update v :radius f)])) corners))
 
-;;       (<= smoothing 0)
-;;       (doto path
-;;         (.lineTo 0 t)
-;;         (.arcTo (dr/rect [0 0 abs-radius abs-radius]) (* 1.5 π) (/ π 2) false)
-;;         (.lineTo l 0)
-;;         (.lineTo (/ w 2) 0)
-;;         (.close))
+(defn- inset-radius ^double [^double r ^double inset]
+  ;; concave arcs grow inward, convex ones shrink
+  (cond (pos? r) (max 0.0 (- r inset))
+        (neg? r) (- r inset)
+        :else 0.0))
 
-;;       :else
-;;       (let [{:keys [a b c d p section-length]} params]
-;;         (doto path
-;;           (.lineTo 0 (min (/ h 2) p))
-;;           (.cubicTo
-;;            0 (- p a)
-;;            0 (- p a b)
-;;            d (- p a b c))
-;;           (.relativeArcToPoint (dr/offset section-length (- section-length)) .radius abs-radius)
-;;           (.cubicTo
-;;            (- p a b) 0
-;;            (- p a) 0
-;;            (min (/ w 2) p) 0)
-;;           (.close))))))
+(defn- inset-corners [corners ^double inset]
+  (map-radii corners #(inset-radius % inset)))
 
-;; (def ^:dynamic *corner-smoothing* 0.6)
+(defn- lerp-corners [from to ^double t]
+  (into {}
+        (map (fn [k]
+               (let [a (from k) b (to k)]
+                 [k {:radius (+ (:radius a) (* (- ^double (:radius b) ^double (:radius a)) t))
+                     :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}])))
+        corner-keys))
 
-;; (defn smooth-corners [corners]
-;;   (let [get-radius-for (fn [value] (if (number? value) value (:radius value)))
-;;         get-radius (fn [value] (or (some get-radius-for [value corners]) 0))
-;;         get-smoothing (fn [value] (or (some :smoothing [value corners]) *corner-smoothing*))
-;;         top-left (some corners [:top-left :left-top :top :left :l :t :all])
-;;         top-right (some corners [:top-right :right-top :top :right :r :t :all])
-;;         bottom-right (some corners [:bottom-right :right-bottom :bottom :right :r :b :all])
-;;         bottom-left (some corners [:bottom-left :left-bottom :bottom :left :l :b :all])]
-;;     {:top-left {:radius (get-radius top-left) :smoothing (get-smoothing top-left)}
-;;      :top-right {:radius (get-radius top-right) :smoothing (get-smoothing top-right)}
-;;      :bottom-right {:radius (get-radius bottom-right) :smoothing (get-smoothing bottom-right)}
-;;      :bottom-left {:radius (get-radius bottom-left) :smoothing (get-smoothing bottom-left)}}))
+(defn corners->border-radius
+  "RRect-compatible approximation: smoothing is dropped, concave radii clamp to 0."
+  ^m/BorderRadius [corners]
+  (let [r (fn [k] (m/Radius.circular (max 0.0 ^double (:radius (corners k)))))]
+    (m/BorderRadius.only
+     .topLeft (r :top-left)
+     .topRight (r :top-right)
+     .bottomLeft (r :bottom-left)
+     .bottomRight (r :bottom-right))))
 
-;; (defn add-smooth-rect [path corners rect]
-;;   (let [w (.-width rect)
-;;         h (.-height rect)
-;;         size {:w w :h h}
-;;         corners (smooth-corners corners)
-;;         top-left-map (merge size (:top-left corners))
-;;         top-right-map (merge size (:top-right corners))
-;;         bottom-right-map (merge size (:bottom-right corners))
-;;         bottom-left-map (merge size (:bottom-left corners))
-;;         params (reduce
-;;                 (fn [params map]
-;;                   (if (contains? params map)
-;;                     map
-;;                     (assoc params map (smooth-radius-params map))))
-;;                 {}
-;;                 [top-left-map top-right-map bottom-right-map bottom-left-map])]
-;;     (.transform
-;;      (doto path
-;;        (add-smooth-top-right (params top-right-map))
-;;        (add-smooth-bottom-right (params bottom-right-map))
-;;        (add-smooth-bottom-left (params bottom-left-map))
-;;        (add-smooth-top-left (params top-left-map)))
-;;      (.-storage (v_math/Matrix4.translationValues (.-left rect) (.-top rect) 0)))))
+;; -------------------------
+;; MARK: Corner math
+;; -------------------------
 
-;; (deftype SmoothRectangleBorder [corners side align]
-;;   :extends pt/OutlinedBorder
-;;   (dimensions [this]
-;;     (case align
-;;       :inside (pt/EdgeInsets.all (.-width side))
-;;       :outside pt/EdgeInsets.zero
-;;       (pt/EdgeInsets.all (/ (.-width side) 2))))
-;;   (scale [this t]
-;;     (SmoothRectangleBorder 
-;;      corners
-;;      (.scale side t)
-;;      align))
-;;   (lerpFrom [this a t]
-;;     (if (instance? SmoothRectangleBorder a)
-;;       (SmoothRectangleBorder
-;;        (core/lerp a t)
-;;        (pt/BorderSide.lerp (.-side a) side t)
-;;        align)
-;;       (.lerpFrom ^super a t)))
-;;   (== [this other]
-;;     (and 
-;;      (= ))))
+(defn- radians ^double [^double degrees]
+  (* degrees (/ math/pi 180.0)))
+
+(defn corner-params
+  "Figma squircle parameters for one convex corner (radius > 0), following
+   https://www.figma.com/blog/desperately-seeking-squircles/.
+   `:l` is the length of the central circular arc section; `:p` is how far
+   the corner extends along each edge."
+  [{:keys [^double radius ^double smoothing]} ^double w ^double h]
+  (let [max-radius (/ (min w h) 2.0)
+        r (min radius max-radius)
+        p (min (* (+ 1.0 smoothing) r) max-radius)
+        half (/ max-radius 2.0)
+        ;; the blend angles collapse back to a plain arc as r approaches max-radius
+        k (if (<= r half)
+            smoothing
+            (* smoothing (- 1.0 (/ (- r half) half))))
+        angle-beta (* 90.0 (- 1.0 k))
+        angle-alpha (* 45.0 k)
+        angle-theta (/ (- 90.0 angle-beta) 2.0)
+        p3-to-p4 (* r (math/tan (radians (/ angle-theta 2.0))))
+        l (* (math/sin (radians (/ angle-beta 2.0))) r (math/sqrt 2.0))
+        c (* p3-to-p4 (math/cos (radians angle-alpha)))
+        d (* c (math/tan (radians angle-alpha)))
+        b (/ (- p l c d) 3.0)
+        a (* 2.0 b)]
+    {:radius r :p p :l l :a a :b b :c c :d d}))
+
+;; -------------------------
+;; MARK: Path building
+;; -------------------------
+
+;; Corner segments follow figma_squircle's path order: top-right (moveTo),
+;; bottom-right, bottom-left, top-left (close). Coordinates are rect-local;
+;; smooth-path shifts the result to the rect origin at the end.
+
+(defn- add-top-right [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
+  (cond
+    (pos? radius)
+    (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
+      (doto path
+        (.moveTo (max (/ w 2.0) (- w p)) 0)
+        (.cubicTo (- w (- p a)) 0
+                  (- w (- p a b)) 0
+                  (- w (- p a b c)) d)
+        (.relativeArcToPoint (ui/Offset l l) .radius (ui/Radius.circular radius))
+        (.cubicTo w (- p a b)
+                  w (- p a)
+                  w (min (/ h 2.0) p))))
+
+    (neg? radius)
+    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+      (doto path
+        (.moveTo (/ w 2.0) 0)
+        (.lineTo (- w ar) 0)
+        (.arcToPoint (ui/Offset w ar) .radius (ui/Radius.circular ar) .clockwise false)
+        (.lineTo w (/ h 2.0))))
+
+    :else
+    (doto path
+      (.moveTo (/ w 2.0) 0)
+      (.lineTo w 0)
+      (.lineTo w (/ h 2.0)))))
+
+(defn- add-bottom-right [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
+  (cond
+    (pos? radius)
+    (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
+      (doto path
+        (.lineTo w (max (/ h 2.0) (- h p)))
+        (.cubicTo w (- h (- p a))
+                  w (- h (- p a b))
+                  (- w d) (- h (- p a b c)))
+        (.relativeArcToPoint (ui/Offset (- l) l) .radius (ui/Radius.circular radius))
+        (.cubicTo (- w (- p a b)) h
+                  (- w (- p a)) h
+                  (max (/ w 2.0) (- w p)) h)))
+
+    (neg? radius)
+    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+      (doto path
+        (.lineTo w (- h ar))
+        (.arcToPoint (ui/Offset (- w ar) h) .radius (ui/Radius.circular ar) .clockwise false)
+        (.lineTo (/ w 2.0) h)))
+
+    :else
+    (doto path
+      (.lineTo w h)
+      (.lineTo (/ w 2.0) h))))
+
+(defn- add-bottom-left [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
+  (cond
+    (pos? radius)
+    (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
+      (doto path
+        (.lineTo (min (/ w 2.0) p) h)
+        (.cubicTo (- p a) h
+                  (- p a b) h
+                  (- p a b c) (- h d))
+        (.relativeArcToPoint (ui/Offset (- l) (- l)) .radius (ui/Radius.circular radius))
+        (.cubicTo 0 (- h (- p a b))
+                  0 (- h (- p a))
+                  0 (max (/ h 2.0) (- h p)))))
+
+    (neg? radius)
+    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+      (doto path
+        (.lineTo ar h)
+        (.arcToPoint (ui/Offset 0 (- h ar)) .radius (ui/Radius.circular ar) .clockwise false)
+        (.lineTo 0 (/ h 2.0))))
+
+    :else
+    (doto path
+      (.lineTo 0 h)
+      (.lineTo 0 (/ h 2.0)))))
+
+(defn- add-top-left [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
+  (cond
+    (pos? radius)
+    (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
+      (doto path
+        (.lineTo 0 (min (/ h 2.0) p))
+        (.cubicTo 0 (- p a)
+                  0 (- p a b)
+                  d (- p a b c))
+        (.relativeArcToPoint (ui/Offset l (- l)) .radius (ui/Radius.circular radius))
+        (.cubicTo (- p a b) 0
+                  (- p a) 0
+                  (min (/ w 2.0) p) 0)
+        (.close)))
+
+    (neg? radius)
+    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+      (doto path
+        (.lineTo 0 ar)
+        (.arcToPoint (ui/Offset ar 0) .radius (ui/Radius.circular ar) .clockwise false)
+        (.close)))
+
+    :else
+    (doto path
+      (.lineTo 0 0)
+      (.close))))
+
+(defn ^ui/Path smooth-path
+  "Builds the outline path for `rect` with the given normalized corners.
+
+   Corner params are recomputed on every call: ~10 trig ops per corner is
+   negligible next to path rasterization, and caching would leak during
+   animations where radii change every frame (figma_squircle's cache has
+   exactly that flaw)."
+  [^ui/Rect rect corners]
+  (let [w (.-width rect)
+        h (.-height rect)
+        path (ui/Path)]
+    (add-top-right path (:top-right corners) w h)
+    (add-bottom-right path (:bottom-right corners) w h)
+    (add-bottom-left path (:bottom-left corners) w h)
+    (add-top-left path (:top-left corners) w h)
+    (if (and (zero? (.-left rect)) (zero? (.-top rect)))
+      path
+      (.shift path (ui/Offset (.-left rect) (.-top rect))))))
+
+;; -------------------------
+;; MARK: ShapeBorder
+;; -------------------------
+
+(deftype SmoothRectangleBorder [corners ^m/BorderSide side]
+  :extends (m/OutlinedBorder .side side)
+
+  (dimensions [this] (m/EdgeInsets.all (.-width side)))
+
+  (copyWith [this ^m/BorderSide? .side]
+    (SmoothRectangleBorder corners (or side (.-side this))))
+
+  (scale [this ^double t]
+    (SmoothRectangleBorder (map-radii corners #(* ^double % t)) (.scale side t)))
+
+  (getOuterPath [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
+    (smooth-path rect corners))
+
+  ;; The inner path approximates concave corners by keeping the arc center at
+  ;; the deflated rect's corner instead of the outer one — the error is at most
+  ;; the border width, invisible at typical widths.
+  (getInnerPath [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
+    (let [w (.-width side)]
+      (smooth-path (.deflate rect w) (inset-corners corners w))))
+
+  (paint [this ^ui/Canvas canvas ^ui/Rect rect ^ui/TextDirection? .textDirection]
+    (when (and (pos? (.-width side)) (= (.-style side) m/BorderStyle.solid))
+      (let [hw (/ (.-width side) 2.0)]
+        (.drawPath canvas
+                   (smooth-path (.deflate rect hw) (inset-corners corners hw))
+                   (.toPaint side))))
+    nil)
+
+  (lerpFrom [this a ^double t]
+    (if (instance? SmoothRectangleBorder a)
+      (SmoothRectangleBorder
+       (lerp-corners (.-corners ^SmoothRectangleBorder a) corners t)
+       (m/BorderSide.lerp (.-side ^SmoothRectangleBorder a) side t))
+      (.lerpFrom ^super this a t)))
+
+  (lerpTo [this b ^double t]
+    (if (instance? SmoothRectangleBorder b)
+      (SmoothRectangleBorder
+       (lerp-corners corners (.-corners ^SmoothRectangleBorder b) t)
+       (m/BorderSide.lerp side (.-side ^SmoothRectangleBorder b) t))
+      (.lerpTo ^super this b t)))
+
+  (== [this other]
+    (and (instance? SmoothRectangleBorder other)
+         (= corners (.-corners ^SmoothRectangleBorder other))
+         (= side (.-side ^SmoothRectangleBorder other))))
+
+  (hashCode [this] (hash [corners side])))
+
+(defn ^m/OutlinedBorder smooth-rectangle-border
+  "A ShapeBorder with smooth corners, usable anywhere Flutter takes a shape
+   (themes, Material, ShapeDecoration). `spec` is any corner-radius spec."
+  ([spec] (smooth-rectangle-border spec nil))
+  ([spec ^m/BorderSide? side]
+   (SmoothRectangleBorder (corners spec) (or side m/BorderSide.none))))
+
+;; -------------------------
+;; MARK: Clipper
+;; -------------------------
+
+(deftype SmoothClipper [corners]
+  :extends (#/(m/CustomClipper ui/Path))
+
+  (getClip [this ^ui/Size size]
+    (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size)) corners))
+
+  (shouldReclip [this old]
+    (or (not (instance? SmoothClipper old))
+        (not= corners (.-corners ^SmoothClipper old)))))
+
+(defn ^#/(m/CustomClipper ui/Path) smooth-clipper [corners]
+  (SmoothClipper corners))
+
+;; -------------------------
+;; MARK: Decoration
+;; -------------------------
+
+(defn- shadow-deviation
+  "Max outline deviation between the smooth path and its RRect approximation.
+   Convex: the Bézier blend deviates by roughly 10% of radius × smoothing.
+   Concave: the RRect drops the whole cut, deviating by |r|·(√2−1)."
+  ^double [corners]
+  (reduce (fn [^double acc {:keys [^double radius ^double smoothing]}]
+            (max acc (if (neg? radius)
+                       (* 0.42 (- radius))
+                       (* 0.1 radius smoothing))))
+          0.0
+          (vals corners)))
+
+(defn- paint-shadow
+  "Draws one shadow, picking the cheapest visually-equivalent form:
+   once the blur sigma exceeds the path/RRect deviation, the Gaussian blur
+   erases the difference, and blurred RRects have a fast path in the engine
+   (analytic in Impeller, dedicated mask in Skia) that blurred paths lack.
+   Sharp shadows (sigma 0) stay on the path — the engine skips the blur pass
+   for zero sigma, so a solid path fill is already cheap."
+  [^ui/Canvas canvas ^ui/Rect rect corners ^m/BoxShadow shadow]
+  (let [spread (.-spreadRadius shadow)
+        srect (.inflate (.shift rect (.-offset shadow)) spread)
+        scorners (map-radii corners #(if (pos? ^double %) (+ ^double % spread) %))]
+    (if (>= (.-blurSigma shadow) (shadow-deviation scorners))
+      (.drawRRect canvas (.toRRect (corners->border-radius scorners) srect) (.toPaint shadow))
+      (.drawPath canvas (smooth-path srect scorners) (.toPaint shadow)))))
+
+(deftype SmoothBoxPainter [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+                           ^:mutable ^ui/Rect? cached-rect
+                           ^:mutable ^ui/Path? cached-path]
+  :extends (m/BoxPainter)
+
+  (paint [this ^ui/Canvas canvas ^ui/Offset offset ^m/ImageConfiguration configuration]
+    (let [^ui/Size size (.-size configuration)
+          rect (ui/Rect.fromLTWH (.-dx offset) (.-dy offset) (.-width size) (.-height size))
+          path (if (= rect cached-rect)
+                 cached-path
+                 (let [p (smooth-path rect corners)]
+                   (set! cached-rect rect)
+                   (set! cached-path p)
+                   p))]
+      (doseq [^m/BoxShadow shadow shadows]
+        (paint-shadow canvas rect corners shadow))
+      (when (some? gradient)
+        (.drawPath canvas path
+                   (doto (ui/Paint) (.-shader! (.createShader gradient rect)))))
+      (when (and (nil? gradient) (some? color))
+        (.drawPath canvas path (doto (ui/Paint) (.-color! color))))
+      (when (and (some? side)
+                 (pos? (.-width side))
+                 (= (.-style side) m/BorderStyle.solid))
+        (let [hw (/ (.-width side) 2.0)]
+          (.drawPath canvas
+                     (smooth-path (.deflate rect hw) (inset-corners corners hw))
+                     (.toPaint side))))
+      nil)))
+
+(defn- lerp-shadows [as bs ^double t]
+  (when (or (seq as) (seq bs))
+    (mapv #(m/BoxShadow.lerp (get as % nil) (get bs % nil) t)
+          (range (max (count as) (count bs))))))
+
+(declare lerp-smooth-decoration)
+
+(deftype SmoothDecoration [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side]
+  :extends (m/Decoration)
+
+  (padding [this]
+    (if (some? side) (m/EdgeInsets.all (.-width side)) m/EdgeInsets.zero))
+
+  ;; VoidCallback is a typedef the cljd analyzer can't resolve — Function? is
+  ;; the closest expressible type for the optional onChanged parameter
+  (createBoxPainter [this ... ^dc/Function? on-changed]
+    (SmoothBoxPainter corners color gradient shadows side nil nil))
+
+  (hitTest [this ^ui/Size size ^ui/Offset position ^ui/TextDirection? .textDirection]
+    (.contains (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size)) corners)
+               position))
+
+  (getClipPath [this ^ui/Rect rect ^ui/TextDirection textDirection]
+    (smooth-path rect corners))
+
+  (lerpFrom [this a ^double t]
+    (if (instance? SmoothDecoration a)
+      (lerp-smooth-decoration a this t)
+      (.lerpFrom ^super this a t)))
+
+  (lerpTo [this b ^double t]
+    (if (instance? SmoothDecoration b)
+      (lerp-smooth-decoration this b t)
+      (.lerpTo ^super this b t)))
+
+  (== [this other]
+    (and (instance? SmoothDecoration other)
+         (let [^SmoothDecoration other other]
+           (and (= corners (.-corners other))
+                (= color (.-color other))
+                (= gradient (.-gradient other))
+                (= shadows (.-shadows other))
+                (= side (.-side other))))))
+
+  (hashCode [this] (hash [corners color gradient shadows side])))
+
+(defn- lerp-smooth-decoration [^SmoothDecoration a ^SmoothDecoration b ^double t]
+  (SmoothDecoration
+   (lerp-corners (.-corners a) (.-corners b) t)
+   (ui/Color.lerp (.-color a) (.-color b) t)
+   (m/Gradient.lerp (.-gradient a) (.-gradient b) t)
+   (lerp-shadows (.-shadows a) (.-shadows b) t)
+   (when (or (some? (.-side a)) (some? (.-side b)))
+     (m/BorderSide.lerp (or (.-side a) m/BorderSide.none)
+                        (or (.-side b) m/BorderSide.none)
+                        t))))
+
+(defn ^m/Decoration smooth-decoration
+  "Decoration painting a smooth-cornered rectangle: shadows, then fill
+   (gradient wins over color), then a uniform inside-aligned border."
+  [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side]
+  (SmoothDecoration
+   corners color gradient
+   (cond
+     (nil? shadows) nil
+     (instance? m/BoxShadow shadows) [shadows]
+     :else (vec shadows))
+   side))

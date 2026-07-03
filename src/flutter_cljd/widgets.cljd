@@ -696,13 +696,24 @@
     - `:all` for all corners
     - `:x`/`:y` for elliptical corners
 
+   Corners are smoothed Figma-style (squircle) by default — see
+   `flutter-cljd.smooth-corner/set-default-smoothing!`. Control it per clip
+   with `:smoothing` (0..1) at the top level or inside a corner value:
+   `{:all 16 :smoothing 0}` clips with plain circular corners (cheaper:
+   ClipRRect instead of a path clip). A negative radius makes a concave
+   corner. Elliptical corners are never smoothed.
+
    Examples:
    ```clojure
    ;; Uniform circular corners
-   (clip-corners 4 
-     (colored :blue 
-       (sized 100 
+   (clip-corners 4
+     (colored :blue
+       (sized 100
          (center (text \"Hello\")))))
+
+   ;; Explicit smoothing and a concave corner
+   (clip-corners {:all 16 :smoothing 1 :bottom-right -16}
+     (colored :blue (sized 100 (text \"Hello\"))))
 
    ;; Different corners
    (clip-corners :top-left 4 :top-right 8

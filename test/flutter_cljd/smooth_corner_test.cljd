@@ -1,0 +1,161 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.smooth-corner-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.smooth-corner :as sc]
+            [flutter-cljd.internal.clip-corners :as cc]
+            [flutter-cljd.types :as t]
+            ["package:flutter/material.dart" :as m]
+            ["dart:ui" :as ui]))
+
+(defn- approx? [^double a ^double b]
+  (< (abs (- a b)) 0.001))
+
+(deftest test-corners-parsing
+  (testing "Number applies default smoothing to all corners"
+    (let [corners (sc/corners 8)]
+      (is (= 4 (count corners)))
+      (doseq [[_ {:keys [radius smoothing]}] corners]
+        (is (approx? 8.0 radius))
+        (is (approx? @sc/default-smoothing smoothing)))))
+
+  (testing "Top-level :smoothing overrides the default"
+    (let [corners (sc/corners {:all 8 :smoothing 0.9})]
+      (doseq [[_ {:keys [smoothing]}] corners]
+        (is (approx? 0.9 smoothing)))))
+
+  (testing "Per-corner map value"
+    (let [corners (sc/corners {:top-left {:radius 4 :smoothing 0.2} :all 8})]
+      (is (approx? 4.0 (get-in corners [:top-left :radius])))
+      (is (approx? 0.2 (get-in corners [:top-left :smoothing])))
+      (is (approx? 8.0 (get-in corners [:bottom-right :radius])))))
+
+  (testing "{:radius :smoothing} as the whole spec"
+    (let [corners (sc/corners {:radius 16 :smoothing 1})]
+      (doseq [[_ {:keys [radius smoothing]}] corners]
+        (is (approx? 16.0 radius))
+        (is (approx? 1.0 smoothing)))))
+
+  (testing "Negative radius keeps sign and drops smoothing"
+    (let [{:keys [radius smoothing]} (:top-left (sc/corners -12))]
+      (is (approx? -12.0 radius))
+      (is (approx? 0.0 smoothing)))))
+
+(deftest test-needs-smooth-path
+  (testing "Zero smoothing and non-negative radii fit an RRect"
+    (is (not (sc/needs-smooth-path? (sc/corners {:all 8 :smoothing 0}))))
+    (is (not (sc/needs-smooth-path? (sc/corners {:all 0})))))
+
+  (testing "Smoothing or concave corners require a path"
+    (is (sc/needs-smooth-path? (sc/corners 8)))
+    (is (sc/needs-smooth-path? (sc/corners {:all 8 :smoothing 0 :top-left -4})))))
+
+(deftest test-corner-params
+  (testing "Zero smoothing degenerates to a plain arc"
+    (let [{:keys [radius p l a b c d]} (sc/corner-params {:radius 10.0 :smoothing 0.0} 100.0 100.0)]
+      (is (approx? 10.0 radius))
+      (is (approx? 10.0 p))
+      (is (approx? 10.0 l))
+      (is (approx? 0.0 a))
+      (is (approx? 0.0 b))
+      (is (approx? 0.0 c))
+      (is (approx? 0.0 d))))
+
+  (testing "p extends along the edge by (1 + smoothing) and clamps to half size"
+    (is (approx? 16.0 (:p (sc/corner-params {:radius 10.0 :smoothing 0.6} 100.0 100.0))))
+    (is (approx? 25.0 (:p (sc/corner-params {:radius 24.0 :smoothing 1.0} 50.0 100.0))))))
+
+(deftest test-smooth-path
+  (testing "Path spans the whole rect"
+    (doseq [corners [(sc/corners 16)
+                     (sc/corners {:all 16 :smoothing 1})
+                     (sc/corners -16)
+                     (sc/corners {:top-left 16 :bottom-right -16 :all 8})]]
+      (let [rect (ui/Rect.fromLTWH 10 20 100 60)
+            bounds (.getBounds (sc/smooth-path rect corners))]
+        (is (approx? 10.0 (.-left bounds)))
+        (is (approx? 20.0 (.-top bounds)))
+        (is (approx? 110.0 (.-right bounds)))
+        (is (approx? 80.0 (.-bottom bounds))))))
+
+  (testing "Convex corner cuts the rect corner"
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 100) (sc/corners 20))]
+      (is (.contains path (ui/Offset 50 50)))
+      (is (not (.contains path (ui/Offset 1 1))))))
+
+  (testing "Concave corner carves a quarter disc into the shape"
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 100)
+                               (sc/corners {:top-right -20 :all 0}))]
+      (is (.contains path (ui/Offset 50 50)))
+      ;; inside the carved quarter disc around (100, 0)
+      (is (not (.contains path (ui/Offset 95 5))))
+      ;; the other corners stay sharp
+      (is (.contains path (ui/Offset 1 1))))))
+
+(deftest test-smooth-rectangle-border
+  (testing "Lerp between smooth borders interpolates radii"
+    (let [a (sc/smooth-rectangle-border 8)
+          b (sc/smooth-rectangle-border 16)
+          mid ^sc/SmoothRectangleBorder (.lerpFrom b a 0.5)]
+      (is (approx? 12.0 (get-in (.-corners mid) [:top-left :radius])))))
+
+  (testing "Value equality"
+    (is (= (sc/smooth-rectangle-border 8) (sc/smooth-rectangle-border 8)))
+    (is (not= (sc/smooth-rectangle-border 8) (sc/smooth-rectangle-border 9)))))
+
+(deftest test-decoration-dispatch
+  (testing "Rounded rectangle is smooth by default"
+    (is (instance? sc/SmoothDecoration (t/decoration {:color :red :border-radius 8}))))
+
+  (testing "Zero smoothing takes the BoxDecoration fast path"
+    (is (instance? m/BoxDecoration (t/decoration {:color :red :border-radius {:all 8 :smoothing 0}}))))
+
+  (testing "Ready-made BorderRadius bypasses smoothing"
+    (is (instance? m/BoxDecoration
+                   (t/decoration {:color :red :border-radius (m/BorderRadius.circular 8)}))))
+
+  (testing "Negative radius forces the smooth decoration even without smoothing"
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:color :red :border-radius {:all 8 :smoothing 0 :top-left -8}}))))
+
+  (testing "Background blend mode falls back to BoxDecoration"
+    (is (instance? m/BoxDecoration
+                   (t/decoration {:color :red :border-radius 8
+                                  :background-blend-mode m/BlendMode.multiply}))))
+
+  (testing "Uniform border becomes the decoration side"
+    (let [dec (t/decoration {:color :red :border-radius 8
+                             :border (m/Border.all .color m/Colors.black .width 2)})]
+      (is (instance? sc/SmoothDecoration dec))
+      (is (approx? 2.0 (.-width ^m/BorderSide (.-side ^sc/SmoothDecoration dec))))))
+
+  (testing "Smooth decoration hit test respects the outline"
+    (let [dec ^m/Decoration (t/decoration {:color :red :border-radius {:all 20 :smoothing 1}})]
+      (is (.hitTest dec (ui/Size 100 100) (ui/Offset 50 50)))
+      (is (not (.hitTest dec (ui/Size 100 100) (ui/Offset 1 1))))))
+
+  (testing "Smooth decorations lerp between each other"
+    (let [a ^m/Decoration (t/decoration {:color :red :border-radius 8})
+          b ^m/Decoration (t/decoration {:color :blue :border-radius 16})
+          mid ^sc/SmoothDecoration (.lerpTo a b 0.5)]
+      (is (approx? 12.0 (get-in (.-corners mid) [:top-left :radius])))))
+
+  (testing "Value equality for repaint short-circuiting"
+    (is (= (t/decoration {:color :red :border-radius 8})
+           (t/decoration {:color :red :border-radius 8})))))
+
+(deftest test-clip-corners-dispatch
+  (testing "Smooth corners clip with a path"
+    (is (instance? m/ClipPath (cc/clip-corners* 8 nil)))
+    (is (instance? m/ClipPath (cc/clip-corners* {:all 8 :smoothing 0 :top-left -8} nil))))
+
+  (testing "Plain corners keep the cheaper ClipRRect"
+    (is (instance? m/ClipRRect (cc/clip-corners* {:all 8 :smoothing 0} nil)))
+    (is (instance? m/ClipRRect (cc/clip-corners* (m/BorderRadius.circular 8) nil))))
+
+  (testing "Global default smoothing switches the fast path"
+    (sc/set-default-smoothing! 0)
+    (try
+      (is (instance? m/ClipRRect (cc/clip-corners* 8 nil)))
+      (is (instance? m/BoxDecoration (t/decoration {:color :red :border-radius 8})))
+      (finally
+        (sc/set-default-smoothing! 0.6)))))

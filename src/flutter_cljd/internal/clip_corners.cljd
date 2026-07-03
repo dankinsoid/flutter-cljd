@@ -1,10 +1,19 @@
 (ns flutter-cljd.internal.clip-corners
   (:require
    ["package:flutter/material.dart" :as m]
+   [flutter-cljd.smooth-corner :as sc]
    [flutter-cljd.types :as t]))
 
 (defn ^m/Widget clip-corners*
   [radius child]
-  (m/ClipRRect
-   .borderRadius (t/border-radius radius)
-   .child child))
+  ;; ClipRRect is much cheaper for the GPU than a path clip, so it stays the
+  ;; fast path whenever the corners are RRect-representable
+  (let [corners (when-not (instance? m/BorderRadiusGeometry radius)
+                  (sc/corners radius))]
+    (if (and (some? corners) (sc/needs-smooth-path? corners))
+      (m/ClipPath
+       .clipper (sc/smooth-clipper corners)
+       .child child)
+      (m/ClipRRect
+       .borderRadius (t/border-radius radius)
+       .child child))))
