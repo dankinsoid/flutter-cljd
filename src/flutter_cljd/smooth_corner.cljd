@@ -29,21 +29,27 @@
 
 (defn- corner-value
   "Parses one corner into {:radius double :smoothing double}.
+   `{:rel f}` produces a relative radius — a fraction of the rect's shorter
+   side, resolved at paint/clip time — marked with `:relative? true`.
    Elliptical specs ({:x _ :y _} or [x y]) are treated as circular using x,
    since the smooth path supports circular corners only."
   [value ^double fallback-smoothing]
-  (let [r (cond
+  (let [relative? (and (map? value)
+                       (contains? value :rel)
+                       (not (contains? value :radius)))
+        r (cond
             (nil? value) 0.0
             (number? value) (double value)
             (instance? m/Radius value) (.-x ^m/Radius value)
-            (map? value) (double (or (:radius value) (:x value) (:y value) 0))
+            (map? value) (double (or (:radius value) (:rel value) (:x value) (:y value) 0))
             (or (vector? value) (seq? value)) (double (or (first value) 0))
             :else (throw (Exception. (str "Invalid corner radius: " value))))
         s (if (map? value)
             (double (or (:smoothing value) fallback-smoothing))
-            fallback-smoothing)]
-    ;; smoothing only applies to the convex Bézier blend
-    {:radius r :smoothing (if (pos? r) s 0.0)}))
+            fallback-smoothing)
+        ;; smoothing only applies to the convex Bézier blend
+        corner {:radius r :smoothing (if (pos? r) s 0.0)}]
+    (if relative? (assoc corner :relative? true) corner)))
 
 (def ^:private corner-keys [:top-left :top-right :bottom-right :bottom-left])
 
@@ -58,12 +64,15 @@
    - `:smoothing` (top level or per corner) — 0..1, defaults to @default-smoothing
    - negative radii — concave corners
    - `{:radius r :smoothing s}` as a corner value or as the whole spec
+   - `{:rel f}` — radius as a fraction of the rect's shorter side
+     (0.5 = capsule), resolved at paint/clip time; may be negative
 
    Directional keys (:start/:end etc.) are resolved as LTR: paths have no
    text direction, unlike BorderRadiusDirectional."
   [value]
   (if (and (map? value)
            (nil? (:radius value))
+           (nil? (:rel value))
            (nil? (some value [:x :y])))
     (let [fallback (double (or (:smoothing value) @default-smoothing))
           pick (fn [ks] (corner-value (some value ks) fallback))]
@@ -76,14 +85,31 @@
 
 (defn needs-smooth-path?
   "True when the corners can't be represented by a plain RRect:
-   any concave corner, or any convex corner with smoothing > 0."
+   any concave corner, any convex corner with smoothing > 0, or any relative
+   radius — a BorderRadius can't be built before the size is known."
   [corners]
-  (boolean (some (fn [{:keys [^double radius ^double smoothing]}]
-                   (or (neg? radius) (and (pos? radius) (pos? smoothing))))
+  (boolean (some (fn [{:keys [^double radius ^double smoothing relative?]}]
+                   (or (neg? radius)
+                       (and (pos? radius)
+                            (or (pos? smoothing) (true? relative?)))))
                  (vals corners))))
 
 (defn- map-radii [corners f]
   (into {} (map (fn [[k v]] [k (update v :radius f)])) corners))
+
+(defn- resolve-corners
+  "Resolves relative radii (fractions of the shorter side) into pixels.
+   Idempotent: resolved corners lose their `:relative?` flag."
+  [corners ^double w ^double h]
+  (let [base (min w h)]
+    (into {}
+          (map (fn [[k {:keys [^double radius relative?] :as corner}]]
+                 [k (if relative?
+                      (-> corner
+                          (assoc :radius (* radius base))
+                          (dissoc :relative?))
+                      corner)]))
+          corners)))
 
 (defn- inset-radius ^double [^double r ^double inset]
   ;; concave arcs grow inward, convex ones shrink
@@ -98,8 +124,14 @@
   (into {}
         (map (fn [k]
                (let [a (from k) b (to k)]
-                 [k {:radius (+ (:radius a) (* (- ^double (:radius b) ^double (:radius a)) t))
-                     :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}])))
+                 [k (if (= (boolean (:relative? a)) (boolean (:relative? b)))
+                      (cond->
+                       {:radius (+ (:radius a) (* (- ^double (:radius b) ^double (:radius a)) t))
+                        :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}
+                        (:relative? a) (assoc :relative? true))
+                      ;; relative ↔ absolute can't interpolate without a size —
+                      ;; switch halfway, like Flutter does for incompatible decorations
+                      (if (< t 0.5) a b))])))
         corner-keys))
 
 (defn fit-corners
@@ -116,7 +148,8 @@
 
    Returns corners with `:radius` scaled and `:ext` (granted extension) added."
   [corners ^double w ^double h]
-  (let [ar (fn [k] (abs ^double (:radius (corners k))))
+  (let [corners (resolve-corners corners w h)
+        ar (fn [k] (abs ^double (:radius (corners k))))
         scale (reduce (fn [^double scale [^double limit ^double sum]]
                         (if (and (> sum limit) (pos? sum))
                           (min scale (/ limit sum))
@@ -364,13 +397,16 @@
   ;; the border width, invisible at typical widths.
   (getInnerPath [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
     (let [w (.-width side)]
-      (smooth-path (.deflate rect w) (inset-corners corners w))))
+      ;; relative radii refer to the outer rect, so resolve before insetting
+      (smooth-path (.deflate rect w)
+                   (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) w))))
 
   (paint [this ^ui/Canvas canvas ^ui/Rect rect ^ui/TextDirection? .textDirection]
     (when (and (pos? (.-width side)) (= (.-style side) m/BorderStyle.solid))
       (let [hw (/ (.-width side) 2.0)]
         (.drawPath canvas
-                   (smooth-path (.deflate rect hw) (inset-corners corners hw))
+                   (smooth-path (.deflate rect hw)
+                                (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
                    (.toPaint side))))
     nil)
 
@@ -454,6 +490,8 @@
   [^ui/Canvas canvas ^ui/Rect rect corners ^m/BoxShadow shadow]
   (let [spread (.-spreadRadius shadow)
         srect (.inflate (.shift rect (.-offset shadow)) spread)
+        ;; resolve against the shape's own rect before growing by the absolute spread
+        corners (resolve-corners corners (.-width rect) (.-height rect))
         scorners (map-radii corners #(if (pos? ^double %) (+ ^double % spread) %))
         ;; deviation must be measured on the fitted radii, not the spec ones:
         ;; an oversized spec (e.g. radius 999) would overestimate it and push
@@ -489,7 +527,8 @@
                  (= (.-style side) m/BorderStyle.solid))
         (let [hw (/ (.-width side) 2.0)]
           (.drawPath canvas
-                     (smooth-path (.deflate rect hw) (inset-corners corners hw))
+                     (smooth-path (.deflate rect hw)
+                                  (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
                      (.toPaint side))))
       nil)))
 

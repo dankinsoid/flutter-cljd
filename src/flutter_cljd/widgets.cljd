@@ -701,7 +701,9 @@
    with `:smoothing` (0..1) at the top level or inside a corner value:
    `{:all 16 :smoothing 0}` clips with plain circular corners (cheaper:
    ClipRRect instead of a path clip). A negative radius makes a concave
-   corner. Elliptical corners are never smoothed.
+   corner. `{:rel f}` gives a radius relative to the shorter side
+   ({:rel 0.5} = capsule), resolved at clip time. Elliptical corners are
+   never smoothed.
 
    Examples:
    ```clojure

@@ -1356,6 +1356,9 @@
       ;; {:radius r :smoothing s} — smoothing is honored only by smooth-corner
       ;; consumers (decoration, clip-corners); here only the radius survives
       (and (map? radius) (contains? radius :radius)) (m/Radius.circular (get radius :radius))
+      ;; a relative radius needs the rect size, which a plain Radius never has
+      (and (map? radius) (contains? radius :rel))
+      (throw (Exception. (str "Relative radius " radius " is only supported by smooth-corner consumers (decoration, clip-corners)")))
       (map? radius) (m/Radius.elliptical (get radius :x 0) (get radius :y 0))
       (or (seq? radius) (vector? radius)) (m/Radius.elliptical (get radius 0 0) (get radius 1 0))
       :else (throw (Exception. (str "Invalid radius: " radius))))))
@@ -1385,7 +1388,7 @@
 
       (map? value)
       (cond
-        (some? (some value [:x :y :radius])) (m/BorderRadius.all (radius value))
+        (some? (some value [:x :y :radius :rel])) (m/BorderRadius.all (radius value))
 
         (some? (some value [:l :r :left :right :top-left :top-right :bottom-left :bottom-right :left-top :right-top :left-bottom :right-bottom]))
         (m/BorderRadius.only
@@ -1419,7 +1422,9 @@
     by default (see `flutter-cljd.smooth-corner/set-default-smoothing!`).
     Control it per decoration with `:smoothing` inside the radius spec:
     `{:border-radius {:all 16 :smoothing 0}}` gives plain circular corners.
-    A negative radius makes a concave corner. Smoothing is skipped when
+    A negative radius makes a concave corner. `{:rel f}` gives a radius
+    relative to the shorter side ({:rel 0.5} = capsule), resolved at paint
+    time. Smoothing is skipped when
     `:image`, `:background-blend-mode`, or a non-uniform `:border` is present,
     or when the radius is a ready-made BorderRadius instance.
 

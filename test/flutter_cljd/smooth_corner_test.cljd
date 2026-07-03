@@ -38,7 +38,15 @@
   (testing "Negative radius keeps sign and drops smoothing"
     (let [{:keys [radius smoothing]} (:top-left (sc/corners -12))]
       (is (approx? -12.0 radius))
-      (is (approx? 0.0 smoothing)))))
+      (is (approx? 0.0 smoothing))))
+
+  (testing "{:rel f} marks the corner as relative"
+    (let [{:keys [radius relative?]} (:top-left (sc/corners {:rel 0.5}))]
+      (is (approx? 0.5 radius))
+      (is (true? relative?)))
+    (let [corners (sc/corners {:top-left {:rel 0.3} :all 8})]
+      (is (true? (get-in corners [:top-left :relative?])))
+      (is (nil? (get-in corners [:top-right :relative?]))))))
 
 (deftest test-needs-smooth-path
   (testing "Zero smoothing and non-negative radii fit an RRect"
@@ -47,7 +55,10 @@
 
   (testing "Smoothing or concave corners require a path"
     (is (sc/needs-smooth-path? (sc/corners 8)))
-    (is (sc/needs-smooth-path? (sc/corners {:all 8 :smoothing 0 :top-left -4})))))
+    (is (sc/needs-smooth-path? (sc/corners {:all 8 :smoothing 0 :top-left -4}))))
+
+  (testing "Relative radii always require a path, even without smoothing"
+    (is (sc/needs-smooth-path? (sc/corners {:rel 0.3 :smoothing 0})))))
 
 (deftest test-corner-params
   (testing "Zero smoothing degenerates to a plain arc"
@@ -138,6 +149,18 @@
         (is (approx? 0.0 (.-left bounds)))
         (is (approx? 100.0 (.-right bounds))))))
 
+  (testing "Relative radius resolves against the shorter side"
+    ;; {:rel 0.5} on 100×40 → r = 20 = h/2 → capsule
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 40)
+                               (sc/corners {:rel 0.5 :smoothing 0}))]
+      (is (not (.contains path (ui/Offset 3 3))))
+      (is (.contains path (ui/Offset 50 20))))
+    ;; negative relative radius carves a concave corner
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 100)
+                               (sc/corners {:top-right {:rel -0.2} :all 0}))]
+      (is (not (.contains path (ui/Offset 95 5))))
+      (is (.contains path (ui/Offset 50 50)))))
+
   (testing "Oversized uniform radius degrades into a capsule"
     (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 40) (sc/corners 999))
           bounds (.getBounds path)]
@@ -157,7 +180,22 @@
 
   (testing "Value equality"
     (is (= (sc/smooth-rectangle-border 8) (sc/smooth-rectangle-border 8)))
-    (is (not= (sc/smooth-rectangle-border 8) (sc/smooth-rectangle-border 9)))))
+    (is (not= (sc/smooth-rectangle-border 8) (sc/smooth-rectangle-border 9))))
+
+  (testing "Relative corners lerp numerically, mixed modes switch halfway"
+    (let [rel-a (sc/smooth-rectangle-border {:rel 0.2})
+          rel-b (sc/smooth-rectangle-border {:rel 0.4})
+          mid ^sc/SmoothRectangleBorder (.lerpFrom rel-b rel-a 0.5)]
+      (is (approx? 0.3 (get-in (.-corners mid) [:top-left :radius])))
+      (is (true? (get-in (.-corners mid) [:top-left :relative?]))))
+    (let [abs (sc/smooth-rectangle-border 8)
+          rel (sc/smooth-rectangle-border {:rel 0.5})
+          early ^sc/SmoothRectangleBorder (.lerpFrom rel abs 0.25)
+          late ^sc/SmoothRectangleBorder (.lerpFrom rel abs 0.75)]
+      (is (approx? 8.0 (get-in (.-corners early) [:top-left :radius])))
+      (is (nil? (get-in (.-corners early) [:top-left :relative?])))
+      (is (approx? 0.5 (get-in (.-corners late) [:top-left :radius])))
+      (is (true? (get-in (.-corners late) [:top-left :relative?]))))))
 
 (deftest test-decoration-dispatch
   (testing "Rounded rectangle is smooth by default"
@@ -198,7 +236,15 @@
 
   (testing "Value equality for repaint short-circuiting"
     (is (= (t/decoration {:color :red :border-radius 8})
-           (t/decoration {:color :red :border-radius 8})))))
+           (t/decoration {:color :red :border-radius 8}))))
+
+  (testing "Relative radius goes through the smooth decoration even without smoothing"
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:color :red :border-radius {:rel 0.5 :smoothing 0}}))))
+
+  (testing "Relative radius outside a smooth context fails loudly"
+    (is (thrown? Exception (t/radius {:rel 0.5})))
+    (is (thrown? Exception (t/border-radius {:rel 0.5})))))
 
 (deftest test-clip-corners-dispatch
   (testing "Smooth corners clip with a path"
