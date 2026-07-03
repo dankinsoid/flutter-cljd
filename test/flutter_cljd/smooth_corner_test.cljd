@@ -64,6 +64,41 @@
     (is (approx? 16.0 (:p (sc/corner-params {:radius 10.0 :smoothing 0.6} 100.0 100.0))))
     (is (approx? 25.0 (:p (sc/corner-params {:radius 24.0 :smoothing 1.0} 50.0 100.0))))))
 
+(deftest test-fit-corners
+  (testing "Radii within limits pass through unchanged"
+    (let [fitted (sc/fit-corners (sc/corners {:top-left 80 :all 0}) 100.0 100.0)]
+      (is (approx? 80.0 (get-in fitted [:top-left :radius])))))
+
+  (testing "Overflow shrinks all radii by one common factor (RRect semantics)"
+    (let [fitted (sc/fit-corners (sc/corners {:top-left 150 :top-right 50 :all 0}) 100.0 100.0)]
+      (is (approx? 75.0 (get-in fitted [:top-left :radius])))
+      (is (approx? 25.0 (get-in fitted [:top-right :radius])))))
+
+  (testing "Concave radii participate in side sums via absolute value"
+    (let [fitted (sc/fit-corners (sc/corners {:top-left {:radius -80 :smoothing 0}
+                                              :top-right 80
+                                              :all 0})
+                                 100.0 100.0)]
+      (is (approx? -50.0 (get-in fitted [:top-left :radius])))
+      (is (approx? 50.0 (get-in fitted [:top-right :radius])))))
+
+  (testing "Capsule: uniform oversized radius shrinks to half the short side"
+    (let [fitted (sc/fit-corners (sc/corners 999) 100.0 40.0)]
+      (doseq [[_ {:keys [radius ext]}] fitted]
+        (is (approx? 20.0 radius))
+        ;; at the capsule limit the smoothing extension vanishes
+        (is (approx? 0.0 ext)))))
+
+  (testing "Smoothing extensions shrink proportionally into the side slack"
+    (let [fitted (sc/fit-corners {:top-left {:radius 10.0 :smoothing 1.0}
+                                  :top-right {:radius 85.0 :smoothing 0.0}
+                                  :bottom-right {:radius 0.0 :smoothing 0.0}
+                                  :bottom-left {:radius 0.0 :smoothing 0.0}}
+                                 100.0 100.0)]
+      ;; desired extension 10, top-side slack 100 − 10 − 85 = 5
+      (is (approx? 5.0 (get-in fitted [:top-left :ext])))
+      (is (approx? 0.0 (get-in fitted [:top-right :ext]))))))
+
 (deftest test-smooth-path
   (testing "Path spans the whole rect"
     (doseq [corners [(sc/corners 16)
@@ -89,7 +124,29 @@
       ;; inside the carved quarter disc around (100, 0)
       (is (not (.contains path (ui/Offset 95 5))))
       ;; the other corners stay sharp
-      (is (.contains path (ui/Offset 1 1))))))
+      (is (.contains path (ui/Offset 1 1)))))
+
+  (testing "A single radius may exceed half the side when its neighbors leave room"
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 100)
+                               (sc/corners {:top-left 80 :all 0}))]
+      ;; (15, 15) lies outside the r=80 arc but inside the old r=50 clamp
+      (is (not (.contains path (ui/Offset 15 15))))
+      (is (.contains path (ui/Offset 50 50)))
+      ;; the rest of the outline is intact
+      (is (.contains path (ui/Offset 99 99)))
+      (let [bounds (.getBounds path)]
+        (is (approx? 0.0 (.-left bounds)))
+        (is (approx? 100.0 (.-right bounds))))))
+
+  (testing "Oversized uniform radius degrades into a capsule"
+    (let [path (sc/smooth-path (ui/Rect.fromLTWH 0 0 100 40) (sc/corners 999))
+          bounds (.getBounds path)]
+      (is (approx? 0.0 (.-left bounds)))
+      (is (approx? 100.0 (.-right bounds)))
+      (is (approx? 40.0 (.-bottom bounds)))
+      ;; capsule end cap: the point just inside the rect corner is cut away
+      (is (not (.contains path (ui/Offset 3 3))))
+      (is (.contains path (ui/Offset 50 20))))))
 
 (deftest test-smooth-rectangle-border
   (testing "Lerp between smooth borders interpolates radii"

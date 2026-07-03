@@ -102,6 +102,56 @@
                      :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}])))
         corner-keys))
 
+(defn fit-corners
+  "Fits corners into a w×h rect with RRect-compatible semantics
+   (see RRect._scaleRadii): a radius may exceed half the side — only the sum
+   of the two absolute radii sharing a side is constrained by its length, and
+   on overflow ALL radii shrink by one common factor, preserving proportions.
+   Concave radii occupy edge length just like convex ones, so they participate
+   in the sums via their absolute value.
+
+   Then distributes smoothing extensions (p − r) out of each side's remaining
+   slack, shrinking them proportionally when they don't fit — this is what
+   keeps two corners from ever overlapping mid-edge.
+
+   Returns corners with `:radius` scaled and `:ext` (granted extension) added."
+  [corners ^double w ^double h]
+  (let [ar (fn [k] (abs ^double (:radius (corners k))))
+        scale (reduce (fn [^double scale [^double limit ^double sum]]
+                        (if (and (> sum limit) (pos? sum))
+                          (min scale (/ limit sum))
+                          scale))
+                      1.0
+                      [[w (+ (ar :top-left) (ar :top-right))]
+                       [w (+ (ar :bottom-left) (ar :bottom-right))]
+                       [h (+ (ar :top-left) (ar :bottom-left))]
+                       [h (+ (ar :top-right) (ar :bottom-right))]])
+        corners (if (< scale 1.0) (map-radii corners #(* ^double % scale)) corners)
+        max-radius (/ (min w h) 2.0)
+        ext-des (fn ^double [{:keys [^double radius ^double smoothing]}]
+                  (if (pos? radius)
+                    (min (* smoothing radius) (max 0.0 (- max-radius radius)))
+                    0.0))
+        side-factor (fn ^double [ka kb ^double limit]
+                      (let [slack (- limit
+                                     (abs ^double (:radius (corners ka)))
+                                     (abs ^double (:radius (corners kb))))
+                            want (+ (ext-des (corners ka)) (ext-des (corners kb)))]
+                        (if (and (pos? want) (< slack want))
+                          (/ (max slack 0.0) want)
+                          1.0)))
+        top (side-factor :top-left :top-right w)
+        bottom (side-factor :bottom-left :bottom-right w)
+        left (side-factor :top-left :bottom-left h)
+        right (side-factor :top-right :bottom-right h)
+        grant (fn [k ^double factor]
+                (let [corner (corners k)]
+                  (assoc corner :ext (* (ext-des corner) factor))))]
+    {:top-left (grant :top-left (min top left))
+     :top-right (grant :top-right (min top right))
+     :bottom-right (grant :bottom-right (min bottom right))
+     :bottom-left (grant :bottom-left (min bottom left))}))
+
 (defn corners->border-radius
   "RRect-compatible approximation: smoothing is dropped, concave radii clamp to 0."
   ^m/BorderRadius [corners]
@@ -123,16 +173,28 @@
   "Figma squircle parameters for one convex corner (radius > 0), following
    https://www.figma.com/blog/desperately-seeking-squircles/.
    `:l` is the length of the central circular arc section; `:p` is how far
-   the corner extends along each edge."
-  [{:keys [^double radius ^double smoothing]} ^double w ^double h]
+   the corner extends along each edge (radius + smoothing extension).
+
+   Expects a corner processed by `fit-corners`: the radius is taken as-is
+   (it may legitimately exceed half the smaller side) and `:ext` is the
+   granted extension. Without `:ext` the unconstrained-side extension is
+   assumed, which matches the standalone/legacy behavior."
+  [{:keys [^double radius ^double smoothing ext]} ^double w ^double h]
   (let [max-radius (/ (min w h) 2.0)
-        r (min radius max-radius)
-        p (min (* (+ 1.0 smoothing) r) max-radius)
+        r radius
+        e (double (or ext
+                      (if (pos? r)
+                        (min (* smoothing r) (max 0.0 (- max-radius r)))
+                        0.0)))
+        p (+ r e)
         half (/ max-radius 2.0)
-        ;; the blend angles collapse back to a plain arc as r approaches max-radius
-        k (if (<= r half)
-            smoothing
-            (* smoothing (- 1.0 (/ (- r half) half))))
+        ;; the blend angles collapse back to a plain arc as r approaches
+        ;; max-radius; past it (possible after fit-corners) the corner is a
+        ;; plain circular arc
+        k (cond
+            (<= r half) smoothing
+            (< r max-radius) (* smoothing (- 1.0 (/ (- r half) half)))
+            :else 0.0)
         angle-beta (* 90.0 (- 1.0 k))
         angle-alpha (* 45.0 k)
         angle-theta (/ (- 90.0 angle-beta) 2.0)
@@ -140,7 +202,9 @@
         l (* (math/sin (radians (/ angle-beta 2.0))) r (math/sqrt 2.0))
         c (* p3-to-p4 (math/cos (radians angle-alpha)))
         d (* c (math/tan (radians angle-alpha)))
-        b (/ (- p l c d) 3.0)
+        ;; a granted extension smaller than the angles assume could push b
+        ;; below zero — degrade toward the plain arc instead of folding
+        b (max 0.0 (/ (- p l c d) 3.0))
         a (* 2.0 b)]
     {:radius r :p p :l l :a a :b b :c c :d d}))
 
@@ -151,104 +215,100 @@
 ;; Corner segments follow figma_squircle's path order: top-right (moveTo),
 ;; bottom-right, bottom-left, top-left (close). Coordinates are rect-local;
 ;; smooth-path shifts the result to the rect origin at the end.
+;;
+;; Unlike the original, corners connect directly to each other (no mid-edge
+;; anchor points): fit-corners guarantees the extents of two corners sharing
+;; a side never overlap, so each segment just lines to its own start point.
 
 (defn- add-top-right [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
   (cond
     (pos? radius)
     (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
       (doto path
-        (.moveTo (max (/ w 2.0) (- w p)) 0)
+        (.moveTo (- w p) 0)
         (.cubicTo (- w (- p a)) 0
                   (- w (- p a b)) 0
                   (- w (- p a b c)) d)
         (.relativeArcToPoint (ui/Offset l l) .radius (ui/Radius.circular radius))
         (.cubicTo w (- p a b)
                   w (- p a)
-                  w (min (/ h 2.0) p))))
+                  w p)))
 
     (neg? radius)
-    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+    (let [ar (- radius)]
       (doto path
-        (.moveTo (/ w 2.0) 0)
-        (.lineTo (- w ar) 0)
-        (.arcToPoint (ui/Offset w ar) .radius (ui/Radius.circular ar) .clockwise false)
-        (.lineTo w (/ h 2.0))))
+        (.moveTo (- w ar) 0)
+        (.arcToPoint (ui/Offset w ar) .radius (ui/Radius.circular ar) .clockwise false)))
 
     :else
     (doto path
-      (.moveTo (/ w 2.0) 0)
-      (.lineTo w 0)
-      (.lineTo w (/ h 2.0)))))
+      (.moveTo w 0))))
 
 (defn- add-bottom-right [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
   (cond
     (pos? radius)
     (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
       (doto path
-        (.lineTo w (max (/ h 2.0) (- h p)))
+        (.lineTo w (- h p))
         (.cubicTo w (- h (- p a))
                   w (- h (- p a b))
                   (- w d) (- h (- p a b c)))
         (.relativeArcToPoint (ui/Offset (- l) l) .radius (ui/Radius.circular radius))
         (.cubicTo (- w (- p a b)) h
                   (- w (- p a)) h
-                  (max (/ w 2.0) (- w p)) h)))
+                  (- w p) h)))
 
     (neg? radius)
-    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+    (let [ar (- radius)]
       (doto path
         (.lineTo w (- h ar))
-        (.arcToPoint (ui/Offset (- w ar) h) .radius (ui/Radius.circular ar) .clockwise false)
-        (.lineTo (/ w 2.0) h)))
+        (.arcToPoint (ui/Offset (- w ar) h) .radius (ui/Radius.circular ar) .clockwise false)))
 
     :else
     (doto path
-      (.lineTo w h)
-      (.lineTo (/ w 2.0) h))))
+      (.lineTo w h))))
 
 (defn- add-bottom-left [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
   (cond
     (pos? radius)
     (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
       (doto path
-        (.lineTo (min (/ w 2.0) p) h)
+        (.lineTo p h)
         (.cubicTo (- p a) h
                   (- p a b) h
                   (- p a b c) (- h d))
         (.relativeArcToPoint (ui/Offset (- l) (- l)) .radius (ui/Radius.circular radius))
         (.cubicTo 0 (- h (- p a b))
                   0 (- h (- p a))
-                  0 (max (/ h 2.0) (- h p)))))
+                  0 (- h p))))
 
     (neg? radius)
-    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+    (let [ar (- radius)]
       (doto path
         (.lineTo ar h)
-        (.arcToPoint (ui/Offset 0 (- h ar)) .radius (ui/Radius.circular ar) .clockwise false)
-        (.lineTo 0 (/ h 2.0))))
+        (.arcToPoint (ui/Offset 0 (- h ar)) .radius (ui/Radius.circular ar) .clockwise false)))
 
     :else
     (doto path
-      (.lineTo 0 h)
-      (.lineTo 0 (/ h 2.0)))))
+      (.lineTo 0 h))))
 
 (defn- add-top-left [^ui/Path path {:keys [^double radius] :as corner} ^double w ^double h]
   (cond
     (pos? radius)
     (let [{:keys [^double radius ^double p ^double l ^double a ^double b ^double c ^double d]} (corner-params corner w h)]
       (doto path
-        (.lineTo 0 (min (/ h 2.0) p))
+        (.lineTo 0 p)
         (.cubicTo 0 (- p a)
                   0 (- p a b)
                   d (- p a b c))
         (.relativeArcToPoint (ui/Offset l (- l)) .radius (ui/Radius.circular radius))
         (.cubicTo (- p a b) 0
                   (- p a) 0
-                  (min (/ w 2.0) p) 0)
+                  p 0)
         (.close)))
 
     (neg? radius)
-    (let [ar (min (- radius) (/ w 2.0) (/ h 2.0))]
+    (let [ar (- radius)]
       (doto path
         (.lineTo 0 ar)
         (.arcToPoint (ui/Offset ar 0) .radius (ui/Radius.circular ar) .clockwise false)
@@ -261,6 +321,8 @@
 
 (defn ^ui/Path smooth-path
   "Builds the outline path for `rect` with the given normalized corners.
+   Radii are fitted to the rect first (see `fit-corners`), so oversized specs
+   degrade exactly like an RRect: proportional shrink, capsule at the limit.
 
    Corner params are recomputed on every call: ~10 trig ops per corner is
    negligible next to path rasterization, and caching would leak during
@@ -269,6 +331,7 @@
   [^ui/Rect rect corners]
   (let [w (.-width rect)
         h (.-height rect)
+        corners (fit-corners corners w h)
         path (ui/Path)]
     (add-top-right path (:top-right corners) w h)
     (add-bottom-right path (:bottom-right corners) w h)
@@ -361,16 +424,25 @@
 ;; -------------------------
 
 (defn- shadow-deviation
-  "Max outline deviation between the smooth path and its RRect approximation.
-   Convex: the Bézier blend deviates by roughly 10% of radius × smoothing.
+  "Max outline deviation between the smooth path and its RRect approximation,
+   for corners already fitted to a w×h rect.
+   Convex: the Bézier blend deviates by roughly 10% of radius × smoothing,
+   where smoothing collapses to zero as the radius approaches (and passes)
+   half the smaller side — there the path is a plain arc, identical to RRect.
    Concave: the RRect drops the whole cut, deviating by |r|·(√2−1)."
-  ^double [corners]
-  (reduce (fn [^double acc {:keys [^double radius ^double smoothing]}]
-            (max acc (if (neg? radius)
-                       (* 0.42 (- radius))
-                       (* 0.1 radius smoothing))))
-          0.0
-          (vals corners)))
+  ^double [corners ^double w ^double h]
+  (let [max-radius (/ (min w h) 2.0)
+        half (/ max-radius 2.0)]
+    (reduce (fn [^double acc {:keys [^double radius ^double smoothing]}]
+              (max acc
+                   (cond
+                     (neg? radius) (* 0.42 (- radius))
+                     (<= radius half) (* 0.1 radius smoothing)
+                     (< radius max-radius) (* 0.1 radius smoothing
+                                              (- 1.0 (/ (- radius half) half)))
+                     :else 0.0)))
+            0.0
+            (vals corners))))
 
 (defn- paint-shadow
   "Draws one shadow, picking the cheapest visually-equivalent form:
@@ -382,8 +454,12 @@
   [^ui/Canvas canvas ^ui/Rect rect corners ^m/BoxShadow shadow]
   (let [spread (.-spreadRadius shadow)
         srect (.inflate (.shift rect (.-offset shadow)) spread)
-        scorners (map-radii corners #(if (pos? ^double %) (+ ^double % spread) %))]
-    (if (>= (.-blurSigma shadow) (shadow-deviation scorners))
+        scorners (map-radii corners #(if (pos? ^double %) (+ ^double % spread) %))
+        ;; deviation must be measured on the fitted radii, not the spec ones:
+        ;; an oversized spec (e.g. radius 999) would overestimate it and push
+        ;; the shadow onto the expensive path branch for nothing
+        fitted (fit-corners scorners (.-width srect) (.-height srect))]
+    (if (>= (.-blurSigma shadow) (shadow-deviation fitted (.-width srect) (.-height srect)))
       (.drawRRect canvas (.toRRect (corners->border-radius scorners) srect) (.toPaint shadow))
       (.drawPath canvas (smooth-path srect scorners) (.toPaint shadow)))))
 
