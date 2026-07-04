@@ -1,5 +1,6 @@
 (ns repl
   (:require
+   [data.examples :as ex]
    [flutter-cljd.widgets :as ui]
    [flutter-cljd.utils :as ut]
    [flutter-cljd.shader :as shader]
@@ -459,10 +460,28 @@
                         :border-radius 8})
          (ui/sized {:h 120})))))
 
+;; ====== 11. SMOOTH CORNERS ======
+
+(defn corners-preview []
+  (ui/single-child-scroll-view
+   (ui/padding 16
+    (apply ui/column
+           :cross-axis-alignment :stretch
+           :spacing 10
+           (mapcat (fn [k]
+                     (let [{:keys [name description builder]} (ex/get-example k)]
+                       [(ui/text name {:size 15 :weight :bold})
+                        (ui/text description {:size 11 :color :grey})
+                        (ui/center (builder))]))
+                   [:corner-smoothing :concave-corners :relative-corners
+                    :oversized-radius :smooth-shadows :smooth-border
+                    :clip-corners-smooth])))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
-  [["List"       list-layout-preview]
+  [["Corners"    corners-preview]
+   ["List"       list-layout-preview]
    ["Grid"       grid-layout-preview]
    ["Animate"    animation-preview]
    ["Grid+Anim"  grid-animation-preview]

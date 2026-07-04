@@ -1,6 +1,7 @@
 (ns data.examples
   "Widget examples with code and builders"
   (:require
+   ["package:flutter/material.dart" :as m]
    [flutter-cljd.widgets :as f]
    [flutter-cljd.utils :as ut]))
 
@@ -62,6 +63,76 @@
    (mk-example "Button" "Interactive button widget"
      (f/button #(println "Button clicked!")
        (f/text "Click me")))
+
+   ;; --- Smooth corners ---
+
+   :corner-smoothing
+   (mk-example "Smoothing levels" "Same radius 28, corner smoothing 0 (circular), 0.6 (default, iOS-like) and 1"
+     (f/row
+       (f/padding 6
+         (f/decorated {:color 0xFF1976D2 :border-radius {:all 28 :smoothing 0}}
+           (f/sized {:w 90 :h 90} (f/center (f/text "0" :color :white)))))
+       (f/padding 6
+         (f/decorated {:color 0xFF1976D2 :border-radius 28}
+           (f/sized {:w 90 :h 90} (f/center (f/text "0.6" :color :white)))))
+       (f/padding 6
+         (f/decorated {:color 0xFF1976D2 :border-radius {:all 28 :smoothing 1}}
+           (f/sized {:w 90 :h 90} (f/center (f/text "1.0" :color :white)))))))
+
+   :concave-corners
+   (mk-example "Concave corners" "Negative radius carves the corner inward — ticket and tag shapes"
+     (f/row
+       (f/padding 6
+         (f/decorated {:color 0xFFE91E63 :border-radius {:all 20 :left -14}}
+           (f/sized {:w 130 :h 80} (f/center (f/text "tag" :color :white)))))
+       (f/padding 6
+         (f/decorated {:color 0xFF4CAF50 :border-radius {:top 24 :bottom -24}}
+           (f/sized {:w 130 :h 80} (f/center (f/text "arch" :color :white)))))))
+
+   :relative-corners
+   (mk-example "Relative radius" "{:rel f} is a fraction of the shorter side — 0.5 makes a capsule at any size"
+     (f/column
+       (f/padding 6
+         (f/decorated {:color 0xFF9C27B0 :border-radius {:rel 0.5}}
+           (f/sized {:w 220 :h 56} (f/center (f/text "{:rel 0.5}" :color :white)))))
+       (f/padding 6
+         (f/decorated {:color 0xFF9C27B0 :border-radius {:rel 0.5}}
+           (f/sized {:w 140 :h 36} (f/center (f/text "{:rel 0.5}" :color :white)))))
+       (f/padding 6
+         (f/decorated {:color 0xFF7B1FA2 :border-radius {:rel 0.25}}
+           (f/sized {:w 220 :h 90} (f/center (f/text "{:rel 0.25}" :color :white)))))))
+
+   :oversized-radius
+   (mk-example "Oversized radius" "Radius 999 degrades into a capsule, RRect-style: proportional shrink, circular arc ends"
+     (f/decorated {:color 0xFFFF6F00 :border-radius 999}
+       (f/sized {:w 240 :h 64} (f/center (f/text "radius 999" :color :white)))))
+
+   :smooth-shadows
+   (mk-example "Smooth shadows" "Sharp shadows follow the smooth path; blurred ones switch to the cheap RRect blur automatically"
+     (f/row
+       (f/padding 16
+         (f/decorated {:color :white
+                       :border-radius 24
+                       :shadow (m/BoxShadow .color (m/Color 0x66000000) .offset (m/Offset 4 6))}
+           (f/sized {:w 90 :h 90} (f/center (f/text "sharp")))))
+       (f/padding 16
+         (f/decorated {:color :white
+                       :border-radius 24
+                       :shadow (m/BoxShadow .color (m/Color 0x66000000) .offset (m/Offset 0 6) .blurRadius 16)}
+           (f/sized {:w 90 :h 90} (f/center (f/text "blur")))))))
+
+   :smooth-border
+   (mk-example "Smooth border" "A uniform border follows the smooth outline"
+     (f/decorated {:color 0xFFE3F2FD
+                   :border (m/Border.all .color (m/Color 0xFF1976D2) .width 3)
+                   :border-radius {:all 28 :smoothing 1}}
+       (f/sized {:w 160 :h 90} (f/center (f/text "border")))))
+
+   :clip-corners-smooth
+   (mk-example "Smooth clip" "clip-corners clips with the same smooth path, concave corners included"
+     (f/clip-corners {:all 32 :bottom-right -32}
+       (f/decorated {:gradient {:type :linear :colors [:purple :orange]}}
+         (f/sized {:w 200 :h 120}))))
 
    ;; --- Gradients ---
 

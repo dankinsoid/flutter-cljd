@@ -28,6 +28,14 @@
     :widgets [:colored :decorated :opacity :clip-oval :clip-rect :clip-corners
               :text :with-text-style :color-filtered :keyed :banner]}
 
+   {:id :corners
+    :name "Smooth Corners"
+    :icon m/Icons.rounded_corner
+    :description "Figma-style squircle corners, concave cuts, relative radii"
+    :color 0xFF9C27B0
+    :widgets [:corner-smoothing :concave-corners :relative-corners
+              :oversized-radius :smooth-shadows :smooth-border :clip-corners-smooth]}
+
    {:id :interactive
     :name "Interactive"
     :icon m/Icons.touch_app
