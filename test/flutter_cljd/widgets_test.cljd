@@ -403,6 +403,20 @@
       (is (instance? m/CheckedPopupMenuItem (nth entries 2)))
       (is (true? (.-checked (nth entries 2))))))
 
+  (testing "[value child] shorthand items, with optional opts map"
+    (let [widget (f/popup-menu-button
+                  {:items [[:edit (m/Text "Edit")]
+                           [:bold (m/Text "Bold") {:checked true}]
+                           [:off (m/Text "Off") {:enabled false}]]}
+                  (m/Text "Menu"))
+          entries ((.-itemBuilder widget) nil)]
+      (is (instance? m/PopupMenuItem (nth entries 0)))
+      (is (= (.-value (nth entries 0)) :edit))
+      (is (true? (.-enabled (nth entries 0))))
+      (is (instance? m/CheckedPopupMenuItem (nth entries 1)))
+      (is (true? (.-checked (nth entries 1))))
+      (is (false? (.-enabled (nth entries 2))))))
+
   (testing "icon is used when no child is given"
     (let [widget (f/popup-menu-button
                   {:icon (m/Icon m/Icons.more_vert)

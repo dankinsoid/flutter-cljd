@@ -1268,6 +1268,8 @@
       - `:key` An identifier for the widget.
       - `:items` (vector or `(fn [BuildContext] -> vector)`, required): The menu
         entries. Each entry is one of:
+        - `[value child]` or `[value child opts]` — shorthand for a menu item;
+          `opts` is any of the map keys below (e.g. `{:checked true}`).
         - `:divider` — a plain divider.
         - a map with a truthy `:divider` — a divider with `:height`, `:thickness`,
           `:indent`, `:end-indent`, `:color`.
@@ -1300,10 +1302,10 @@
    ```clojure
    (popup-menu-button
     {:on-selected #(print \"selected\" %)
-     :items [{:value :edit :child (text \"Edit\")}
-             {:value :share :child (text \"Share\")}
+     :items [[:edit (text \"Edit\")]
+             [:share (text \"Share\")]
              :divider
-             {:value :delete :child (text \"Delete\")}]}
+             [:delete (text \"Delete\")]]}
     (icon m/Icons.more_vert))
    ```
 

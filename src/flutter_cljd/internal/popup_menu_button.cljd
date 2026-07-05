@@ -9,7 +9,8 @@
 
 (defn- ^#/(m/PopupMenuEntry dynamic) menu-entry
   "Builds a single PopupMenuEntry from a Clojure descriptor.
-   Accepts an already-built PopupMenuEntry, the `:divider` keyword, or a map:
+   Accepts an already-built PopupMenuEntry, the `:divider` keyword, a
+   `[value child]` (or `[value child opts]`) shorthand, or a map:
    a map with a truthy `:divider` becomes a PopupMenuDivider, one containing
    `:checked` a CheckedPopupMenuItem, otherwise a PopupMenuItem."
   [item]
@@ -17,6 +18,10 @@
     (instance? m/PopupMenuEntry item) item
 
     (= item :divider) (m/PopupMenuDivider)
+
+    (vector? item)
+    (let [[value child opts] item]
+      (menu-entry (assoc opts :value value :child child)))
 
     (map? item)
     (cond
