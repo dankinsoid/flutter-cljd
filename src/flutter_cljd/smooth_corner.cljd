@@ -502,8 +502,10 @@
       (.drawPath canvas (smooth-path srect scorners) (.toPaint shadow)))))
 
 (deftype SmoothBoxPainter [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+                           ^m/DecorationImage? image ^m/BlendMode? blend-mode ^dc/Function? on-changed
                            ^:mutable ^ui/Rect? cached-rect
-                           ^:mutable ^ui/Path? cached-path]
+                           ^:mutable ^ui/Path? cached-path
+                           ^:mutable ^m/DecorationImagePainter? image-painter]
   :extends (m/BoxPainter)
 
   (paint [this ^ui/Canvas canvas ^ui/Offset offset ^m/ImageConfiguration configuration]
@@ -514,14 +516,27 @@
                  (let [p (smooth-path rect corners)]
                    (set! cached-rect rect)
                    (set! cached-path p)
-                   p))]
+                   p))
+          fill-paint (fn ^ui/Paint []
+                       (let [p (ui/Paint)]
+                         (when (some? blend-mode) (.-blendMode! p blend-mode))
+                         p))]
       (doseq [^m/BoxShadow shadow shadows]
         (paint-shadow canvas rect corners shadow))
       (when (some? gradient)
-        (.drawPath canvas path
-                   (doto (ui/Paint) (.-shader! (.createShader gradient rect)))))
+        (.drawPath canvas path (doto (fill-paint) (.-shader! (.createShader gradient rect)))))
       (when (and (nil? gradient) (some? color))
-        (.drawPath canvas path (doto (ui/Paint) (.-color! color))))
+        (.drawPath canvas path (doto (fill-paint) (.-color! color))))
+      ;; the image is clipped to the smooth outline via DecorationImagePainter's
+      ;; clipPath argument, so it follows the squircle just like the fill
+      (when (some? image)
+        (when (nil? image-painter)
+          ;; wrap in a fresh closure literal so cljd coerces it to the
+          ;; VoidCallback the API wants (a bare Function? field won't cast);
+          ;; the non-null hint lets the closed-over callback be invoked
+          (set! image-painter
+                (.createPainter image (fn [] (when-some [^dc/Function cb on-changed] (cb))))))
+        (.paint image-painter canvas rect path configuration))
       (when (and (some? side)
                  (pos? (.-width side))
                  (= (.-style side) m/BorderStyle.solid))
@@ -530,7 +545,11 @@
                      (smooth-path (.deflate rect hw)
                                   (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
                      (.toPaint side))))
-      nil)))
+      nil))
+
+  (dispose [this]
+    (some-> image-painter .dispose)
+    nil))
 
 (defn- lerp-shadows [as bs ^double t]
   (when (or (seq as) (seq bs))
@@ -539,16 +558,18 @@
 
 (declare lerp-smooth-decoration)
 
-(deftype SmoothDecoration [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side]
+(deftype SmoothDecoration [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+                           ^m/DecorationImage? image ^m/BlendMode? blend-mode]
   :extends (m/Decoration)
 
   (padding [this]
     (if (some? side) (m/EdgeInsets.all (.-width side)) m/EdgeInsets.zero))
 
-  ;; VoidCallback is a typedef the cljd analyzer can't resolve — Function? is
-  ;; the closest expressible type for the optional onChanged parameter
+  ;; the framework guarantees on-changed is non-null whenever an image is set;
+  ;; VoidCallback is a typedef the cljd analyzer can't resolve, so Function? is
+  ;; the closest expressible type for the parameter
   (createBoxPainter [this ... ^dc/Function? on-changed]
-    (SmoothBoxPainter corners color gradient shadows side nil nil))
+    (SmoothBoxPainter corners color gradient shadows side image blend-mode on-changed nil nil nil))
 
   (hitTest [this ^ui/Size size ^ui/Offset position ^ui/TextDirection? .textDirection]
     (.contains (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size)) corners)
@@ -574,9 +595,11 @@
                 (= color (.-color other))
                 (= gradient (.-gradient other))
                 (= shadows (.-shadows other))
-                (= side (.-side other))))))
+                (= side (.-side other))
+                (= image (.-image other))
+                (= blend-mode (.-blend-mode other))))))
 
-  (hashCode [this] (hash [corners color gradient shadows side])))
+  (hashCode [this] (hash [corners color gradient shadows side image blend-mode])))
 
 (defn- lerp-smooth-decoration [^SmoothDecoration a ^SmoothDecoration b ^double t]
   (SmoothDecoration
@@ -587,16 +610,21 @@
    (when (or (some? (.-side a)) (some? (.-side b)))
      (m/BorderSide.lerp (or (.-side a) m/BorderSide.none)
                         (or (.-side b) m/BorderSide.none)
-                        t))))
+                        t))
+   ;; DecorationImage and BlendMode have no interpolation — switch halfway
+   (if (< t 0.5) (.-image a) (.-image b))
+   (if (< t 0.5) (.-blend-mode a) (.-blend-mode b))))
 
 (defn ^m/Decoration smooth-decoration
   "Decoration painting a smooth-cornered rectangle: shadows, then fill
-   (gradient wins over color), then a uniform inside-aligned border."
-  [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side]
+   (gradient wins over color), then the image (clipped to the outline),
+   then a uniform inside-aligned border. `blend-mode` applies to the fill."
+  [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+   ^m/DecorationImage? image ^m/BlendMode? blend-mode]
   (SmoothDecoration
    corners color gradient
    (cond
      (nil? shadows) nil
      (instance? m/BoxShadow shadows) [shadows]
      :else (vec shadows))
-   side))
+   side image blend-mode))

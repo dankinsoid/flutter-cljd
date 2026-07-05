@@ -212,10 +212,22 @@
     (is (instance? sc/SmoothDecoration
                    (t/decoration {:color :red :border-radius {:all 8 :smoothing 0 :top-left -8}}))))
 
-  (testing "Background blend mode falls back to BoxDecoration"
+  (testing "Background blend mode follows the smooth outline"
+    (let [dec (t/decoration {:color :red :border-radius 8
+                             :background-blend-mode m/BlendMode.multiply})]
+      (is (instance? sc/SmoothDecoration dec))
+      (is (= m/BlendMode.multiply (.-blend-mode ^sc/SmoothDecoration dec)))))
+
+  (testing "Image follows the smooth outline, even with a relative radius"
+    (let [img (m/DecorationImage .image (m/NetworkImage "http://example.com/x.png"))
+          dec (t/decoration {:border-radius {:rel 0.5} :image img})]
+      (is (instance? sc/SmoothDecoration dec))
+      (is (= img (.-image ^sc/SmoothDecoration dec)))))
+
+  (testing "Non-uniform border still falls back to BoxDecoration"
     (is (instance? m/BoxDecoration
                    (t/decoration {:color :red :border-radius 8
-                                  :background-blend-mode m/BlendMode.multiply}))))
+                                  :border (m/Border .bottom (m/BorderSide .width 2))}))))
 
   (testing "Uniform border becomes the decoration side"
     (let [dec (t/decoration {:color :red :border-radius 8
@@ -244,7 +256,19 @@
 
   (testing "Relative radius outside a smooth context fails loudly"
     (is (thrown? Exception (t/radius {:rel 0.5})))
-    (is (thrown? Exception (t/border-radius {:rel 0.5})))))
+    (is (thrown? Exception (t/border-radius {:rel 0.5}))))
+
+  (testing "Image and blend mode survive a lerp round-trip"
+    (let [img (m/DecorationImage .image (m/NetworkImage "http://example.com/x.png"))
+          a ^m/Decoration (t/decoration {:border-radius 8 :image img
+                                         :background-blend-mode m/BlendMode.multiply})
+          b ^m/Decoration (t/decoration {:border-radius 16 :color :blue})
+          early ^sc/SmoothDecoration (.lerpTo a b 0.25)
+          late ^sc/SmoothDecoration (.lerpTo a b 0.75)]
+      (is (= img (.-image early)))
+      (is (= m/BlendMode.multiply (.-blend-mode early)))
+      (is (nil? (.-image late)))
+      (is (nil? (.-blend-mode late))))))
 
 (deftest test-clip-corners-dispatch
   (testing "Smooth corners clip with a path"

@@ -1445,9 +1445,9 @@
     `{:border-radius {:all 16 :smoothing 0}}` gives plain circular corners.
     A negative radius makes a concave corner. `{:rel f}` gives a radius
     relative to the shorter side ({:rel 0.5} = capsule), resolved at paint
-    time. Smoothing is skipped when
-    `:image`, `:background-blend-mode`, or a non-uniform `:border` is present,
-    or when the radius is a ready-made BorderRadius instance.
+    time. `:image` and `:background-blend-mode` follow the smooth outline;
+    smoothing is skipped only for a non-uniform `:border` (RRect-only in
+    Flutter) or when the radius is a ready-made BorderRadius instance.
 
     Examples:
     ```clojure
@@ -1472,13 +1472,12 @@
 
       (instance? m/BoxShape shape)
       (let [border (args :border)
-            ;; smooth path can't express DecorationImage, blend modes or
-            ;; non-uniform borders — those fall back to a plain BoxDecoration
+            ;; a non-uniform border needs per-side strokes Flutter only draws on
+            ;; RRects — that case falls back to a plain BoxDecoration. Images and
+            ;; blend modes are handled on the smooth path (SmoothBoxPainter).
             corners (when (and (= shape m/BoxShape.rectangle)
                                (some? (args :border-radius))
                                (not (instance? m/BorderRadiusGeometry (args :border-radius)))
-                               (nil? (args :image))
-                               (nil? (args :background-blend-mode))
                                (or (nil? border)
                                    (and (instance? m/Border border)
                                         (.-isUniform ^m/Border border))))
@@ -1489,7 +1488,9 @@
            (some-> (args :color) color)
            (some-> (args :gradient) gradient)
            (some args [:box-shadow :shadows :shadow])
-           (when (some? border) (.-top ^m/Border border)))
+           (when (some? border) (.-top ^m/Border border))
+           (args :image)
+           (args :background-blend-mode))
           (m/BoxDecoration
            .color (some-> (args :color) color)
            .image (args :image)
