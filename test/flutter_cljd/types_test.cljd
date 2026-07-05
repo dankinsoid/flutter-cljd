@@ -134,6 +134,19 @@
       (is (= (.-letterSpacing style) 1.5))
       (is (= (.-height style) 1.2)))))
 
+(deftest test-text-overflow
+  (testing "Keyword values map to TextOverflow"
+    (is (= (t/text-overflow :clip) m/TextOverflow.clip))
+    (is (= (t/text-overflow :fade) m/TextOverflow.fade))
+    (is (= (t/text-overflow :ellipsis) m/TextOverflow.ellipsis))
+    (is (= (t/text-overflow :visible) m/TextOverflow.visible)))
+
+  (testing "Passing through a TextOverflow instance"
+    (is (= (t/text-overflow m/TextOverflow.ellipsis) m/TextOverflow.ellipsis)))
+
+  (testing "text-style maps the :overflow keyword"
+    (is (= (.-overflow (t/text-style {:overflow :ellipsis})) m/TextOverflow.ellipsis))))
+
 (deftest test-text-span
   (testing "Basic text span"
     (let [span (t/text-span "Hello")]

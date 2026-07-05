@@ -17,7 +17,7 @@
            style (.merge (.-style def-style) (t/text-style (:style args args)))
            align (or (some-> args :align t/text-align) (.-textAlign def-style))
            soft-wrap (:soft-wrap args (if (nil? (.-softWrap def-style)) true (.-softWrap def-style)))
-           overflow (:overflow args (.-overflow def-style))
+           overflow (some-> (:overflow args (.-overflow def-style)) t/text-overflow)
            max-lines (:max-lines args (.-maxLines def-style))
            text-width-basis (:text-width-basis args (.-textWidthBasis def-style))
            text-height-behavior (:text-height-behavior args (.-textHeightBehavior def-style))

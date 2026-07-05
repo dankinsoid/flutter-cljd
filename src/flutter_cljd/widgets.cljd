@@ -1421,7 +1421,8 @@
       - `:family` or `:font-family` (string, default: nil): The font family of the text.
       - `:font-family-fallback` (list of string, default: nil): The font family fallback of the text.
       - `:package` (string, default: nil): The package of the font family.
-      - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows.
+      - `:overflow` (keyword or TextOverflow, default: nil): How the text should behave when it overflows.
+      Possible values: `:clip`, `:fade`, `:ellipsis`, `:visible`.
       Check text-style function for more details.
     - `:strut-style` (StrutStyle, default: nil): The strut style to use for the text.
     - `:align` (keyword or TextAlign, default: nil): The alignment of the text.
@@ -1430,7 +1431,8 @@
       Possible values: :ltr, :rtl.
     - `:locale` (Locale, default: nil): The locale to use for the text.
     - `:soft-wrap` (bool, default: true): Whether the text should wrap at the end of the line.
-    - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows.
+    - `:overflow` (keyword or TextOverflow, default: nil): How the text should behave when it overflows.
+      Possible values: `:clip`, `:fade`, `:ellipsis`, `:visible`.
     - `:text-scaler` (TextScaler, default: nil): The text scaler to use for the text.
     - `:max-lines` (int, default: nil): The maximum number of lines to display.
     - `:semantics-label` (string, default: nil): The semantics label to use for the text.
@@ -1481,12 +1483,14 @@
       - `:font-family` (string, default: nil): The font family of the text.
       - `:font-family-fallback` (list of string, default: nil): The font family fallback of the text.
       - `:package` (string, default: nil): The package of the font family.
-      - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows.
+      - `:overflow` (keyword or TextOverflow, default: nil): How the text should behave when it overflows.
+      Possible values: `:clip`, `:fade`, `:ellipsis`, `:visible`.
       Check text-style function for more details.
     - `:align` (keyword or `TextAlign`, default: nil): The alignment of the text.
       Possible values: `:left`, `:right`, `:center`, `:justify`, `:start`, `:end`.
     - `:soft-wrap` (bool, default: true): Whether the text should wrap at the end of the line.
-    - `:overflow` (TextOverflow, default: nil): How the text should behave when it overflows.
+    - `:overflow` (keyword or TextOverflow, default: nil): How the text should behave when it overflows.
+      Possible values: `:clip`, `:fade`, `:ellipsis`, `:visible`.
     - `:max-lines` (int, default: nil): The maximum number of lines to display.
     - `:text-width-basis` (TextWidthBasis, default: nil): The basis for the text width.
     - `:text-height-behavior` (TextHeightBehavior, default: nil): The behavior of the text height.

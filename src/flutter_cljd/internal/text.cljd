@@ -11,7 +11,7 @@
         text-direction (some-> args :text-direction t/text-direction)
         locale (some-> args :locale t/locale)
         soft-wrap (args :soft-wrap true)
-        overflow (args :overflow)
+        overflow (some-> args :overflow t/text-overflow)
         text-scaler (args :text-scaler)
         max-lines (args :max-lines)
         semantics-label (args :semantics-label)
