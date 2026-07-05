@@ -335,6 +335,24 @@
       (is (= (.-fit widget) m/StackFit.expand))
       (is (= (count (.-children widget)) 2)))))
 
+(deftest test-positioned
+  (testing "Positioned with map args"
+    (let [widget (f/positioned {:left 10 :top 20 :width 100 :height 50} (m/Text "Child"))]
+      (is (instance? m/Positioned widget))
+      (is (= (.-left widget) 10.0))
+      (is (= (.-top widget) 20.0))
+      (is (= (.-width widget) 100.0))
+      (is (= (.-height widget) 50.0))
+      (is (nil? (.-right widget)))
+      (is (nil? (.-bottom widget)))))
+
+  (testing "Positioned with inline key-value args"
+    (let [widget (f/positioned :right 5 :bottom 15 (m/Text "Child"))]
+      (is (= (.-right widget) 5.0))
+      (is (= (.-bottom widget) 15.0))
+      (is (nil? (.-left widget)))
+      (is (nil? (.-top widget))))))
+
 (deftest test-text
   (testing "Text with string only"
     (let [widget (f/text "Hello")]

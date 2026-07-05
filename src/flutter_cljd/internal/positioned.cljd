@@ -1,0 +1,17 @@
+(ns flutter-cljd.internal.positioned
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+;; @ai-generated(solo)
+(defn ^w/Widget positioned*
+  [args child]
+  (w/Positioned
+   .key (t/widget-key (:key args))
+   .left (some-> (:left args) double)
+   .top (some-> (:top args) double)
+   .right (some-> (:right args) double)
+   .bottom (some-> (:bottom args) double)
+   .width (some-> (:width args) double)
+   .height (some-> (:height args) double)
+   .child child))

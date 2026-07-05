@@ -31,6 +31,7 @@
    [flutter-cljd.internal.spacer :as sp]
    [flutter-cljd.internal.opacity :as op]
    [flutter-cljd.internal.stack :as st]
+   [flutter-cljd.internal.positioned :as pos]
    [flutter-cljd.internal.sized :as sz]
    [flutter-cljd.internal.with-inherited :as wi]
    [flutter-cljd.internal.autocomplete-highlighted-index :as ahi]
@@ -1225,6 +1226,34 @@
    [Flutter doc](https://api.flutter.dev/flutter/widgets/Stack-class.html)"
   ([] (st/stack* []))
   ([& args] (st/stack* args)))
+
+(defn ^w/Widget positioned
+  "A widget that controls where a child of a `stack` is positioned.
+
+   A Positioned widget must be a descendant of a `stack`, and the path from the Positioned widget to its enclosing Stack must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
+
+   Args:
+    - args: A map of arguments or inline key-value pairs.
+      - `:key` An identifier for the positioned widget.
+      - `:left` (number, default: nil): The distance of the child's left edge from the left of the stack.
+      - `:top` (number, default: nil): The distance of the child's top edge from the top of the stack.
+      - `:right` (number, default: nil): The distance of the child's right edge from the right of the stack.
+      - `:bottom` (number, default: nil): The distance of the child's bottom edge from the bottom of the stack.
+      - `:width` (number, default: nil): The child's width. Only two of `:left`, `:right`, `:width` may be set.
+      - `:height` (number, default: nil): The child's height. Only two of `:top`, `:bottom`, `:height` may be set.
+    - child: The widget below this widget in the tree.
+
+   ```clojure
+   (positioned {:left 10 :top 20} (text \"Hello, World!\"))
+   (positioned :left 10 :top 20 (text \"Hello, World!\"))
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/Positioned-class.html)"
+  ([args child]
+   (pos/positioned* args child))
+  ([k0 v0 & args]
+   (let [[args children] (ut/key-values-args-and-children (concat [k0 v0] args))]
+     (pos/positioned* args (first children)))))
 
 (defn ^w/Widget opacity
   "A widget that makes its child partially transparent.
