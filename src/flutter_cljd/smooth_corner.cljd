@@ -501,6 +501,37 @@
       (.drawRRect canvas (.toRRect (corners->border-radius scorners) srect) (.toPaint shadow))
       (.drawPath canvas (smooth-path srect scorners) (.toPaint shadow)))))
 
+(defn- paint-inner-shadow
+  "Draws one inset (CSS `inset`) shadow. Flutter has no native inner shadow, so
+   we paint the blurred *inverse* of the shape — a cover rect minus the shape
+   shifted by the shadow offset and shrunk by its spread — clipped to the shape,
+   leaving only the part that bleeds inward from the edges."
+  [^ui/Canvas canvas ^ui/Rect rect corners ^ui/Path shape-path ^m/BoxShadow shadow]
+  (let [^double spread (.-spreadRadius shadow)
+        ^double sigma (.-blurSigma shadow)
+        resolved (resolve-corners corners (.-width rect) (.-height rect))
+        ;; positive spread thickens the shadow inward → shrink the lit hole
+        hole-corners (map-radii resolved #(inset-radius % spread))
+        hole-rect (.inflate (.shift rect (.-offset shadow)) (- spread))
+        hole-path (smooth-path hole-rect hole-corners)
+        ;; the cover's own outer edge, once blurred, must not reach back inside
+        ;; the clip, so push it past the shape by offset + spread + blur reach
+        margin (+ (.abs ^double (.-dx (.-offset shadow)))
+                  (.abs ^double (.-dy (.-offset shadow)))
+                  (.abs spread)
+                  (* 3.0 sigma)
+                  1.0)
+        cover (doto (ui/Path) (.addRect (.inflate rect margin)))
+        inverse (ui/Path.combine ui/PathOperation.difference cover hole-path)
+        paint (doto (ui/Paint) (.-color! (.-color shadow)))]
+    ;; sigma 0 (sharp inset) skips the blur — MaskFilter.blur asserts on sigma 0
+    (when (pos? sigma)
+      (.-maskFilter! paint (ui/MaskFilter.blur ui/BlurStyle.normal sigma)))
+    (.save canvas)
+    (.clipPath canvas shape-path)
+    (.drawPath canvas inverse paint)
+    (.restore canvas)))
+
 (deftype SmoothBoxPainter [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
                            ^m/DecorationImage? image ^m/BlendMode? blend-mode ^dc/Function? on-changed
                            ^:mutable ^ui/Rect? cached-rect
@@ -521,8 +552,10 @@
                        (let [p (ui/Paint)]
                          (when (some? blend-mode) (.-blendMode! p blend-mode))
                          p))]
-      (doseq [^m/BoxShadow shadow shadows]
-        (paint-shadow canvas rect corners shadow))
+      ;; outer (drop) shadows sit under the fill; inset shadows go on top of it
+      (doseq [shadow shadows]
+        (when-not (:inset? shadow)
+          (paint-shadow canvas rect corners (:box shadow))))
       (when (some? gradient)
         (.drawPath canvas path (doto (fill-paint) (.-shader! (.createShader gradient rect)))))
       (when (and (nil? gradient) (some? color))
@@ -537,6 +570,10 @@
           (set! image-painter
                 (.createPainter image (fn [] (when-some [^dc/Function cb on-changed] (cb))))))
         (.paint image-painter canvas rect path configuration))
+      ;; inset shadows paint above the fill/image but below the border
+      (doseq [shadow shadows]
+        (when (:inset? shadow)
+          (paint-inner-shadow canvas rect corners path (:box shadow))))
       (when (and (some? side)
                  (pos? (.-width side))
                  (= (.-style side) m/BorderStyle.solid))
@@ -553,7 +590,16 @@
 
 (defn- lerp-shadows [as bs ^double t]
   (when (or (seq as) (seq bs))
-    (mapv #(m/BoxShadow.lerp (get as % nil) (get bs % nil) t)
+    (mapv (fn [i]
+            (let [a (get as i nil)
+                  b (get bs i nil)]
+              {:box (m/BoxShadow.lerp (:box a) (:box b) t)
+               ;; inset? can't interpolate — switch at the midpoint, falling
+               ;; back to whichever side exists at the ends
+               :inset? (boolean (:inset? (cond (nil? a) b
+                                               (nil? b) a
+                                               (< t 0.5) a
+                                               :else b)))}))
           (range (max (count as) (count bs))))))
 
 (declare lerp-smooth-decoration)
@@ -615,16 +661,27 @@
    (if (< t 0.5) (.-image a) (.-image b))
    (if (< t 0.5) (.-blend-mode a) (.-blend-mode b))))
 
+(defn- ->shadow-map
+  "Normalizes one shadow into `{:box BoxShadow :inset? bool}`. Accepts an
+   already-normalized map or a bare BoxShadow (treated as a drop shadow)."
+  [s]
+  (cond
+    (map? s) s
+    (instance? m/BoxShadow s) {:box s :inset? false}
+    :else (throw (Exception. (str "Invalid shadow: " s)))))
+
 (defn ^m/Decoration smooth-decoration
-  "Decoration painting a smooth-cornered rectangle: shadows, then fill
-   (gradient wins over color), then the image (clipped to the outline),
-   then a uniform inside-aligned border. `blend-mode` applies to the fill."
+  "Decoration painting a smooth-cornered rectangle: outer shadows, fill
+   (gradient wins over color), the image (clipped to the outline), inset
+   shadows, then a uniform inside-aligned border. `blend-mode` applies to the
+   fill. `shadows` is a single shadow or a collection; each entry is a
+   `{:box BoxShadow :inset? bool}` map or a bare BoxShadow (a drop shadow)."
   [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
    ^m/DecorationImage? image ^m/BlendMode? blend-mode]
   (SmoothDecoration
    corners color gradient
    (cond
      (nil? shadows) nil
-     (instance? m/BoxShadow shadows) [shadows]
-     :else (vec shadows))
+     (or (map? shadows) (instance? m/BoxShadow shadows)) [(->shadow-map shadows)]
+     :else (mapv ->shadow-map shadows))
    side image blend-mode))

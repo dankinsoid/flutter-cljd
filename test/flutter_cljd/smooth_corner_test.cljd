@@ -270,6 +270,58 @@
       (is (nil? (.-image late)))
       (is (nil? (.-blend-mode late))))))
 
+(deftest test-inset-shadows
+  (testing "box-shadow normalizes a map into {:box :inset?}"
+    (let [drop (t/box-shadow {:color :black :blur 4})
+          inset (t/box-shadow {:color :black :blur 4 :inset true})]
+      (is (instance? m/BoxShadow (:box drop)))
+      (is (false? (:inset? drop)))
+      (is (true? (:inset? inset)))
+      (is (approx? 4.0 (.-blurRadius ^m/BoxShadow (:box inset))))))
+
+  (testing "box-shadow passes a BoxShadow instance through as a drop shadow"
+    (let [bs (m/BoxShadow .color (m/Color 0xFF000000) .blurRadius 6)
+          norm (t/box-shadow bs)]
+      (is (identical? bs (:box norm)))
+      (is (false? (:inset? norm)))))
+
+  (testing "An inset shadow forces the smooth decoration even without smoothing"
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:color :red :border-radius {:all 8 :smoothing 0}
+                                  :box-shadow [{:inset true :blur 4}]}))))
+
+  (testing "An inset shadow forces the smooth decoration even without a radius"
+    (let [dec (t/decoration {:color :red :box-shadow [{:inset true :blur 4}]})]
+      (is (instance? sc/SmoothDecoration dec))
+      (is (true? (:inset? (first (.-shadows ^sc/SmoothDecoration dec)))))))
+
+  (testing "A drop shadow keeps the BoxDecoration fast path"
+    (let [dec (t/decoration {:color :red :border-radius {:all 8 :smoothing 0}
+                             :box-shadow [{:blur 4}]})]
+      (is (instance? m/BoxDecoration dec))
+      (is (= 1 (count (.-boxShadow ^m/BoxDecoration dec))))))
+
+  (testing "Inset and drop shadows coexist in one decoration"
+    (let [dec ^sc/SmoothDecoration (t/decoration {:color :red :border-radius 12
+                                                  :box-shadow [{:blur 8} {:inset true :blur 4}]})
+          shadows (.-shadows dec)]
+      (is (= 2 (count shadows)))
+      (is (false? (:inset? (first shadows))))
+      (is (true? (:inset? (second shadows))))))
+
+  (testing "Inset shadows are rejected on a circle"
+    (is (thrown? Exception
+                 (t/decoration {:shape :circle :color :red
+                                :box-shadow [{:inset true :blur 4}]}))))
+
+  (testing "Inset shadows survive a lerp round-trip"
+    (let [a ^m/Decoration (t/decoration {:color :red :border-radius 8
+                                         :box-shadow [{:inset true :blur 4}]})
+          b ^m/Decoration (t/decoration {:color :blue :border-radius 8
+                                         :box-shadow [{:inset true :blur 8}]})
+          mid ^sc/SmoothDecoration (.lerpTo a b 0.5)]
+      (is (true? (:inset? (first (.-shadows mid))))))))
+
 (deftest test-clip-corners-dispatch
   (testing "Smooth corners clip with a path"
     (is (instance? m/ClipPath (cc/clip-corners* 8 nil)))

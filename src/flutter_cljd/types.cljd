@@ -1427,6 +1427,44 @@
 
       :else (throw (Exception. (str "Invalid radius: " value))))))
 
+(declare offset)
+
+;; @ai-generated(guided)
+(defn box-shadow
+  "Normalizes one shadow spec into `{:box BoxShadow :inset? bool}`, the internal
+   shape `decoration` / `decorated` / `container` consume.
+   Accepts a `BoxShadow` instance (a drop shadow) or a map:
+    - `:color` (default `:black`)
+    - `:offset` (Offset, `[dx dy]`, or number — default 0)
+    - `:blur` / `:blur-radius` (default 0)
+    - `:spread` / `:spread-radius` (default 0)
+    - `:blur-style` (`:normal` `:solid` `:outer` `:inner`, default `:normal`)
+    - `:inset` (bool) — paint the shadow inside the shape (CSS `inset`)
+
+   Flutter has no native inset shadow, so an inset shadow forces the
+   smooth-corner painter and is only supported on rectangular decorations."
+  [spec]
+  (cond
+    (instance? m/BoxShadow spec) {:box spec :inset? false}
+    (map? spec)
+    {:box (m/BoxShadow
+           .color (color (get spec :color :black))
+           .offset (offset (get spec :offset 0))
+           .blurRadius (double (or (:blur spec) (:blur-radius spec) 0))
+           .spreadRadius (double (or (:spread spec) (:spread-radius spec) 0))
+           .blurStyle (blur-style (get spec :blur-style :normal)))
+     :inset? (boolean (:inset spec))}
+    :else (throw (Exception. (str "Invalid box-shadow: " spec)))))
+
+(defn- normalize-shadows
+  "Parses a `:box-shadow`/`:shadow`/`:shadows` value — a single spec or a
+   collection of specs — into a vector of `{:box :inset?}` maps, or nil."
+  [v]
+  (when (some? v)
+    (if (or (map? v) (instance? m/BoxShadow v))
+      [(box-shadow v)]
+      (mapv box-shadow v))))
+
 (defn ^m/Decoration decoration
   "Creates a Decoration object from the specified arguments.
    The arguments can be specified as a Decoration objects or a key-values pairs with the following keys:
@@ -1436,7 +1474,10 @@
     - `:gradient` (Gradient, default: nil): The gradient of the decoration.
     - `:border` (Border, default: nil): The border of the decoration.
     - `:border-radius` (BorderRadius, default: nil): The border radius of the decoration.
-    - `:box-shadow` or `:shadow` or `:shadows` (BoxShadow or list of BoxShadow, default: nil): The box shadow of the decoration.
+    - `:box-shadow` or `:shadow` or `:shadows` (default: nil): one shadow or a
+      list of them. Each is a `BoxShadow` or a map (see `box-shadow`); a map with
+      `:inset true` paints an inner (CSS `inset`) shadow. Inset shadows render
+      only on rectangular decorations (with or without `:border-radius`).
     - `:background-blend-mode` (BlendMode, default: nil): The background blend mode of the decoration.
 
     Rectangles with `:border-radius` get Figma-style smooth (squircle) corners
@@ -1458,36 +1499,46 @@
     ```"
   [arg0 & args]
   (let [args (if (empty? args) arg0 (apply hash-map (cons arg0 args)))
-        shape (shape (args :shape))]
+        shape (shape (args :shape))
+        shadows (normalize-shadows (some args [:box-shadow :shadows :shadow]))
+        has-inset? (boolean (some :inset? shadows))]
     (cond
       (instance? m/Decoration args) args
 
       (instance? m/ShapeBorder shape)
-      (m/ShapeDecoration
-       .color (some-> (args :color) color)
-       .image (args :image)
-       .gradient (some-> (args :gradient) gradient)
-       .shadows (some args [:box-shadow :shadows :shadow])
-       .shape shape)
+      (do
+        (when has-inset?
+          (throw (Exception. "Inset shadows are not supported with a custom :shape (ShapeBorder)")))
+        (m/ShapeDecoration
+         .color (some-> (args :color) color)
+         .image (args :image)
+         .gradient (some-> (args :gradient) gradient)
+         .shadows (some->> shadows (mapv :box))
+         .shape shape))
 
       (instance? m/BoxShape shape)
       (let [border (args :border)
             ;; a non-uniform border needs per-side strokes Flutter only draws on
             ;; RRects — that case falls back to a plain BoxDecoration. Images and
             ;; blend modes are handled on the smooth path (SmoothBoxPainter).
-            corners (when (and (= shape m/BoxShape.rectangle)
-                               (some? (args :border-radius))
-                               (not (instance? m/BorderRadiusGeometry (args :border-radius)))
-                               (or (nil? border)
-                                   (and (instance? m/Border border)
-                                        (.-isUniform ^m/Border border))))
+            smooth-eligible? (and (= shape m/BoxShape.rectangle)
+                                  (not (instance? m/BorderRadiusGeometry (args :border-radius)))
+                                  (or (nil? border)
+                                      (and (instance? m/Border border)
+                                           (.-isUniform ^m/Border border))))
+            corners (when (and smooth-eligible? (some? (args :border-radius)))
                       (sc/corners (args :border-radius)))]
-        (if (and (some? corners) (sc/needs-smooth-path? corners))
+        ;; inset shadows have no native BoxDecoration form — they only render on
+        ;; the smooth painter, which is rectangle-only
+        (when (and has-inset? (not smooth-eligible?))
+          (throw (Exception. "Inset shadows require a rectangular decoration with a uniform border")))
+        (if (or (and (some? corners) (sc/needs-smooth-path? corners))
+                has-inset?)
           (sc/smooth-decoration
-           corners
+           (or corners (sc/corners 0))
            (some-> (args :color) color)
            (some-> (args :gradient) gradient)
-           (some args [:box-shadow :shadows :shadow])
+           shadows
            (when (some? border) (.-top ^m/Border border))
            (args :image)
            (args :background-blend-mode))
@@ -1496,7 +1547,7 @@
            .image (args :image)
            .border border
            .borderRadius (some-> (args :border-radius) border-radius)
-           .boxShadow (some args [:box-shadow :shadows :shadow])
+           .boxShadow (some->> shadows (mapv :box))
            .gradient (some-> (args :gradient) gradient)
            .backgroundBlendMode (args :background-blend-mode)
            .shape shape)))

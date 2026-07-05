@@ -142,6 +142,26 @@
                            .fit m/BoxFit.cover)}
        (f/sized {:w 260 :h 100})))
 
+   :inset-shadow
+   (mk-example "Inset shadow" "CSS-style inner shadows: {:inset true}. Mix with drop shadows; both follow the smooth outline"
+     (f/row
+       (f/padding 16
+         (f/decorated {:color 0xFFECEFF1
+                       :border-radius 24
+                       :box-shadow [{:inset true :color 0x66000000 :offset [3 4] :blur 8}]}
+           (f/sized {:w 90 :h 90} (f/center (f/text "inset")))))
+       (f/padding 16
+         (f/decorated {:color 0xFFECEFF1
+                       :border-radius {:rel 0.5}
+                       :box-shadow [{:inset true :color 0x66000000 :offset [0 3] :blur 6 :spread 2}]}
+           (f/sized {:w 90 :h 90} (f/center (f/text "spread")))))
+       (f/padding 16
+         (f/decorated {:color 0xFFECEFF1
+                       :border-radius 24
+                       :box-shadow [{:color 0x55000000 :offset [0 6] :blur 12}
+                                    {:inset true :color 0x66000000 :offset [2 3] :blur 6}]}
+           (f/sized {:w 90 :h 90} (f/center (f/text "both")))))))
+
    ;; --- Gradients ---
 
    :linear-gradient-oklab
