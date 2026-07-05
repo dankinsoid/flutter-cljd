@@ -351,7 +351,14 @@
       (is (= (.-right widget) 5.0))
       (is (= (.-bottom widget) 15.0))
       (is (nil? (.-left widget)))
-      (is (nil? (.-top widget))))))
+      (is (nil? (.-top widget)))))
+
+  (testing "Positioned with short key aliases"
+    (let [widget (f/positioned {:l 10 :t 20 :w 100 :h 50} (m/Text "Child"))]
+      (is (= (.-left widget) 10.0))
+      (is (= (.-top widget) 20.0))
+      (is (= (.-width widget) 100.0))
+      (is (= (.-height widget) 50.0)))))
 
 (deftest test-text
   (testing "Text with string only"

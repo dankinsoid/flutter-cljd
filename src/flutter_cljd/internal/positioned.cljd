@@ -8,10 +8,10 @@
   [args child]
   (w/Positioned
    .key (t/widget-key (:key args))
-   .left (some-> (:left args) double)
-   .top (some-> (:top args) double)
-   .right (some-> (:right args) double)
-   .bottom (some-> (:bottom args) double)
-   .width (some-> (:width args) double)
-   .height (some-> (:height args) double)
+   .left (some-> (some args [:left :l]) double)
+   .top (some-> (some args [:top :t]) double)
+   .right (some-> (some args [:right :r]) double)
+   .bottom (some-> (some args [:bottom :b]) double)
+   .width (some-> (some args [:width :w]) double)
+   .height (some-> (some args [:height :h]) double)
    .child child))
