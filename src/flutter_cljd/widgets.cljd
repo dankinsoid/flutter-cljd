@@ -32,6 +32,7 @@
    [flutter-cljd.internal.opacity :as op]
    [flutter-cljd.internal.stack :as st]
    [flutter-cljd.internal.positioned :as pos]
+   [flutter-cljd.internal.popup-menu-button :as pmb]
    [flutter-cljd.internal.sized :as sz]
    [flutter-cljd.internal.with-inherited :as wi]
    [flutter-cljd.internal.autocomplete-highlighted-index :as ahi]
@@ -1254,6 +1255,61 @@
   ([k0 v0 & args]
    (let [[args children] (ut/key-values-args-and-children (concat [k0 v0] args))]
      (pos/positioned* args (first children)))))
+
+(defn ^w/Widget popup-menu-button
+  "A button that shows a Material popup menu when pressed.
+
+   The button's trigger is the `child` widget; if no `child` is given, an `:icon`
+   (or the default overflow icon) is shown instead. The menu contents are described
+   declaratively via `:items`.
+
+   Args:
+    - args: A map of arguments.
+      - `:key` An identifier for the widget.
+      - `:items` (vector or `(fn [BuildContext] -> vector)`, required): The menu
+        entries. Each entry is one of:
+        - `:divider` — a plain divider.
+        - a map with a truthy `:divider` — a divider with `:height`, `:thickness`,
+          `:indent`, `:end-indent`, `:color`.
+        - a map with `:checked` (boolean) — a CheckedPopupMenuItem.
+        - any other map — a PopupMenuItem. Keys: `:value` (returned to
+          `:on-selected`), `:child` (required), `:enabled` (default true),
+          `:height`, `:padding`, `:text-style`, `:mouse-cursor`, `:on-tap`, `:key`.
+        - an already-built PopupMenuEntry, passed through as-is.
+      - `:on-selected` (fn [value]): Called with the `:value` of the chosen item.
+      - `:on-canceled` (fn []): Called when the menu is dismissed without a choice.
+      - `:on-opened` (fn []): Called when the menu is shown.
+      - `:initial-value`: The item value highlighted when the menu opens.
+      - `:enabled` (boolean, default true): Whether the button is interactive.
+      - `:tooltip` (string): Long-press tooltip text.
+      - `:icon` (Widget): Trigger icon, used only when no `child` is given.
+      - `:icon-size` / `:icon-color` / `:splash-radius` (number/color/number).
+      - `:elevation` (number), `:shadow-color` / `:surface-tint-color` / `:color` (color).
+      - `:padding` (insets, default 8): Padding around the button.
+      - `:menu-padding` (insets): Padding around the menu's items.
+      - `:offset` (offset, default 0): Menu offset from the button.
+      - `:position` (`:over` / `:under`): Where the menu opens relative to the button.
+      - `:shape` (ShapeBorder) / `:border-radius` (border-radius): Menu shape.
+      - `:constraints` (box-constraints): Size constraints for the menu.
+      - `:clip-behavior` (clip, default `:none`).
+      - `:enable-feedback` (boolean), `:use-root-navigator` (boolean, default false).
+      - `:animation-style` (AnimationStyle), `:route-settings` (RouteSettings),
+        `:style` (ButtonStyle).
+    - child: The trigger widget below this widget in the tree.
+
+   ```clojure
+   (popup-menu-button
+    {:on-selected #(print \"selected\" %)
+     :items [{:value :edit :child (text \"Edit\")}
+             {:value :share :child (text \"Share\")}
+             :divider
+             {:value :delete :child (text \"Delete\")}]}
+    (icon m/Icons.more_vert))
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/material/PopupMenuButton-class.html)"
+  ([args] (pmb/popup-menu-button* args nil))
+  ([args child] (pmb/popup-menu-button* args child)))
 
 (defn ^w/Widget opacity
   "A widget that makes its child partially transparent.

@@ -299,6 +299,16 @@
       :foreground m/DecorationPosition.foreground
       (throw (Exception. (str "Invalid decoration-position: " position " (expected :background or :foreground)"))))))
 
+(defn ^m/PopupMenuPosition popup-menu-position
+  "Where a popup menu opens relative to its button: `:over` or `:under`."
+  [position]
+  (if (instance? m/PopupMenuPosition position)
+    position
+    (case position
+      :over m/PopupMenuPosition.over
+      :under m/PopupMenuPosition.under
+      (throw (Exception. (str "Invalid popup-menu-position: " position " (expected :over or :under)"))))))
+
 ;; ;; -------------------------
 ;; ;; MARK: Classes
 ;; ;; -------------------------

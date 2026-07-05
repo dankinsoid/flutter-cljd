@@ -360,6 +360,56 @@
       (is (= (.-width widget) 100.0))
       (is (= (.-height widget) 50.0)))))
 
+(deftest test-popup-menu-button
+  (testing "PopupMenuButton with default properties"
+    (let [widget (f/popup-menu-button
+                  {:items [{:value :edit :child (m/Text "Edit")}]}
+                  (m/Text "Menu"))]
+      (is (instance? m/PopupMenuButton widget))
+      (is (true? (.-enabled widget)))
+      (is (= (.-offset widget) (m/Offset 0.0 0.0)))
+      (is (= (.-clipBehavior widget) m/Clip.none))
+      (is (instance? m/Text (.-child widget)))
+      (is (nil? (.-icon widget)))))
+
+  (testing "PopupMenuButton passes through configuration"
+    (let [selected (atom nil)
+          widget (f/popup-menu-button
+                  {:on-selected #(reset! selected %)
+                   :tooltip "Actions"
+                   :enabled false
+                   :position :under
+                   :offset {:dx 4 :dy 8}
+                   :initial-value :edit
+                   :items [{:value :edit :child (m/Text "Edit")}]}
+                  (m/Text "Menu"))]
+      (is (= (.-tooltip widget) "Actions"))
+      (is (false? (.-enabled widget)))
+      (is (= (.-position widget) m/PopupMenuPosition.under))
+      (is (= (.-offset widget) (m/Offset 4.0 8.0)))
+      (is (= (.-initialValue widget) :edit))))
+
+  (testing "itemBuilder builds the described entries"
+    (let [widget (f/popup-menu-button
+                  {:items [{:value :edit :child (m/Text "Edit")}
+                           :divider
+                           {:checked true :value :bold :child (m/Text "Bold")}]}
+                  (m/Text "Menu"))
+          entries ((.-itemBuilder widget) nil)]
+      (is (= (count entries) 3))
+      (is (instance? m/PopupMenuItem (nth entries 0)))
+      (is (= (.-value (nth entries 0)) :edit))
+      (is (instance? m/PopupMenuDivider (nth entries 1)))
+      (is (instance? m/CheckedPopupMenuItem (nth entries 2)))
+      (is (true? (.-checked (nth entries 2))))))
+
+  (testing "icon is used when no child is given"
+    (let [widget (f/popup-menu-button
+                  {:icon (m/Icon m/Icons.more_vert)
+                   :items [{:value :edit :child (m/Text "Edit")}]})]
+      (is (nil? (.-child widget)))
+      (is (instance? m/Icon (.-icon widget))))))
+
 (deftest test-text
   (testing "Text with string only"
     (let [widget (f/text "Hello")]
