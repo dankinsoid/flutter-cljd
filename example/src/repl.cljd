@@ -475,7 +475,7 @@
                         (ui/center (builder))]))
                    [:corner-smoothing :concave-corners :relative-corners
                     :oversized-radius :smooth-shadows :smooth-border
-                    :clip-corners-smooth])))))
+                    :clip-corners-smooth :smooth-image])))))
 
 ;; ====== PREVIEW SWITCHER ======
 

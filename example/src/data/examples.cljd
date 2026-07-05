@@ -134,6 +134,14 @@
        (f/decorated {:gradient {:type :linear :colors [:purple :orange]}}
          (f/sized {:w 200 :h 120}))))
 
+   :smooth-image
+   (mk-example "Smooth image" "A background image is clipped to the smooth outline — here a relative-radius capsule"
+     (f/decorated {:border-radius {:rel 0.5}
+                   :image (m/DecorationImage
+                           .image (m/NetworkImage "https://picsum.photos/400/200")
+                           .fit m/BoxFit.cover)}
+       (f/sized {:w 260 :h 100})))
+
    ;; --- Gradients ---
 
    :linear-gradient-oklab

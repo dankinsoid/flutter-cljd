@@ -34,7 +34,8 @@
     :description "Figma-style squircle corners, concave cuts, relative radii"
     :color 0xFF9C27B0
     :widgets [:corner-smoothing :concave-corners :relative-corners
-              :oversized-radius :smooth-shadows :smooth-border :clip-corners-smooth]}
+              :oversized-radius :smooth-shadows :smooth-border
+              :clip-corners-smooth :smooth-image]}
 
    {:id :interactive
     :name "Interactive"
