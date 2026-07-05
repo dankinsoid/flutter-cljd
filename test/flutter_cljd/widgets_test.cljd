@@ -417,6 +417,18 @@
       (is (true? (.-checked (nth entries 1))))
       (is (false? (.-enabled (nth entries 2))))))
 
+  (testing "inline key-value args with trailing child"
+    (let [widget (f/popup-menu-button
+                  :tooltip "Actions"
+                  :offset {:dx 4 :dy 8}
+                  :items [[:edit (m/Text "Edit")]]
+                  (m/Text "Menu"))]
+      (is (instance? m/PopupMenuButton widget))
+      (is (= (.-tooltip widget) "Actions"))
+      (is (= (.-offset widget) (m/Offset 4.0 8.0)))
+      (is (instance? m/Text (.-child widget)))
+      (is (= (count ((.-itemBuilder widget) nil)) 1))))
+
   (testing "icon is used when no child is given"
     (let [widget (f/popup-menu-button
                   {:icon (m/Icon m/Icons.more_vert)

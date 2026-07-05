@@ -1307,11 +1307,17 @@
              :divider
              [:delete (text \"Delete\")]]}
     (icon m/Icons.more_vert))
+
+   (popup-menu-button
+    :on-selected #(print \"selected\" %)
+    :items [[:edit (text \"Edit\")]]
+    (icon m/Icons.more_vert))
    ```
 
    [Flutter docs](https://api.flutter.dev/flutter/material/PopupMenuButton-class.html)"
-  ([args] (pmb/popup-menu-button* args nil))
-  ([args child] (pmb/popup-menu-button* args child)))
+  ([& args]
+   (let [[args children] (ut/key-values-args-and-children args)]
+     (pmb/popup-menu-button* args (first children)))))
 
 (defn ^w/Widget opacity
   "A widget that makes its child partially transparent.
