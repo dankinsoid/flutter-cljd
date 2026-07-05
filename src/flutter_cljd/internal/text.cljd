@@ -19,18 +19,20 @@
         text-height-behavior (args :text-height-behavior)
         selection-color (some-> args :selection-color t/color)]
     (if (instance? m/InlineSpan string)
+      ;; RichText's textAlign/overflow/textScaler/textWidthBasis are
+      ;; non-nullable, so pass their Flutter defaults instead of nil.
       (m/RichText
        .text string
        .key key
-       .textAlign text-align
+       .textAlign (or text-align m/TextAlign.start)
        .textDirection text-direction
-       .softWrap soft-wrap
-       .overflow overflow
-       .textScaler text-scaler
+       .softWrap (if (some? soft-wrap) soft-wrap true)
+       .overflow (or overflow m/TextOverflow.clip)
+       .textScaler (or text-scaler m/TextScaler.noScaling)
        .maxLines max-lines
        .locale locale
        .strutStyle strut-style
-       .textWidthBasis text-width-basis
+       .textWidthBasis (or text-width-basis m/TextWidthBasis.parent)
        .textHeightBehavior text-height-behavior
        .selectionRegistrar (args :selection-registrar)
        .selectionColor selection-color)
