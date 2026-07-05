@@ -6,7 +6,7 @@
 
 (deftype WithManaged
          [values
-          ^w/Widget builder]
+          builder]
   :extends (w/StatefulWidget .key nil)
   (createState [^WithManaged this]
     (WithManagedState (map (fn [[state create _]] (create state)) (.-values this)))))
