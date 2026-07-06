@@ -578,7 +578,13 @@
    ; => [button1 button2 text1 text2]
    ```"
   [children]
-  (filter #(instance? w/Widget %) (flatten children)))
+  (let [flat (flatten children)]
+    ;; Only falsy leaves (nil/false from a short-circuited `and`/`or`) may be dropped;
+    ;; a truthy non-Widget is almost always a bug (forgotten `text`/wrap), so fail loudly in debug.
+    (assert (every? #(or (instance? w/Widget %) (not %)) flat)
+            (str "flatten-children: non-widget child(ren) dropped: "
+                 (vec (remove #(or (instance? w/Widget %) (not %)) flat))))
+    (filter #(instance? w/Widget %) flat)))
 
 (defn args-children
   "Processes arguments and children for widget functions that accept both options and children.
@@ -612,7 +618,7 @@
 (defn key-values-args-and-children [values]
   (if (map? (first values))
     (args-children (first values) (rest values))
-    (let [{:keys [args i]} (reduce
+    (let [{:keys [args i key]} (reduce
                                 (fn [{:keys [args key i]} v]
                                   (cond
                                     (and (even? i) (keyword? v))
@@ -623,10 +629,28 @@
                                     (reduced {:args args :i i})))
                                 {:args {} :i 0}
                                 values)]
+      ;; A leftover `key` means a trailing keyword with no value — silently swallowed otherwise.
+      (assert (nil? key)
+              (str "key-values-args-and-children: option key " key " has no value"))
       (args-children args (vec (drop i values))))))
 
-(defn key-values-map [values]
-  (if (= 1 (count values)) (first values) (into {} (map vec (partition 2 values)))))
+(defn key-values-map
+  "Builds an options map from an optional leading map followed by keyword/value pairs.
+   The leading map is the base; trailing pairs override it, so `(f style :color :red)`
+   merges `:color` onto `style`. A single falsy tail element (from a short-circuited
+   `and`/`or`) is ignored; any other malformed tail asserts in debug."
+  [values]
+  (let [has-base (map? (first values))
+        base (if has-base (first values) {})
+        kvs (if has-base (rest values) values)
+        pairs (partition-all 2 kvs)]
+    (assert (every? (fn [p]
+                      (if (= 2 (count p))
+                        (keyword? (first p))
+                        (not (first p))))
+                    pairs)
+            (str "key-values-map: expected keyword/value pairs after optional leading map, got: " (vec kvs)))
+    (into base (map vec (filter #(= 2 (count %)) pairs)))))
 
 (defmacro dbg
   "Prints variable names and their values.
