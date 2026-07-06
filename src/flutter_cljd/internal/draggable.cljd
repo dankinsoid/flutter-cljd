@@ -55,6 +55,8 @@
                     ^w/HitTestBehavior hitTestBehavior
                     allowedButtonsFilter
                     ^bool enabled
+                    ^bool returnOnDrop
+                    ^core/Duration? returnDuration
                     ^w/Widget child]
   :extends (w/StatefulWidget .key k)
 
@@ -97,7 +99,7 @@
 (deftype DraggableState [^:mutable ^g/GestureRecognizer? recognizer
                          ^:mutable ^int activeCount
                          ^:mutable ^w/Offset offset
-                         ^:mutable ^a/Tween? tween]
+                         ^:mutable ^a/AnimationController? returnController]
   :extends (#/(w/State Draggable))
 
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
@@ -118,10 +120,18 @@
                   (w/MediaQuery.maybeGestureSettingsOf (.-context this))))
         ;; disabled -> drop the recognizer once no drag is in flight
         (and (not (.-enabled widget)) recognizer)
-        (.disposeRecognizerIfInactive this)))
+        (.disposeRecognizerIfInactive this))
+      ;; :return-on-drop is reactive: flipping it true sends a displaced child
+      ;; home. Skip if a return is already animating, so a parent rebuild mid-flight
+      ;; doesn't restart it.
+      (when (and (.-returnOnDrop widget)
+                 (nil? (.-returnController this))
+                 (not (= (.-offset this) w/Offset.zero)))
+        (.returnHome this)))
     nil)
 
   (dispose [^DraggableState this]
+    (.stopReturn this)
     (.disposeRecognizerIfInactive this)
     (.dispose ^super this))
 
@@ -163,6 +173,35 @@
       (-> this .-recognizer .dispose)
       (set! (.-recognizer this) nil)))
 
+  (stopReturn [^DraggableState this]
+    (when-let [^a/AnimationController ctrl (.-returnController this)]
+      (.dispose ctrl)
+      (set! (.-returnController this) nil)))
+
+  ;; Animate the child's persisted offset back to zero (its home slot). Duration
+  ;; comes from :return-duration; 0/nil returns instantly.
+  (returnHome [^DraggableState this]
+    (.stopReturn this)
+    (let [^w/Offset start (.-offset this)
+          ^core/Duration? dur (.-returnDuration (.-widget this))]
+      (when-not (= start w/Offset.zero)
+        (if (or (nil? dur) (<= (.-inMicroseconds dur) 0))
+          (.setState this #(set! (.-offset this) w/Offset.zero))
+          (let [^a/AnimationController ctrl (a/AnimationController .vsync this .duration dur)]
+            (set! (.-returnController this) ctrl)
+            (.addListener ctrl
+                          (fn [] (.setState this #(set! (.-offset this)
+                                                        (or (w/Offset.lerp start w/Offset.zero (.-value ctrl))
+                                                            w/Offset.zero)))))
+            (.addStatusListener ctrl
+                                (fn [^a/AnimationStatus status]
+                                  (when (= a/AnimationStatus.completed status)
+                                    (.setState this #(set! (.-offset this) w/Offset.zero))
+                                    (.stopReturn this))
+                                  nil))
+            (.forward ctrl))))
+      nil))
+
     ;; Route pointer event to recognizer
   (routePointer [^DraggableState this ^g/PointerDownEvent event]
     (let [^Draggable widget (.-widget this)]
@@ -175,6 +214,8 @@
     (let [^Draggable widget (.-widget this)]
       (when (or (nil? (.-maxSimultaneousDrags widget))
                 (< activeCount (.-maxSimultaneousDrags widget)))
+        ;; Grabbing it again cancels any in-flight return; drag from where it is.
+        (.stopReturn this)
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
               _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
               ^w/OverlayState overlay-state (w/Overlay.of
@@ -248,7 +289,10 @@
       ((.-onDragEnd (.-widget this))
        {:was-accepted was-accepted
         :velocity velocity
-        :offset offset}))))
+        :offset offset}))
+    ;; The child now rests where it was dropped; :return-on-drop sends it home.
+    (when (and (.-mounted this) (.-returnOnDrop (.-widget this)))
+      (.returnHome this))))
 
 (deftype DragAvatar [^w/OverlayState overlayState
                      data
@@ -593,14 +637,18 @@
                           root-overlay
                           hit-test-behavior
                           allowed-buttons-filter
-                          enabled]
+                          enabled
+                          return-on-drop
+                          return-duration]
                    :or {feedback-offset w/Offset.zero
                         drag-anchor-strategy child-drag-anchor-strategy
                         hit-test-behavior w/HitTestBehavior.deferToChild
                         ignoring-feedback-semantics true
                         ignoring-feedback-pointer true
                         root-overlay false
-                        enabled true}}
+                        enabled true
+                        return-on-drop false
+                        return-duration 200}}
                   child]
   (let [delay (some-> (if (= :default delay) g/kLongPressTimeout delay) t/duration)]
     (Draggable
@@ -629,6 +677,8 @@
      (t/hit-test-behavior hit-test-behavior)
      allowed-buttons-filter
      (boolean enabled)
+     (boolean return-on-drop)
+     (some-> return-duration t/duration)
      child)))
 
 (defn ^w/Widget drag-target*

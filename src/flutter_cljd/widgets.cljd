@@ -2255,7 +2255,9 @@ Options:
 - `:root-overlay` — bool, use root overlay (default false)
 - `:hit-test-behavior` — HitTestBehavior (default `:defer-to-child`)
 - `:allowed-buttons-filter` — predicate filtering pointer buttons
-- `:enabled` — bool (default true); when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely"
+- `:enabled` — bool (default true); when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely
+- `:return-on-drop` — bool (default false). By default a dropped child stays where it landed; when true it returns to its home position instead. Reactive: flipping it true later sends an already-displaced child home at that moment
+- `:return-duration` — ms (or Duration) for the `:return-on-drop` animation (default 200); `0` returns instantly"
   [& args]
   (let [[args children] (ut/key-values-args-and-children args)]
     (drg/draggable* args (last children))))
