@@ -66,19 +66,21 @@
    [flutter-cljd.internal.sliver-collection :as scol]))
 
 (defn ^w/Widget absorb-pointer
-  "A widget that absorbs pointers during hit testing. 
-   It makes the widget and any underlying widgets impossible to interact with.
-   If you want to disable the widget but keep the underlying widgets interactive, use `ignore-pointer`.
+  "A widget that absorbs pointers during hit testing.
 
-   When absorbing is true, this widget prevents its subtree from receiving pointer events by terminating hit testing at itself.
-   It still consumes space during layout and paints its child as usual.
-   It just prevents its children from being the target of located events, because it returns true from RenderBox.hitTest.
+It makes the widget and any underlying widgets impossible to interact with.
+If you want to disable the widget but keep the underlying widgets interactive, use `ignore-pointer`.
 
-   Args:
-    - absorbing: Whether the widget absorbs pointers. Default is `true`.
-    - child: The child widget to be absorbed.
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/AbsorbPointer-class.html)"
+When absorbing is true, this widget prevents its subtree from receiving pointer events by terminating hit testing at itself.
+It still consumes space during layout and paints its child as usual.
+It just prevents its children from being the target of located events, because it returns true from RenderBox.hitTest.
+
+Args:
+
+- `absorbing` — Whether the widget absorbs pointers. Default is `true`.
+- `child` — The child widget to be absorbed.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/AbsorbPointer-class.html)"
   ([absorbing child]
    (ap/absorb-pointer* absorbing child))
   ([child] (absorb-pointer true child)))
@@ -86,15 +88,16 @@
 (defn ^w/Widget ignore-pointer
   "A widget that is invisible during hit testing.
 
-   When ignoring is true, this widget (and its subtree) is invisible to hit testing.
-   It still consumes space during layout and paints its child as usual.
-   It just cannot be the target of located events, because it returns false from RenderBox.hitTest.
+When ignoring is true, this widget (and its subtree) is invisible to hit testing.
+It still consumes space during layout and paints its child as usual.
+It just cannot be the target of located events, because it returns false from RenderBox.hitTest.
 
-    Args:
-      - ignoring: Whether the widget ignores pointers. Default is `true`.
-      - child: The child widget to be ignored.
-  
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/IgnorePointer-class.html)"
+Args:
+
+- `ignoring` — Whether the widget ignores pointers. Default is `true`.
+- `child` — The child widget to be ignored.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/IgnorePointer-class.html)"
   ([ignoring child]
    (ip/ignore-pointer* ignoring child))
   ([child] (ignore-pointer true child)))
@@ -102,31 +105,33 @@
 (defn ^w/Widget align
   "A widget that aligns its child within itself and optionally sizes itself based on the child's size.
 
-   For example, to align a box at the bottom right, you would pass this box a tight constraint that is bigger than the child's natural size, with an alignment of `Alignment.bottomRight`.
-   
-   Args:
-   - args: A map of arguments or an alignment or `Animation<AlignmentGeometry>`.
-     - `:key` An identifier for the align widget.
-     - `:alignment` (keyword or `Alignment` or `Animation<AlignmentGeometry>`, default: `Alignment.center`): The alignment of the child within the container.
-        Possible keywords: `:top`, `:center`, `:bottom`, `:left`, `:right`, `:start`, `:end` and their combinations like `:top-left`.
-     - `:width-factor` (number, default: nil): The width factor of the child.
-     - `:height-factor` (number, default: nil): The height factor of the child.
-     - `:animation` (map or number of seconds, default: nil): The animation options for the align widget.
-       - `:duration` (number of seconds or map or Duration, default: 250): The duration of the animation.
-       - `:curve` (keyword or Curve, default: :linear): The curve of the animation.
-       - `:on-end` (function, default: nil): The callback function to be called when the animation ends.
-   - child: The child widget to be aligned.
+For example, to align a box at the bottom right, you would pass this box a tight constraint that is bigger than the child's natural size, with an alignment of `Alignment.bottomRight`.
 
-   ```clojure
-   (align {:alignment :top-right :width-factor 0.4} (text \"Hello, World!\"))
-   (align :top-right (text \"Hello, World!\"))
-   ```
+Args:
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Align-class.html)
+- `args` — A map of arguments or an alignment or `Animation<AlignmentGeometry>`.
+  - `:key` — An identifier for the align widget.
+  - `:alignment` — keyword or `Alignment` or `Animation<AlignmentGeometry>`, default: `Alignment.center`. The alignment of the child within the container. Possible keywords: `:top`, `:center`, `:bottom`, `:left`, `:right`, `:start`, `:end` and their combinations like `:top-left`.
+  - `:width-factor` — number, default: `nil`. The width factor of the child.
+  - `:height-factor` — number, default: `nil`. The height factor of the child.
+  - `:animation` — map or number of seconds, default: `nil`. The animation options for the align widget.
+    - `:duration` — number of seconds or map or Duration, default: 250. The duration of the animation.
+    - `:curve` — keyword or Curve, default: `:linear`. The curve of the animation.
+    - `:on-end` — function, default: `nil`. The callback function to be called when the animation ends.
+- `child` — The child widget to be aligned.
 
-   [Animated flutter docs](https://api.flutter.dev/flutter/widgets/AnimatedAlign-class.html)
-   
-   [Transition flutter docs](https://api.flutter.dev/flutter/widgets/AlignTransition-class.html)"
+Examples:
+
+```clojure
+(align {:alignment :top-right :width-factor 0.4} (text \"Hello, World!\"))
+(align :top-right (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Align-class.html)
+
+[Animated flutter docs](https://api.flutter.dev/flutter/widgets/AnimatedAlign-class.html)
+
+[Transition flutter docs](https://api.flutter.dev/flutter/widgets/AlignTransition-class.html)"
   ([k0 v0 & args]
    (let [[args children] (ut/key-values-args-and-children (concat [k0 v0] args))]
      (al/align* args (first children))))
@@ -219,40 +224,39 @@
 (defn ^w/Widget on-back-button
   "A convenience widget that registers a callback for when the back button is pressed.
 
-   In order to use this widget, there must be an ancestor Router widget in the tree that has a RootBackButtonDispatcher. e.g. The Router widget created by the MaterialApp.router has a built-in RootBackButtonDispatcher by default.
-   
-   It only applies to platforms that accept back button clicks, such as Android.
-   
-   It can be useful for scenarios, in which you create a different state in your screen but don't want to use a new page for that.
+In order to use this widget, there must be an ancestor Router widget in the tree that has a RootBackButtonDispatcher. e.g. The Router widget created by the MaterialApp.router has a built-in RootBackButtonDispatcher by default.
 
-   Args:
-    - action: The action to be executed when the back button is pressed.
-    - child: The child widget to be displayed.
+It only applies to platforms that accept back button clicks, such as Android.
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/BackButtonListener-class.html)"
+It can be useful for scenarios, in which you create a different state in your screen but don't want to use a new page for that.
+
+Args:
+
+- `action` — The action to be executed when the back button is pressed.
+- `child` — The child widget to be displayed.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/BackButtonListener-class.html)"
   [action child]
   (obb/on-back-button* action child))
 
 (defn ^w/Widget banner
   "Displays a diagonal message above the corner of another widget.
 
-   Useful for showing the execution mode of an app (e.g., that asserts are enabled.)
+Useful for showing the execution mode of an app (e.g., that asserts are enabled.)
 
-   Args:
-    - args: A map of arguments for the banner widget.
-      - `:key` An identifier for the banner.
-      - `:child` The widget to show behind the banner.
-      - `:message` The message to show in the banner.
-      - `:location` (keyword or BannerLocation, default: :top-start): The location of the banner.
-        Possible values: :top-start, :top-end, :bottom-start, :bottom-end.
-      - `:layout-direction` (keyword or TextDirection, default: :ltr): The layout direction of the banner.
-        Possible values: :ltr, :rtl.
-      - `:text-direction` (keyword or TextDirection, default: :ltr): The direction of the text.
-        Possible values: :ltr, :rtl.
-      - `:color` (Color, default: 0xA0B71C1C): The color of the banner.
-      - `:text-style` (TextStyle, default: TextStyle(color: Colors.white, fontSize: 12.0 * 0.85, fontWeight: FontWeight.w900, height: 1.0)): The text style of the banner.
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Banner-class.html)"
+Args:
+
+- `args` — A map of arguments for the banner widget.
+  - `:key` — An identifier for the banner.
+  - `:child` — The widget to show behind the banner.
+  - `:message` — The message to show in the banner.
+  - `:location` — keyword or BannerLocation, default: `:top-start`. The location of the banner. Possible values: `:top-start`, `:top-end`, `:bottom-start`, `:bottom-end`.
+  - `:layout-direction` — keyword or TextDirection, default: `:ltr`. The layout direction of the banner. Possible values: `:ltr`, `:rtl`.
+  - `:text-direction` — keyword or TextDirection, default: `:ltr`. The direction of the text. Possible values: `:ltr`, `:rtl`.
+  - `:color` — Color, default: `0xA0B71C1C`. The color of the banner.
+  - `:text-style` — TextStyle, default: TextStyle(color: Colors.white, fontSize: 12.0 * 0.85, fontWeight: FontWeight.w900, height: 1.0). The text style of the banner.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Banner-class.html)"
   ([k0 v0 & args]
    (let [[args children] (ut/key-values-args-and-children (concat [k0 v0] args))]
      (bn/banner* args (first children))))
@@ -282,105 +286,121 @@
 
 (defn ^w/BottomNavigationBarItem bottom-navigation-bar-item
   "An interactive button within either material's BottomNavigationBar or the iOS themed CupertinoTabBar with an icon and title.
-   
-   This class is rarely used in isolation. It is typically embedded in one of the bottom navigation widgets.
-   
-   Args:
-    - args: A map of arguments for the bottom navigation bar item widget.
-      - `:icon` The icon of the bottom navigation bar item. Required.
-      - `:label` The label of the bottom navigation bar item.
-      - `:active-icon` The active icon of the bottom navigation bar item.
-      - `:background-color` The background color of the bottom navigation bar item.
-      - `:tooltip` The tooltip of the bottom navigation bar item.
-   
-   [Flutter docs](https://api.flutter.dev/flutter/material/BottomNavigationBarItem-class.html)"
+
+This class is rarely used in isolation. It is typically embedded in one of the bottom navigation widgets.
+
+Args:
+
+- `args` — A map of arguments for the bottom navigation bar item widget.
+  - `:icon` — The icon of the bottom navigation bar item. Required.
+  - `:label` — The label of the bottom navigation bar item.
+  - `:active-icon` — The active icon of the bottom navigation bar item.
+  - `:background-color` — The background color of the bottom navigation bar item.
+  - `:tooltip` — The tooltip of the bottom navigation bar item.
+
+[Flutter docs](https://api.flutter.dev/flutter/material/BottomNavigationBarItem-class.html)"
   ([& args]
    (let [[args _] (ut/key-values-args-and-children args)]
      (bnbi/bottom-navigation-bar-item* args))))
 
 (defn ^w/Widget builder
   "A stateless utility widget whose build method uses its builder callback to create the widget's child.
-   
-   Args:
-    - builder: Called with the context and to build the widget.
-    - child: The child widget to be wrapped by the builder widget. 
-      When provided, the builder callback will be called with the child widget as the first argument and the context as the second argument.
-   
-   ```clojure
-    (builder (fn [ctx] (text (str \"Hello, World!\" (.hasAppBar (Scaffold.of context))))))
-   
-   (->>
-     (text \"Hello, World!\")
-     (builder #(padding 10 %)))
-   ```
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Builder-class.html)"
+
+Args:
+
+- `builder` — Called with the context and to build the widget.
+- `child` — The child widget to be wrapped by the builder widget. When provided, the builder callback will be called with the child widget as the first argument and the context as the second argument.
+
+Examples:
+
+```clojure
+(builder (fn [ctx] (text (str \"Hello, World!\" (.hasAppBar (Scaffold.of context))))))
+
+(->>
+  (text \"Hello, World!\")
+  (builder #(padding 10 %)))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Builder-class.html)"
   ([builder] (bd/builder* builder))
   ([builder child] (bd/builder* builder child)))
 
 (defn ^w/Widget with-transformed-inherited
   "A widget that transforms inherited bindings using the specified `transform` function.
-   
-   The `transform` function is called with the inherited bindings map as an argument and should return a new map of bindings.
-   
-   Args:
-    - key: The key to be transformed in the inherited bindings. If not provided, the entire bindings map is transformed. Key may be a keyword or a map with the following keys:
-      - `:key` (keyword): The key to be transformed.
-      - `:default-value` (any): The default value to be transformed.
-    - transform: The function to transform the inherited bindings.
-    - child: The child widget to be wrapped by the transformed inherited widget.
-   
-   ```clojure
-   (->>
-     (text \"Hello, World!\")
-     (with-transformed-inherited #(assoc % :theme :dark)))
-   ```
-   Some default keys are defined in the `flutter-cljd.inherited-keys` namespace.
 
-   To access the inherited bindings, use `c/get-inherited` function."
+The `transform` function is called with the inherited bindings map as an argument and should return a new map of bindings.
+
+Args:
+
+- `key` — The key to be transformed in the inherited bindings. If not provided, the entire bindings map is transformed. Key may be a keyword or a map with the following keys:
+  - `:key` — keyword. The key to be transformed.
+  - `:default-value` — any. The default value to be transformed.
+- `transform` — The function to transform the inherited bindings.
+- `child` — The child widget to be wrapped by the transformed inherited widget.
+
+Example:
+
+```clojure
+(->>
+  (text \"Hello, World!\")
+  (with-transformed-inherited #(assoc % :theme :dark)))
+```
+
+Some default keys are defined in the `flutter-cljd.inherited-keys` namespace.
+
+To access the inherited bindings, use `c/get-inherited` function."
   ([transform child] (wi/with-transformed-inherited* transform child))
   ([key transform & kts&child] (apply wi/with-transformed-inherited* key transform kts&child)))
 
 (defn ^w/Widget with-merged-inherited
   "A widget that merges the specified `bindings` with the inherited bindings.
-   
-   Args:
-    - bindings: The bindings to be merged with the inherited bindings.
-    - child: The child widget to be wrapped by the merged inherited widget.
-   
-   ```clojure
-   (->>
-     (text \"Hello, World!\")
-     (with-merged-inherited {:theme :dark}))
-   ```
-   To access the inherited bindings, use `c/get-inherited` function."
+
+Args:
+
+- `bindings` — The bindings to be merged with the inherited bindings.
+- `child` — The child widget to be wrapped by the merged inherited widget.
+
+Example:
+
+```clojure
+(->>
+  (text \"Hello, World!\")
+  (with-merged-inherited {:theme :dark}))
+```
+
+To access the inherited bindings, use `c/get-inherited` function."
   [bindings child]
   (wi/with-merged-inherited* bindings child))
 
 (defn ^w/Widget with-inherited
   "A widget that provides inherited values to its descendants.
-   
-   Args:
-    - key values pairs to be inherited. Key may be a keyword or a map with the following keys:
-      - `:key`: The key to be inherited.
-      - `:default-value` (any): The value to be inherited.
-      - `:merge` (fn [old new] new): The function to merge the new value with the existing one.
-    - child: The child widget to be wrapped by the inherited widget.
-   
-   ```clojure
-   (->>
-     (text \"Hello, World!\")
-     (with-inherited :theme :dark))
-   
-   (->>
-     (text \"Hello, World!\")
-     (button tap-fn)
-     (with-inherited inh/enabled false))
-   ```
-   Some default keys are defined in the `flutter-cljd.inherited-keys` namespace.
 
-   To modify the inherited bindings, use `with-transformed-inherited` widget.
-   
-   To access the inherited bindings, use `c/get-inherited` function."
+Args:
+
+- `key` / `value` pairs to be inherited. Key may be a keyword or a map with the following keys:
+  - `:key` — The key to be inherited.
+  - `:default-value` — any. The value to be inherited.
+  - `:merge` — `(fn [old new] new)`. The function to merge the new value with the existing one.
+- `child` — The child widget to be wrapped by the inherited widget.
+
+Examples:
+
+```clojure
+(->>
+  (text \"Hello, World!\")
+  (with-inherited :theme :dark))
+
+(->>
+  (text \"Hello, World!\")
+  (button tap-fn)
+  (with-inherited inh/enabled false))
+```
+
+Some default keys are defined in the `flutter-cljd.inherited-keys` namespace.
+
+To modify the inherited bindings, use `with-transformed-inherited` widget.
+
+To access the inherited bindings, use `c/get-inherited` function."
   ([key child] (wi/with-inherited* key child))
   ([key value child] (wi/with-inherited* key value child))
   ([key0 value0 key1 value1 & kvs&child] (apply wi/with-inherited* key0 value0 key1 value1 kvs&child)))
@@ -471,90 +491,100 @@
 
 (defn ^w/Widget button
   "A universal button.
- 
-  A button is a widget that responds to touch events. When the user touches the button, 
-  the button is highlighted and then invokes the `on-tap` callback.
-  
-  Args: a map of arguments or a function called when the button is tapped.
 
-    - `:key` - A widget key.
-    - `:on-tap` - Executed when the button is tapped
-    - `:on-tap-down` - Executed when the button is pressed down
-    - `:on-tap-up` - Executed when the button press is released
-    - `:on-tap-cancel` - Executed when the button tap is canceled
-    - `:on-double-tap` - Executed on double-tap
-    - `:on-long-press` - Executed when button is held down
-    - `:on-secondary-tap` - Executed on secondary tap (e.g. right click)
-    - `:on-secondary-tap-up` - Executed when secondary tap is released
-    - `:on-secondary-tap-down` - Executed when secondary tap begins
-    - `:on-secondary-tap-cancel` - Executed when secondary tap is canceled
-    - `:on-highlight-changed` - Executed when button highlight state changes
-    - `:on-hover` - Executed when pointer hovers over button
-    - `:on-focus-change` - Executed when focus state changes
-    - `:focus-node` - Custom focus node for the button
-    - `:mouse-cursor` - Mouse cursor to display on hover
-  
-    Inherited properties (can be set via `with-inherited` or passed directly):
-    - `:enabled` - Whether the button is interactive
-    - `:enable-feedback` - Whether to show visual/haptic feedback
-    - `:exclude-from-semantics` - Whether to exclude from accessibility tree
-    - `:can-request-focus` - Whether button can receive focus
-    - `:autofocus` - Whether button should automatically receive focus
-  
-    Button Context:
-    The `:button-context` provides state information as a map with:
-    - `:context` - The BuildContext of the button widget
-    - `:state` - Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
-    - `:prev-state` - Set of previous button state values
-    - `:local-offset` - Local coordinates of touch (Offset?)  
-    - `:global-offset` - Global coordinates of touch (Offset?)
-  
-  Styling:
-  The Button supports custom styling via the `flutter-cljd.inherited-keys/button-modifier` inherited key, which accepts a function in this format:
-  (fn [child button-context] modified-child). 
-  You can set the button modifier using the `with-button-modifier` widget.
-  
-  To avoid unnecessary widget rebuilds, define your modifier functions using `defn` rather than creating anonymous functions inline.
-  
-  Also button injects `flutter-cljd.inherited-keys/button-context` into its child widget, so you can access the button context in your child widget and use it for custom styling or other purposes.
+A button is a widget that responds to touch events. When the user touches the button,
+the button is highlighted and then invokes the `on-tap` callback.
 
-  Examples:
-  
-  ```clojure
-  (->> (text \"Click me!\")
-       (button #(print \"Button clicked!\")))
-    
-  (->> (text \"Interact with me\")
-     (button {:on-tap #(print \"Button clicked!\")
-              :on-long-press #(print \"Long pressed\")
-              :on-hover #(print \"Hovered\")}))
-    
-   (defn ^w/Widget custom-style [button btn-ctx]
-     (let [state (:state btn-ctx)
+Args: a map of arguments or a function called when the button is tapped.
+
+Event handlers:
+
+- `:key` — A widget key.
+- `:on-tap` — Executed when the button is tapped
+- `:on-tap-down` — Executed when the button is pressed down
+- `:on-tap-up` — Executed when the button press is released
+- `:on-tap-cancel` — Executed when the button tap is canceled
+- `:on-double-tap` — Executed on double-tap
+- `:on-long-press` — Executed when button is held down
+- `:on-secondary-tap` — Executed on secondary tap (e.g. right click)
+- `:on-secondary-tap-up` — Executed when secondary tap is released
+- `:on-secondary-tap-down` — Executed when secondary tap begins
+- `:on-secondary-tap-cancel` — Executed when secondary tap is canceled
+- `:on-highlight-changed` — Executed when button highlight state changes
+- `:on-hover` — Executed when pointer hovers over button
+- `:on-focus-change` — Executed when focus state changes
+- `:focus-node` — Custom focus node for the button
+- `:mouse-cursor` — Mouse cursor to display on hover
+
+Inherited properties (can be set via `with-inherited` or passed directly):
+
+- `:enabled` — Whether the button is interactive
+- `:enable-feedback` — Whether to show visual/haptic feedback
+- `:exclude-from-semantics` — Whether to exclude from accessibility tree
+- `:can-request-focus` — Whether button can receive focus
+- `:autofocus` — Whether button should automatically receive focus
+
+Button Context:
+
+The `:button-context` provides state information as a map with:
+
+- `:context` — The BuildContext of the button widget
+- `:state` — Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
+- `:prev-state` — Set of previous button state values
+- `:local-offset` — Local coordinates of touch (Offset?)
+- `:global-offset` — Global coordinates of touch (Offset?)
+
+Styling:
+
+The Button supports custom styling via the `flutter-cljd.inherited-keys/button-modifier` inherited key, which accepts a function in this format:
+
+```clojure
+(fn [child button-context] modified-child)
+```
+
+You can set the button modifier using the `with-button-modifier` widget.
+
+To avoid unnecessary widget rebuilds, define your modifier functions using `defn` rather than creating anonymous functions inline.
+
+Also button injects `flutter-cljd.inherited-keys/button-context` into its child widget, so you can access the button context in your child widget and use it for custom styling or other purposes.
+
+Examples:
+
+```clojure
+(->> (text \"Click me!\")
+     (button #(print \"Button clicked!\")))
+
+(->> (text \"Interact with me\")
+   (button {:on-tap #(print \"Button clicked!\")
+            :on-long-press #(print \"Long pressed\")
+            :on-hover #(print \"Hovered\")}))
+
+(defn ^w/Widget custom-style [button btn-ctx]
+  (let [state (:state btn-ctx)
         disabled? (state :disable)
         pressed? (state :pressed)]
     (opacity
      (if disabled? 0.5 (if pressed? 0.8 1.0))
      button)))
-  
-  (->> (text \"Custom style\")
-      (button #(print \"Button clicked!\"))
-      (with-button-modifier custom-style))
-  
-  (->> (text \"Disabled\")
-     (button #(print \"Won't be called\"))
-     (disabled))
-  
-  (defn ^w/Widget my-button [title on-tap]
-     (->>
-       (widget->>
-         :get {:button-context btn-ctx}
-         :let [state (:state btn-ctx)]
-         (text title)
-         (opacity (if (state :pressed) 0.8 1)))
-       (button on-tap)
-       (without-button-modifier)))
-  ```"
+
+(->> (text \"Custom style\")
+    (button #(print \"Button clicked!\"))
+    (with-button-modifier custom-style))
+
+(->> (text \"Disabled\")
+   (button #(print \"Won't be called\"))
+   (disabled))
+
+(defn ^w/Widget my-button [title on-tap]
+   (->>
+     (widget->>
+       :get {:button-context btn-ctx}
+       :let [state (:state btn-ctx)]
+       (text title)
+       (opacity (if (state :pressed) 0.8 1)))
+     (button on-tap)
+     (without-button-modifier)))
+```"
   ([k0 v0 & args]
    (if (fn? k0)
      (bt/button* k0 (ut/key-values-map (cons v0 (drop-last args))) (last args))
@@ -564,34 +594,39 @@
 
 (defn ^w/Widget with-button-modifier
   "A widget that provides a custom button modifier to its descendants.
-  
-   The `modifier` function is called with the child widget and the button context as arguments and should return a modified child widget.
-  
-   Args:
-    - modifier: The function to modify the button widget. The function should have the following signature:
-      (fn [child button-context] modified-child)
-    - child: The child widget to be wrapped by the modified button widget.
 
-    Button Context:
-    The button context provides state information as a map with:
-    - `:context` - The BuildContext of the button widget
-    - `:state` - Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
-    - `:prev-state` - Set of previous button state values
-    - `:local-offset` - Local coordinates of touch (Offset?)  
-    - `:global-offset` - Global coordinates of touch (Offset?)
+The `modifier` function is called with the child widget and the button context as arguments and should return a modified child widget.
 
-   ```clojure
-   (defn ^w/Widget highlighted-button [button btn-ctx]
-     (let [state (:state btn-ctx)
-           pressed? (state :pressed)]
-       (opacity (if pressed? 0.8 1) button)))
+Args:
 
-   (->>
-     (text \"Click me!\")
-     (button #(print \"Button clicked!\"))
-     (with-button-modifier highlighted-button))
-   ```
-   To avoid unnecessary widget rebuilds, define your modifier functions using `defn` rather than creating anonymous functions inline."
+- `modifier` — The function to modify the button widget. The function should have the following signature: `(fn [child button-context] modified-child)`
+- `child` — The child widget to be wrapped by the modified button widget.
+
+Button Context:
+
+The button context provides state information as a map with:
+
+- `:context` — The BuildContext of the button widget
+- `:state` — Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
+- `:prev-state` — Set of previous button state values
+- `:local-offset` — Local coordinates of touch (Offset?)
+- `:global-offset` — Global coordinates of touch (Offset?)
+
+Example:
+
+```clojure
+(defn ^w/Widget highlighted-button [button btn-ctx]
+  (let [state (:state btn-ctx)
+        pressed? (state :pressed)]
+    (opacity (if pressed? 0.8 1) button)))
+
+(->>
+  (text \"Click me!\")
+  (button #(print \"Button clicked!\"))
+  (with-button-modifier highlighted-button))
+```
+
+To avoid unnecessary widget rebuilds, define your modifier functions using `defn` rather than creating anonymous functions inline."
   [modifier child]
   (bt/with-button-modifier* modifier child))
 
@@ -603,17 +638,19 @@
 (defn ^w/Widget center
   "A widget that centers its child within itself.
 
-   This widget will be as big as possible if its dimensions are constrained and :width-factor and :height-factor are nil.
-   If a dimension is unconstrained and the corresponding size factor is null then the widget will match its child's size in that dimension.
-   If a size factor is non-null then the corresponding dimension of this widget will be the product of the child's dimension and the size factor.
-   For example if :width-factor is 2.0 then the width of this widget will always be twice its child's width.
-   
-   ```clojure
-   (center (text \"Hello, World!\"))
-   (center :width-factor 2.0 :height-factor 2.0 (text \"Hello, World!\"))
-   ```
+This widget will be as big as possible if its dimensions are constrained and `:width-factor` and `:height-factor` are `nil`.
+If a dimension is unconstrained and the corresponding size factor is null then the widget will match its child's size in that dimension.
+If a size factor is non-null then the corresponding dimension of this widget will be the product of the child's dimension and the size factor.
+For example if `:width-factor` is 2.0 then the width of this widget will always be twice its child's width.
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Center-class.html)"
+Examples:
+
+```clojure
+(center (text \"Hello, World!\"))
+(center :width-factor 2.0 :height-factor 2.0 (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Center-class.html)"
   [arg0 & args]
   (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
     (cntr/center* args (last children))))
@@ -621,40 +658,42 @@
 (defn ^w/Widget checked-mode-banner
   "A banner that shows the current checked mode.
 
-   Displays a Banner saying \"DEBUG\" when running in debug mode. MaterialApp builds one of these by default.
-   This is useful for indicating that an app is running in debug mode, which may include additional debugging
-   features or behavior that shouldn't appear in release builds.
+Displays a Banner saying \"DEBUG\" when running in debug mode. MaterialApp builds one of these by default.
+This is useful for indicating that an app is running in debug mode, which may include additional debugging
+features or behavior that shouldn't appear in release builds.
 
-   Does nothing in release mode, making it safe to leave in place in production code.
-   
-   Args:
-    - child: The widget below this widget in the tree that will have the debug banner displayed over it
-   
-   Example:
-   ```clojure
-   (checked-mode-banner
-     (scaffold
-       (body (text \"Hello World!\"))))
-   ```
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/CheckedModeBanner-class.html)"
+Does nothing in release mode, making it safe to leave in place in production code.
+
+Args:
+
+- `child` — The widget below this widget in the tree that will have the debug banner displayed over it
+
+Example:
+
+```clojure
+(checked-mode-banner
+  (scaffold
+    (body (text \"Hello World!\"))))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/CheckedModeBanner-class.html)"
   [child]
   (cmb/checked-mode-banner* child))
 
 (defn ^w/Widget clip-oval
   "A widget that clips its child using an oval.
-   
-   By default, inscribes an axis-aligned oval into its layout dimensions and prevents its child from painting outside that oval, but the size and location of the clip oval can be customized using a custom clipper.
 
-   Args: 
-    - args: A map of arguments for the clip oval widget.
-      - `:key` An identifier for the clip oval.
-      - `:clip-behavior` (keyword, default: :clip): The behavior of the clip.
-        Possible values: :clip, :anti-alias, :anti-alias-with-save-layer, :hard-edge.
-      - `:clipper` (CustomClipper): The custom clipper to use for clipping.
-    - child: The child widget
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/ClipOval-class.html)"
+By default, inscribes an axis-aligned oval into its layout dimensions and prevents its child from painting outside that oval, but the size and location of the clip oval can be customized using a custom clipper.
+
+Args:
+
+- `args` — A map of arguments for the clip oval widget.
+  - `:key` — An identifier for the clip oval.
+  - `:clip-behavior` — keyword, default: `:clip`. The behavior of the clip. Possible values: `:clip`, `:anti-alias`, `:anti-alias-with-save-layer`, `:hard-edge`.
+  - `:clipper` — CustomClipper. The custom clipper to use for clipping.
+- `child` — The child widget
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ClipOval-class.html)"
   ([v0 & args] (let [[args [child]] (ut/key-values-args-and-children (cons v0 args))]
                  (co/clip-oval* args child)))
   ([child] (co/clip-oval* {} child)))
@@ -662,17 +701,17 @@
 (defn ^w/Widget clip-rect
   "A widget that clips its child using a rectangle.
 
-   By default, inscribes an axis-aligned rectangle into its layout dimensions and prevents its child from painting outside that rectangle, but the size and location of the clip rectangle can be customized using a custom clipper.
+By default, inscribes an axis-aligned rectangle into its layout dimensions and prevents its child from painting outside that rectangle, but the size and location of the clip rectangle can be customized using a custom clipper.
 
-   Args:
-    - args: A map of arguments for the clip rect widget.
-      - `:key` An identifier for the clip rect.
-      - `:clip-behavior` (keyword, default: :clip): The behavior of the clip.
-        Possible values: :clip, :anti-alias, :anti-alias-with-save-layer, :hard-edge.
-      - `:clipper` (CustomClipper): The custom clipper to use for clipping.
-    - child: The child widget
+Args:
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/ClipRect-class.html)"
+- `args` — A map of arguments for the clip rect widget.
+  - `:key` — An identifier for the clip rect.
+  - `:clip-behavior` — keyword, default: `:clip`. The behavior of the clip. Possible values: `:clip`, `:anti-alias`, `:anti-alias-with-save-layer`, `:hard-edge`.
+  - `:clipper` — CustomClipper. The custom clipper to use for clipping.
+- `child` — The child widget
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ClipRect-class.html)"
   ([v0 & args] (let [[args [child]] (ut/key-values-args-and-children (cons v0 args))]
                  (cr/clip-rect* args child)))
   ([child] (cr/clip-rect* {} child)))
@@ -754,17 +793,20 @@
 
 (defn ^w/Widget colored
   "A widget that paints its child with a specified color.
-  
-     The color is painted as a solid color, with no transparency.
-     The child is painted using the specified color as if it was composited with an opaque version of the child.
-     The color is not blended with the child.
-  
-     ```clojure
-     (colored m/Colors.red (text \"Hello, World!\"))
-     (colored :red (text \"Hello, World!\"))
-     (colored 0xFF0000FF (text \"Hello, World!\"))
-     ```
-     [Flutter docs](https://api.flutter.dev/flutter/widgets/ColoredBox-class.html)"
+
+The color is painted as a solid color, with no transparency.
+The child is painted using the specified color as if it was composited with an opaque version of the child.
+The color is not blended with the child.
+
+Examples:
+
+```clojure
+(colored m/Colors.red (text \"Hello, World!\"))
+(colored :red (text \"Hello, World!\"))
+(colored 0xFF0000FF (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ColoredBox-class.html)"
   ([value] (cd/colored* value))
   ([clr child] (cd/colored* clr child)))
 
@@ -780,32 +822,25 @@
 (defn ^w/Widget column
   "Creates a column widget with the specified arguments and children.
 
-  Args:
-  - args: A map of arguments for the column widget.
-    - `:key` An identifier for the column. 
-    - `:spacing` (number, default: 0): The spacing between each child widget.
-    - `:main-axis-alignment` (keyword, default: :start): The alignment of the children along the main axis.
-      Possible values: :center, :start, :end, :space-between, :space-around, :space-evenly.
-    - `:main-axis-size` (keyword, default: :min): The size of the column in the main axis.
-      Possible values: :max, :min.
-    - `:cross-axis-alignment` (keyword, default: :center): The alignment of the children along the cross axis.
-      Possible values: :center, :start, :end, :stretch, :baseline.
-    - `:text-direction` (keyword, default: :ltr): The direction of the text.
-      Possible values: :ltr, :rtl.
-    - `:text-baseline` (keyword, default: :alphabetic): The baseline alignment for the text.
-      Possible values: :alphabetic, :ideographic.
-    - `:vertical-direction` (keyword, default: :down): The direction in which the children are placed vertically.
-      Possible values: :top, :down.
+Args:
 
-  - children: The child widgets to be placed in the column. Can contain nested lists of children.
-   
-   ```clojure
-   (column :main-axis-alignment :center :spacing 10
-    (text \"Hello, World!\"))
-   ```
+- `args` — A map of arguments for the column widget.
+  - `:key` — An identifier for the column.
+  - `:spacing` — number, default: 0. The spacing between each child widget.
+  - `:main-axis-alignment` — keyword, default: `:start`. The alignment of the children along the main axis. Possible values: `:center`, `:start`, `:end`, `:space-between`, `:space-around`, `:space-evenly`.
+  - `:main-axis-size` — keyword, default: `:min`. The size of the column in the main axis. Possible values: `:max`, `:min`.
+  - `:cross-axis-alignment` — keyword, default: `:center`. The alignment of the children along the cross axis. Possible values: `:center`, `:start`, `:end`, `:stretch`, `:baseline`.
+  - `:text-direction` — keyword, default: `:ltr`. The direction of the text. Possible values: `:ltr`, `:rtl`.
+  - `:text-baseline` — keyword, default: `:alphabetic`. The baseline alignment for the text. Possible values: `:alphabetic`, `:ideographic`.
+  - `:vertical-direction` — keyword, default: `:down`. The direction in which the children are placed vertically. Possible values: `:top`, `:down`.
+- `children` — The child widgets to be placed in the column. Can contain nested lists of children.
 
-  Returns:
-  A column widget with the specified arguments and children."
+Example:
+
+```clojure
+(column :main-axis-alignment :center :spacing 10
+  (text \"Hello, World!\"))
+```"
   ([] (column {}))
   ([args & children]
    (let [[args children] (ut/key-values-args-and-children (cons args children))]
@@ -814,30 +849,33 @@
 (defn ^w/Widget composited-transform-follower
   "A widget that follows a `composited-transform-target`.
 
-   When this widget is composited during the compositing phase (which comes after the paint phase, as described in WidgetsBinding.drawFrame), it applies a transformation that brings targetAnchor of the linked CompositedTransformTarget and followerAnchor of this widget together.
-   The two anchor points will have the same global coordinates, unless offset is not Offset.zero, in which case followerAnchor will be offset by offset in the linked CompositedTransformTarget's coordinate space.
+When this widget is composited during the compositing phase (which comes after the paint phase, as described in WidgetsBinding.drawFrame), it applies a transformation that brings targetAnchor of the linked CompositedTransformTarget and followerAnchor of this widget together.
+The two anchor points will have the same global coordinates, unless offset is not Offset.zero, in which case followerAnchor will be offset by offset in the linked CompositedTransformTarget's coordinate space.
 
-   The `LayerLink` object used as the link must be the same object as that provided to the matching `composited-transform-target`
-   
-   The `composited-transform-target` must come earlier in the paint order than this `composited-transform-follower`
+The `LayerLink` object used as the link must be the same object as that provided to the matching `composited-transform-target`
 
-   Hit testing on descendants of this widget will only work if the target position is within the box that this widget's parent considers to be hittable.
-   If the parent covers the screen, this is trivially achievable, so this widget is usually used as the root of an OverlayEntry in an app-wide Overlay (e.g. as created by the MaterialApp widget's Navigator).
-   
-   Args:
-   - args: A map of arguments for the composited transform follower widget or a `LayerLink` object.
-     - `:key` An identifier for the composited transform follower.
-     - `:link` The LayerLink object that the follower will follow.
-     - `:show-when-unlinked` (boolean, default: true): Whether to show the child when the link is not linked.
-     - `:offset` (Offset, default: Offset.zero): The offset to apply to the link's target anchor.
-     - `:target-anchor` (Alignment, default: Alignment.topLeft): The alignment of the target anchor relative to the size of the linked `composited-transform-target`
-     - `:follower-anchor` (Alignment, default: Alignment.topLeft): The alignment of this widget's anchor relative to its size.
-   
-   ```clojure
-   (composited-transform-follower link (text \"Hello, World!\"))
-   ```
+The `composited-transform-target` must come earlier in the paint order than this `composited-transform-follower`
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/CompositedTransformFollower-class.html)"
+Hit testing on descendants of this widget will only work if the target position is within the box that this widget's parent considers to be hittable.
+If the parent covers the screen, this is trivially achievable, so this widget is usually used as the root of an OverlayEntry in an app-wide Overlay (e.g. as created by the MaterialApp widget's Navigator).
+
+Args:
+
+- `args` — A map of arguments for the composited transform follower widget or a `LayerLink` object.
+  - `:key` — An identifier for the composited transform follower.
+  - `:link` — The LayerLink object that the follower will follow.
+  - `:show-when-unlinked` — boolean, default: `true`. Whether to show the child when the link is not linked.
+  - `:offset` — Offset, default: `Offset.zero`. The offset to apply to the link's target anchor.
+  - `:target-anchor` — Alignment, default: `Alignment.topLeft`. The alignment of the target anchor relative to the size of the linked `composited-transform-target`
+  - `:follower-anchor` — Alignment, default: `Alignment.topLeft`. The alignment of this widget's anchor relative to its size.
+
+Example:
+
+```clojure
+(composited-transform-follower link (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/CompositedTransformFollower-class.html)"
   [args child & more]
   (let [[args children] (ut/key-values-args-and-children (cons args (cons child more)))]
     (ct/composited-transform-follower* args (last children))))
@@ -860,30 +898,31 @@
 (defn ^w/Widget constraints-transformed
   "A container widget that applies an arbitrary transform to its constraints, and sizes its child using the resulting `BoxConstraints`, optionally clipping, or treating the overflow as an error.
 
-   This container sizes its child using a `BoxConstraints` created by applying `:transform` to its own constraints.
-   This container will then attempt to adopt the same size, within the limits of its own constraints.
-   If it ends up with a different size, it will align the child based on alignment.
-   If the container cannot expand enough to accommodate the entire child, the child will be clipped if `:clip` is not `:none`.
+This container sizes its child using a `BoxConstraints` created by applying `:transform` to its own constraints.
+This container will then attempt to adopt the same size, within the limits of its own constraints.
+If it ends up with a different size, it will align the child based on alignment.
+If the container cannot expand enough to accommodate the entire child, the child will be clipped if `:clip` is not `:none`.
 
-   In debug mode, if `:clip` is `:none` and the child overflows the container, a warning will be printed on the console, and black and yellow striped areas will appear where the overflow occurs.
+In debug mode, if `:clip` is `:none` and the child overflows the container, a warning will be printed on the console, and black and yellow striped areas will appear where the overflow occurs.
 
-   When child is nil, this widget becomes as small as possible and never overflows.
+When child is nil, this widget becomes as small as possible and never overflows.
 
-   This widget can be used to ensure some of child's natural dimensions are honored, and get an early warning otherwise during development.
-   For instance, if child requires a minimum height to fully display its content, `:transform` can be set to `maxHeightUnconstrained`,
-   so that if the parent `RenderObject` fails to provide enough vertical space, a warning will be displayed in debug mode, while still allowing child to grow vertically
-   
-   Args:
-    - args: A map of arguments for the constraints transformed box widget or a transform function.
-      - `:key` An identifier for the constraints transformed box.
-      - `:text-direction` (keyword, default: :ltr): The direction of the text. Possible values: :ltr, :rtl.
-      - `:alignment` (Alignment, default: Alignment.center): The alignment of the child within the container.
-      - `:transform` (BoxConstraints -> BoxConstraints): The transform to apply to the constraints. 
-      - `:clip` (keyword, default: :none): The clip behavior of the child. Possible values: :none, :hard-edge, :anti-alias, :anti-alias-with-save-layer.
-      - `:debug-transform-type` (string, default: \"\"): The type of transform to use for debugging.
-    - child: The child widget to be displayed.
+This widget can be used to ensure some of child's natural dimensions are honored, and get an early warning otherwise during development.
+For instance, if child requires a minimum height to fully display its content, `:transform` can be set to `maxHeightUnconstrained`,
+so that if the parent `RenderObject` fails to provide enough vertical space, a warning will be displayed in debug mode, while still allowing child to grow vertically
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/ConstraintsTransformBox-class.html)"
+Args:
+
+- `args` — A map of arguments for the constraints transformed box widget or a transform function.
+  - `:key` — An identifier for the constraints transformed box.
+  - `:text-direction` — keyword, default: `:ltr`. The direction of the text. Possible values: `:ltr`, `:rtl`.
+  - `:alignment` — Alignment, default: `Alignment.center`. The alignment of the child within the container.
+  - `:transform` — `(BoxConstraints -> BoxConstraints)`. The transform to apply to the constraints.
+  - `:clip` — keyword, default: `:none`. The clip behavior of the child. Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
+  - `:debug-transform-type` — string, default: `\"\"`. The type of transform to use for debugging.
+- `child` — The child widget to be displayed.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ConstraintsTransformBox-class.html)"
   [arg0 & args]
   (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
     (ctr/constraints-transformed* args (last children))))
@@ -994,55 +1033,51 @@
 
 (defn ^w/Widget expanded
   "A widget that expands a child of a Row, Column, or Flex so that the child fills the available space.
-   
-   Using an Expanded widget makes a child of a Row, Column, or Flex expand to fill the available space along the main axis (e.g., horizontally for a Row or vertically for a Column).
-   If multiple children are expanded, the available space is divided among them according to the flex factor.
-   
-   An Expanded widget must be a descendant of a Row, Column, or Flex, and the path from the Expanded widget to its enclosing Row, Column, or Flex must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
-   
-   ```clojure
-   (row (expanded (text \"Hello, World!\")))
-   (column (expanded 2 (text \"Hello, World!\")))
-   ```
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Expanded-class.html)"
+Using an Expanded widget makes a child of a Row, Column, or Flex expand to fill the available space along the main axis (e.g., horizontally for a Row or vertically for a Column).
+If multiple children are expanded, the available space is divided among them according to the flex factor.
+
+An Expanded widget must be a descendant of a Row, Column, or Flex, and the path from the Expanded widget to its enclosing Row, Column, or Flex must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
+
+Examples:
+
+```clojure
+(row (expanded (text \"Hello, World!\")))
+(column (expanded 2 (text \"Hello, World!\")))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Expanded-class.html)"
   ([child] (ex/expanded* child))
   ([flex child] (ex/expanded* flex child)))
 
 (defn ^w/Widget flex
   "A widget that displays its children in a one-dimensional array.
 
-   The Flex widget allows you to control the axis along which the children are placed (horizontal or vertical).
-   This is referred to as the main axis. If you know the main axis in advance, then consider using a Row (if it's horizontal) or Column (if it's vertical) instead, because that will be less verbose.
+The Flex widget allows you to control the axis along which the children are placed (horizontal or vertical).
+This is referred to as the main axis. If you know the main axis in advance, then consider using a Row (if it's horizontal) or Column (if it's vertical) instead, because that will be less verbose.
 
-   To cause a child to expand to fill the available space in the direction of this widget's main axis, wrap the child in an Expanded widget.
+To cause a child to expand to fill the available space in the direction of this widget's main axis, wrap the child in an Expanded widget.
 
-   The Flex widget does not scroll (and in general it is considered an error to have more children in a Flex than will fit in the available room). If you have some widgets and want them to be able to scroll if there is insufficient room, consider using a ListView.
+The Flex widget does not scroll (and in general it is considered an error to have more children in a Flex than will fit in the available room). If you have some widgets and want them to be able to scroll if there is insufficient room, consider using a ListView.
 
-   The Flex widget does not allow its children to wrap across multiple horizontal or vertical runs. For a widget that allows its children to wrap, consider using the Wrap widget instead of Flex.
+The Flex widget does not allow its children to wrap across multiple horizontal or vertical runs. For a widget that allows its children to wrap, consider using the Wrap widget instead of Flex.
 
-   If you only have one child, then rather than using Flex, Row, or Column, consider using Align or Center to position the child.
-   
-   Args:
-    - `:key` An identifier for the flex.
-    - `:spacing` (number, default: 0): The spacing between each child widget.
-    - `:direction` (Axis, default: Axis.horizontal): The axis along which the children are placed.
-    - `:main-axis-alignment` (keyword or MainAxisAlignment, default: `:start`): The alignment of the children along the main axis.
-      Possible values: `:center`, `:start`, `:end`, `:space-between`, `:space-around`, `:space-evenly`.
-    - `:main-axis-size` (keyword or MainAxisSize, default: `:min`): The size of the flex in the main axis.
-      Possible values: `:max`, `:min`.
-    - `:cross-axis-alignment` (keyword or CrossAxisAlignment, default: `:center`): The alignment of the children along the cross axis.
-      Possible values: `:center`, `:start`, `:end`, `:stretch`, `:baseline`.
-    - `:text-direction` (keyword or TextDirection, default: `:ltr`): The direction of the text.
-      Possible values: `:ltr`, `:rtl`.
-    - `:text-baseline` (keyword or TextBaseline, default: `:alphabetic`): The baseline alignment for the text.
-      Possible values: `:alphabetic`, `:ideographic`.
-    - `:vertical-direction` (keyword or VerticalDirection, default: `:down`): The direction in which the children are placed vertically.
-      Possible values: `:top`, `:down`.
-    - `:clip` (keyword or Clip, default: `:none`): The clip
-      Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Flex-class.html)"
+If you only have one child, then rather than using Flex, Row, or Column, consider using Align or Center to position the child.
+
+Args:
+
+- `:key` — An identifier for the flex.
+- `:spacing` — number, default: 0. The spacing between each child widget.
+- `:direction` — Axis, default: `Axis.horizontal`. The axis along which the children are placed.
+- `:main-axis-alignment` — keyword or MainAxisAlignment, default: `:start`. The alignment of the children along the main axis. Possible values: `:center`, `:start`, `:end`, `:space-between`, `:space-around`, `:space-evenly`.
+- `:main-axis-size` — keyword or MainAxisSize, default: `:min`. The size of the flex in the main axis. Possible values: `:max`, `:min`.
+- `:cross-axis-alignment` — keyword or CrossAxisAlignment, default: `:center`. The alignment of the children along the cross axis. Possible values: `:center`, `:start`, `:end`, `:stretch`, `:baseline`.
+- `:text-direction` — keyword or TextDirection, default: `:ltr`. The direction of the text. Possible values: `:ltr`, `:rtl`.
+- `:text-baseline` — keyword or TextBaseline, default: `:alphabetic`. The baseline alignment for the text. Possible values: `:alphabetic`, `:ideographic`.
+- `:vertical-direction` — keyword or VerticalDirection, default: `:down`. The direction in which the children are placed vertically. Possible values: `:top`, `:down`.
+- `:clip` — keyword or Clip, default: `:none`. The clip behavior. Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Flex-class.html)"
   ([direction] (crf/flex* direction {} []))
   ([direction & args-children]
    (let [[args children] (ut/key-values-args-and-children args-children)]
@@ -1050,18 +1085,18 @@
 
 (defn ^w/Widget flexible
   "A widget that controls how a child of a `row`, `column`, or `flex` flexes.
-   
-   Using a `flexible` widget gives a child of a `row`, `column`, or `flex` 
-   the flexibility to expand to fill the available space in the main axis (e.g., horizontally for a `row` or vertically for a `column`), but, 
-   unlike `expanded`, `flexible` does not require the child to fill the available space.
-   
-   Args:
-    - `:flex` (number, default: 1): The flex factor to use for this child.
-    - `:fit` (FlexFit, default: `:loose`): How the child is inscribed into the available space.
-      Possible values: `:tight`, `:loose`.
-    - `child`: The child widget to be flexed.
 
-   A `flexible` widget must be a descendant of a `row`, `column`, or `flex`, and the path from the `flexible` widget to its enclosing `row`, `column` or `flex` must contain only `StatelessWidget`s or `StatefulWidget`s (not other kinds of widgets, like `RenderObjectWidget`s)."
+Using a `flexible` widget gives a child of a `row`, `column`, or `flex`
+the flexibility to expand to fill the available space in the main axis (e.g., horizontally for a `row` or vertically for a `column`), but,
+unlike `expanded`, `flexible` does not require the child to fill the available space.
+
+Args:
+
+- `:flex` — number, default: 1. The flex factor to use for this child.
+- `:fit` — FlexFit, default: `:loose`. How the child is inscribed into the available space. Possible values: `:tight`, `:loose`.
+- `child` — The child widget to be flexed.
+
+A `flexible` widget must be a descendant of a `row`, `column`, or `flex`, and the path from the `flexible` widget to its enclosing `row`, `column` or `flex` must contain only `StatelessWidget`s or `StatefulWidget`s (not other kinds of widgets, like `RenderObjectWidget`s)."
   ([k0 v0 & args]
    (let [[args children] (ut/key-values-args-and-children (concat [k0 v0] args))]
      (fx/flexible* args (last children))))
@@ -1070,95 +1105,92 @@
 
 (defn ^w/Widget layout-builder
   "Builds a widget tree that can depend on the parent widget's size.
-   
-   - builder: (fn [context constraints])
 
-   Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
+- `builder` — `(fn [context constraints])`
 
-   The builder function is called in the following situations:
+Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
 
-   The first time the widget is laid out.
-    - When the parent widget passes different layout constraints.
-    - When the parent widget updates this widget. 
-    - When the dependencies that the builder function subscribes to change. 
-   
-   The builder function is not called during layout if the parent passes the same constraints repeatedly."
+The builder function is called in the following situations:
+
+- The first time the widget is laid out.
+- When the parent widget passes different layout constraints.
+- When the parent widget updates this widget.
+- When the dependencies that the builder function subscribes to change.
+
+The builder function is not called during layout if the parent passes the same constraints repeatedly."
   [builder]
   (lbd/layout-builder* builder))
 
 (defn ^w/Widget future-builder
   "Builds a widget tree that can depend on the parent widget's size.
-   
-   - builder: (fn [context constraints])
 
-   Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
+- `builder` — `(fn [context constraints])`
 
-   The builder function is called in the following situations:
+Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
 
-   The first time the widget is laid out.
-    - When the parent widget passes different layout constraints.
-    - When the parent widget updates this widget. 
-    - When the dependencies that the builder function subscribes to change. 
-   
-   The builder function is not called during layout if the parent passes the same constraints repeatedly."
+The builder function is called in the following situations:
+
+- The first time the widget is laid out.
+- When the parent widget passes different layout constraints.
+- When the parent widget updates this widget.
+- When the dependencies that the builder function subscribes to change.
+
+The builder function is not called during layout if the parent passes the same constraints repeatedly."
   [future builder]
   (fbd/future-builder* future builder))
 
 (defn ^w/Widget stream-builder
   "Builds a widget tree that can depend on the parent widget's size.
-   
-   - builder: (fn [context constraints])
 
-   Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
+- `builder` — `(fn [context constraints])`
 
-   The builder function is called in the following situations:
+Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
 
-   The first time the widget is laid out.
-    - When the parent widget passes different layout constraints.
-    - When the parent widget updates this widget. 
-    - When the dependencies that the builder function subscribes to change. 
-   
-   The builder function is not called during layout if the parent passes the same constraints repeatedly."
+The builder function is called in the following situations:
+
+- The first time the widget is laid out.
+- When the parent widget passes different layout constraints.
+- When the parent widget updates this widget.
+- When the dependencies that the builder function subscribes to change.
+
+The builder function is not called during layout if the parent passes the same constraints repeatedly."
   [stream builder]
   (sbd/stream-builder* stream builder))
 
 (defn ^w/Widget row
   "A widget that displays its children in a horizontal array.
 
-   To cause a child to expand to fill the available horizontal space, wrap the child in an Expanded widget.
+To cause a child to expand to fill the available horizontal space, wrap the child in an Expanded widget.
 
-   The Row widget does not scroll (and in general it is considered an error to have more children in a Row than will fit in the available room).
-   If you have a line of widgets and want them to be able to scroll if there is insufficient room, consider using a ListView.
+The Row widget does not scroll (and in general it is considered an error to have more children in a Row than will fit in the available room).
+If you have a line of widgets and want them to be able to scroll if there is insufficient room, consider using a ListView.
 
-   For a vertical variant, see `column`.
+For a vertical variant, see `column`.
 
-   If you only have one child, then consider using Align or Center to position the child.
+If you only have one child, then consider using Align or Center to position the child.
 
-   By default, `:cross-axis-alignment` is `:center`, which centers the children in the vertical axis. If several of the children contain text, this is likely to make them visually misaligned if they have different font metrics (for example because they differ in TextStyle.fontSize or other TextStyle properties, or because they use different fonts due to being written in different scripts). Consider using `:cross-axis-alignment` `:baseline` instead.
-   
-   Args:
-    - `:key` An identifier for the row.
-    - `:spacing` (number, default: 0): The spacing between each child widget.
-    - `:main-axis-alignment` (keyword or MainAxisAlignment, default: `:start`): The alignment of the children along the main axis.
-      Possible values: `:center`, `:start`, `:end`, `:space-between`, `:space-around`, `:space-evenly`.
-    - `:main-axis-size` (keyword or MainAxisSize, default: :min): The size of the row in the main axis.
-      Possible values: :max, :min.
-    - `:cross-axis-alignment` (keyword or CrossAxisAlignment, default: `:center`): The alignment of the children along the cross axis.
-      Possible values: `:center`, `:start`, `:end`, `:stretch`, `:baseline`.
-    - `:text-direction` (keyword or TextDirection, default: `:ltr`): The direction of the text.
-      Possible values: `:ltr`, `:rtl`.
-    - `:text-baseline` (keyword or TextBaseline, default: `:alphabetic`): The baseline alignment for the text.
-      Possible values: `:alphabetic`, `:ideographic`.
-    - `:vertical-direction` (keyword or VerticalDirection, default: `:down`): The direction in which the children are placed vertically.
-        Possible values: `:top`, `:down`.
-   
-   ```clojure
-    (row {:main-axis-alignment :center :spacing 10} 
-      (text \"Hello, World!\")
-      (text \"This is a row!\"))
-    ```
-   
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Row-class.html)"
+By default, `:cross-axis-alignment` is `:center`, which centers the children in the vertical axis. If several of the children contain text, this is likely to make them visually misaligned if they have different font metrics (for example because they differ in TextStyle.fontSize or other TextStyle properties, or because they use different fonts due to being written in different scripts). Consider using `:cross-axis-alignment` `:baseline` instead.
+
+Args:
+
+- `:key` — An identifier for the row.
+- `:spacing` — number, default: 0. The spacing between each child widget.
+- `:main-axis-alignment` — keyword or MainAxisAlignment, default: `:start`. The alignment of the children along the main axis. Possible values: `:center`, `:start`, `:end`, `:space-between`, `:space-around`, `:space-evenly`.
+- `:main-axis-size` — keyword or MainAxisSize, default: `:min`. The size of the row in the main axis. Possible values: `:max`, `:min`.
+- `:cross-axis-alignment` — keyword or CrossAxisAlignment, default: `:center`. The alignment of the children along the cross axis. Possible values: `:center`, `:start`, `:end`, `:stretch`, `:baseline`.
+- `:text-direction` — keyword or TextDirection, default: `:ltr`. The direction of the text. Possible values: `:ltr`, `:rtl`.
+- `:text-baseline` — keyword or TextBaseline, default: `:alphabetic`. The baseline alignment for the text. Possible values: `:alphabetic`, `:ideographic`.
+- `:vertical-direction` — keyword or VerticalDirection, default: `:down`. The direction in which the children are placed vertically. Possible values: `:top`, `:down`.
+
+Example:
+
+```clojure
+(row {:main-axis-alignment :center :spacing 10}
+  (text \"Hello, World!\")
+  (text \"This is a row!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Row-class.html)"
   ([] (row {}))
   ([& args-children]
    (let [[args children] (ut/key-values-args-and-children args-children)]
@@ -1222,46 +1254,48 @@
 
 (defn ^w/Widget stack
   "A widget that positions its children relative to the edges of its box.
-   
-   This class is useful if you want to overlap several children in a simple way, for example having some text and an image, overlaid with a gradient and a button attached to the bottom.
-   
-   Args:
-    - `:key` An identifier for the stack.
-    - `:alignment` (Alignment, default: AlignmentDirectional.center): How to align the non-positioned and partially-positioned children in the stack.
-    - `:text-direction` (TextDirection, default: TextDirection.ltr): The text direction to use for the children.
-    - `:fit` (StackFit, default: StackFit.loose): How to size the non-positioned children in the stack.
-      Possible values: `:loose`, `:expand`.
-    - `:clip` (Clip, default: Clip.hardEdge): How to clip the children.
-      Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
-   
-   Children: The widgets below this widget in the tree. Can contain nested lists of children and null values.
 
-   [Flutter doc](https://api.flutter.dev/flutter/widgets/Stack-class.html)"
+This class is useful if you want to overlap several children in a simple way, for example having some text and an image, overlaid with a gradient and a button attached to the bottom.
+
+Args:
+
+- `:key` — An identifier for the stack.
+- `:alignment` — Alignment, default: `AlignmentDirectional.center`. How to align the non-positioned and partially-positioned children in the stack.
+- `:text-direction` — TextDirection, default: `TextDirection.ltr`. The text direction to use for the children.
+- `:fit` — StackFit, default: `StackFit.loose`. How to size the non-positioned children in the stack. Possible values: `:loose`, `:expand`.
+- `:clip` — Clip, default: `Clip.hardEdge`. How to clip the children. Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
+
+Children: The widgets below this widget in the tree. Can contain nested lists of children and null values.
+
+[Flutter doc](https://api.flutter.dev/flutter/widgets/Stack-class.html)"
   ([] (st/stack* []))
   ([& args] (st/stack* args)))
 
 (defn ^w/Widget positioned
   "A widget that controls where a child of a `stack` is positioned.
 
-   A Positioned widget must be a descendant of a `stack`, and the path from the Positioned widget to its enclosing Stack must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
+A Positioned widget must be a descendant of a `stack`, and the path from the Positioned widget to its enclosing Stack must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
 
-   Args:
-    - args: A map of arguments or inline key-value pairs.
-      - `:key` An identifier for the positioned widget.
-      - `:left` / `:l` (number, default: nil): The distance of the child's left edge from the left of the stack.
-      - `:top` / `:t` (number, default: nil): The distance of the child's top edge from the top of the stack.
-      - `:right` / `:r` (number, default: nil): The distance of the child's right edge from the right of the stack.
-      - `:bottom` / `:b` (number, default: nil): The distance of the child's bottom edge from the bottom of the stack.
-      - `:width` / `:w` (number, default: nil): The child's width. Only two of `:left`, `:right`, `:width` may be set.
-      - `:height` / `:h` (number, default: nil): The child's height. Only two of `:top`, `:bottom`, `:height` may be set.
-    - child: The widget below this widget in the tree.
+Args:
 
-   ```clojure
-   (positioned {:left 10 :top 20} (text \"Hello, World!\"))
-   (positioned :left 10 :top 20 (text \"Hello, World!\"))
-   ```
+- `args` — A map of arguments or inline key-value pairs.
+  - `:key` — An identifier for the positioned widget.
+  - `:left` / `:l` — number, default: `nil`. The distance of the child's left edge from the left of the stack.
+  - `:top` / `:t` — number, default: `nil`. The distance of the child's top edge from the top of the stack.
+  - `:right` / `:r` — number, default: `nil`. The distance of the child's right edge from the right of the stack.
+  - `:bottom` / `:b` — number, default: `nil`. The distance of the child's bottom edge from the bottom of the stack.
+  - `:width` / `:w` — number, default: `nil`. The child's width. Only two of `:left`, `:right`, `:width` may be set.
+  - `:height` / `:h` — number, default: `nil`. The child's height. Only two of `:top`, `:bottom`, `:height` may be set.
+- `child` — The widget below this widget in the tree.
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Positioned-class.html)"
+Examples:
+
+```clojure
+(positioned {:left 10 :top 20} (text \"Hello, World!\"))
+(positioned :left 10 :top 20 (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Positioned-class.html)"
   ([args child]
    (pos/positioned* args child))
   ([k0 v0 & args]
@@ -1333,19 +1367,21 @@
 
 (defn ^w/Widget opacity
   "A widget that makes its child partially transparent.
-   
-   This class paints its child into an intermediate buffer and then blends the child back into the scene partially transparent.
-   
-   For values of opacity other than 0.0 and 1.0, this class is relatively expensive because it requires painting the child into an intermediate buffer. For the value 0.0, the child is not painted at all. 
-   
-   For the value 1.0, the child is painted immediately without an intermediate buffer.
-   
-   ```clojure
-   (opacity 0.5 (text \"Hello, World!\"))
-   (opacity 0.5 :always-include-semantics true (text \"Hello, World!\"))
-   ```
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/Opacity-class.html)"
+This class paints its child into an intermediate buffer and then blends the child back into the scene partially transparent.
+
+For values of opacity other than 0.0 and 1.0, this class is relatively expensive because it requires painting the child into an intermediate buffer. For the value 0.0, the child is not painted at all.
+
+For the value 1.0, the child is painted immediately without an intermediate buffer.
+
+Examples:
+
+```clojure
+(opacity 0.5 (text \"Hello, World!\"))
+(opacity 0.5 :always-include-semantics true (text \"Hello, World!\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Opacity-class.html)"
   [opacity & args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (op/opacity* opacity args child)))
@@ -1353,56 +1389,50 @@
 (defn ^w/Widget decorated
   "A widget that paints a Decoration either before or after its child paints.
 
-  Args:
-   - with-decoration: the decoration to paint, plus `:position`. Accepts a map or
-     inline/trailing key-value pairs. Everything except `:position` is passed to
-     `flutter-cljd.types/decoration`, so all of its keys and nested map/keyword
-     forms work here — see that function for the full reference:
-     - `:position` - where to paint relative to the child: `:background`
-       (default) or `:foreground` (a `DecorationPosition` is also accepted).
-     - `:shape` - `:rectangle` (default) / `:circle`, or a `ShapeBorder`
-     - `:color` - fill color (`Color`, keyword, hex, `[r g b]`)
-     - `:gradient` - a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
-     - `:border` - width number / color / `{:width :color :style :align}` /
-       per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`;
-       a uniform border may use `:gradient` instead of a color for a gradient stroke
-     - `:border-radius` - number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
-     - `:box-shadow` / `:shadow` / `:shadows` - one or many
-       `{:color :offset :blur :spread :blur-style :inset}` (or `BoxShadow`)
-     - `:image` - a `DecorationImage` background
-     - `:background-blend-mode` - a `BlendMode` or keyword (`:multiply` …)
-   - child: The widget to decorate
+Args:
 
-  The decoration position determines whether to paint the decoration before the child
-  (background) or after the child (foreground).
+- `with-decoration` — the decoration to paint, plus `:position`. Accepts a map or inline/trailing key-value pairs. Everything except `:position` is passed to `flutter-cljd.types/decoration`, so all of its keys and nested map/keyword forms work here — see that function for the full reference:
+  - `:position` — where to paint relative to the child: `:background` (default) or `:foreground` (a `DecorationPosition` is also accepted).
+  - `:shape` — `:rectangle` (default) / `:circle`, or a `ShapeBorder`
+  - `:color` — fill color (`Color`, keyword, hex, `[r g b]`)
+  - `:gradient` — a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
+  - `:border` — width number / color / `{:width :color :style :align}` / per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`; a uniform border may use `:gradient` instead of a color for a gradient stroke
+  - `:border-radius` — number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
+  - `:box-shadow` / `:shadow` / `:shadows` — one or many `{:color :offset :blur :spread :blur-style :inset}` (or `BoxShadow`)
+  - `:image` — a `DecorationImage` background
+  - `:background-blend-mode` — a `BlendMode` or keyword (`:multiply` …)
+- `child` — The widget to decorate
 
-  Examples:
-  ```clojure
-  ;; Simple colored background
-  (decorated {:color :blue} 
-    (text \"Hello\"))
+The decoration position determines whether to paint the decoration before the child (background) or after the child (foreground).
 
-  ;; Rounded corners and border
-  (decorated :border-radius 8
-             :border {:width 2 :color :black}
-    (text \"Hello\"))
-    
-  ;; Gradient background with shadow
-  (decorated {:gradient {:type :linear
-                         :colors [:blue :green]
-                         :begin :top-left
-                         :end :bottom-right}
-              :box-shadow [{:color :black
-                           :blur-radius 10}]}
-    (text \"Hello\"))
+Examples:
 
-  ;; Foreground decoration
-  (decorated :position m/DecorationPosition.foreground
-             :gradient {:type :linear :colors [:transparent :black]}
-    (image \"background.jpg\"))
-  ```
+```clojure
+;; Simple colored background
+(decorated {:color :blue}
+  (text \"Hello\"))
 
-  [Flutter docs](https://api.flutter.dev/flutter/widgets/DecoratedBox-class.html)"
+;; Rounded corners and border
+(decorated :border-radius 8
+           :border {:width 2 :color :black}
+  (text \"Hello\"))
+
+;; Gradient background with shadow
+(decorated {:gradient {:type :linear
+                       :colors [:blue :green]
+                       :begin :top-left
+                       :end :bottom-right}
+            :box-shadow [{:color :black
+                         :blur-radius 10}]}
+  (text \"Hello\"))
+
+;; Foreground decoration
+(decorated :position m/DecorationPosition.foreground
+           :gradient {:type :linear :colors [:transparent :black]}
+  (image \"background.jpg\"))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/DecoratedBox-class.html)"
   ([] (dec/decorated* {} nil))
   ([& args]
    (let [[args children] (ut/key-values-args-and-children args)
@@ -1414,45 +1444,50 @@
 (defn ^w/Widget keyed
   "A widget that assigns a key to a child widget.
 
-  The KeyedSubtree widget is useful when you want to give a specific key to a widget
-  in the tree. This is often used when you need to maintain the state of a specific
-  widget across rebuilds, or when you need to uniquely identify a widget for testing
-  or animation purposes.
+The KeyedSubtree widget is useful when you want to give a specific key to a widget
+in the tree. This is often used when you need to maintain the state of a specific
+widget across rebuilds, or when you need to uniquely identify a widget for testing
+or animation purposes.
 
-  Args:
-   - key: The key to assign to the child widget. Can be any value that can be
-          converted to a Key using widget-key.
-   - child: The widget to assign the key to.
+Args:
 
-  Example:
-  ```clojure
-  ;; Assign a key to a text widget
-  (keyed :my-text
-    (text \"Hello World\"))
+- `key` — The key to assign to the child widget. Can be any value that can be converted to a Key using `widget-key`.
+- `child` — The widget to assign the key to.
 
-  ;; Use with a stateful widget to preserve state
-  (keyed \"counter-1\"
-    (stateful-widget
-      (counter-widget)))
-  ```
+Example:
 
-  [Flutter docs](https://api.flutter.dev/flutter/widgets/KeyedSubtree-class.html)"
+```clojure
+;; Assign a key to a text widget
+(keyed :my-text
+  (text \"Hello World\"))
+
+;; Use with a stateful widget to preserve state
+(keyed \"counter-1\"
+  (stateful-widget
+    (counter-widget)))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/KeyedSubtree-class.html)"
   [key child]
   (kyd/keyed* key child))
 
 (defn ^w/Widget padding
   "Creates a Padding widget with the specified padding and child.
-     The padding can be specified as a number, a map or key-value pairs of insets, or four numbers.
-     Examples:
-     ```clojure
-     (padding 8 child) ;; Padding(padding: EdgeInsets.all(8))
-     (padding {:all 8} child) ;; Padding(padding: EdgeInsets.all(8))
-     (padding {:left 8 :right 16} child) ;; Padding(padding: EdgeInsets.only(left: 8, right: 16))
-     (padding [8 16 24 32] child) ;; Padding(padding: EdgeInsets.fromLTRB(8, 16, 24, 32))
-     (padding (insets 8) child) ;; Padding(padding: EdgeInsets.all(8))
-     ```
-     If the padding argument is a map, the keys :all, :left, :right, :start, :end, :vertical, :horizontal, :top, and :bottom are used to specify the padding.
-     If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding."
+
+The padding can be specified as a number, a map or key-value pairs of insets, or four numbers.
+
+Examples:
+
+```clojure
+(padding 8 child) ;; Padding(padding: EdgeInsets.all(8))
+(padding {:all 8} child) ;; Padding(padding: EdgeInsets.all(8))
+(padding {:left 8 :right 16} child) ;; Padding(padding: EdgeInsets.only(left: 8, right: 16))
+(padding [8 16 24 32] child) ;; Padding(padding: EdgeInsets.fromLTRB(8, 16, 24, 32))
+(padding (insets 8) child) ;; Padding(padding: EdgeInsets.all(8))
+```
+
+If the padding argument is a map, the keys `:all`, `:left`, `:right`, `:start`, `:end`, `:vertical`, `:horizontal`, `:top`, and `:bottom` are used to specify the padding.
+If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding."
   ([arg0 & args]
    (cond
      (keyword? arg0)
@@ -1596,20 +1631,22 @@
 
 (defn ^w/Widget on-change-of
   "A widget that calls a function when the given value changes.
-  
-   Args:
-    - `value`: The value to listen for changes.
-    - `equal?`: The function to compare the old and new values.
-    - `on-change`: The function to call when the value changes. (fn [old new context])
-    - `child`: The child widget to rebuild when the value changes.
-   
-   Example:
-   ```clojure
-   (->> (text string))
+
+Args:
+
+- `value` — The value to listen for changes.
+- `equal?` — The function to compare the old and new values.
+- `on-change` — The function to call when the value changes. `(fn [old new context])`
+- `child` — The child widget to rebuild when the value changes.
+
+Example:
+
+```clojure
+(->> (text string)
      (on-change-of string #(print %2)))
-   ```
-   
-   - Note: The `on-change-of` doesn't listen atoms or ValueListenable objects."
+```
+
+Note: The `on-change-of` doesn't listen to atoms or ValueListenable objects."
   ([value equal? on-change child]
    (oc/on-change-of* value equal? on-change child))
   ([value on-change child]
@@ -1714,66 +1751,73 @@
 (defn ^w/Widget on-reassemble
   "A widget that calls whenever the application is reassembled during debugging, for example during hot reload.
 
-   Args:
-    - `on-reassamble`: The function to call. Note that anonymous functions are not updated during hot reload, use a named function instead.
-    - `child`: The child widget."
+Args:
+
+- `on-reassemble` — The function to call. Note that anonymous functions are not updated during hot reload, use a named function instead.
+- `child` — The child widget."
   [on-reassemble child]
   (osa/on-state-actions* {:on-reassemble on-reassemble} child))
 
-(defn ^w/Widget on-create 
+(defn ^w/Widget on-create
   "A widget that calls a function when the widget is created and inserted into the tree.
 
-   Args:
-    - `on-create`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `on-create` — The function to call.
+- `child` — The child widget."
   [on-create child]
   (osa/on-state-actions* {:on-create on-create} child))
 
 (defn ^w/Widget on-dispose
   "A widget that calls a function when the widget is removed from the tree and destroyed.
 
-   Args:
-    - `on-dispose`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `on-dispose` — The function to call.
+- `child` — The child widget."
   [on-dispose child]
   (osa/on-state-actions* {:on-dispose on-dispose} child))
 
-(defn ^w/Widget on-update 
+(defn ^w/Widget on-update
   "A widget that calls a function when the widget is updated.
 
-   Args:
-    - `on-update`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `on-update` — The function to call.
+- `child` — The child widget."
   [on-update child]
   (osa/on-state-actions* {:on-update on-update} child))
 
-(defn ^w/Widget on-did-change-dependencies 
+(defn ^w/Widget on-did-change-dependencies
   "A widget that calls a function when the widget's dependencies change.
 
-   Args:
-    - `on-did-change-dependencies`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `on-did-change-dependencies` — The function to call.
+- `child` — The child widget."
   [on-did-change-dependencies child]
   (osa/on-state-actions* {:on-did-change-dependencies on-did-change-dependencies} child))
 
 (defn ^w/Widget on-deactivate
   "A widget that calls a function when the widget is removed from the tree, but can be reinserted.
 
-   Args:
-    - `on-deactivate`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `on-deactivate` — The function to call.
+- `child` — The child widget."
   [on-deactivate child]
   (osa/on-state-actions* {:on-deactivate on-deactivate} child))
 
 (defn ^w/Widget with-managed
   "A widget that keeps, updates and disposes objects.
-   
-   Args:
-   - List of maps with the following keys:
-     - `:state`: Current state of the managed object.
-     - `:create`: The function (fn [state]) to create the object with the current state.
-     - `:update`: The function (fn [object state]) to update the object with a new state.
-   - Builder: The function (fn [context & objects]) to create a child widget with managed objects."
+
+Args:
+
+- List of maps with the following keys:
+  - `:state` — Current state of the managed object.
+  - `:create` — The function `(fn [state])` to create the object with the current state.
+  - `:update` — The function `(fn [object state])` to update the object with a new state.
+- `builder` — The function `(fn [context & objects])` to create a child widget with managed objects."
   [first second & more-and-builder]
   (let [[values builder] (if (empty? more-and-builder)
                            [[first] second]
@@ -1786,22 +1830,23 @@
 
 (defn ^w/Widget with-motion
   "Wraps a widget with motion animations that may change dynamically.
-  
-   Use this when the initial animation state depends on external values, requiring recomputation.
-   If the animation state is static, prefer using the `:managed` key in `widget`
-   or the `widget->>` macro for a more concise approach.
 
-   The `builder` function receives context and motion controllers for each motion and returns a widget.
+Use this when the initial animation state depends on external values, requiring recomputation.
+If the animation state is static, prefer using the `:managed` key in `widget`
+or the `widget->>` macro for a more concise approach.
 
-   ### Example:
-   ```clojure
-   (with-motion 
-     vsync
-     (to current-opacity 1.0)
-     (fn [ctx controller]
-       (->> (text \"Example\")
+The `builder` function receives context and motion controllers for each motion and returns a widget.
+
+Example:
+
+```clojure
+(with-motion
+  vsync
+  (to current-opacity 1.0)
+  (fn [ctx controller]
+    (->> (text \"Example\")
          (animated controller opacity))))
-   ```"
+```"
   [vsync motion0 motion1 & more-and-builder]
   (let [[motions builder] (if (empty? more-and-builder)
                             [[motion0] motion1]
@@ -2029,18 +2074,20 @@
 (defn ^w/Widget life-cycle-observer
   "A widget that calls a function when the widget's lifecycle state changes.
 
-   Args:
-    - `on-change`: The function to call. (fn [state]). State can be one of `:detached`, `:resumed`, `:inactive`, `:hidden`, `:paused`
-    - `child`: The child widget."
+Args:
+
+- `on-change` — The function to call. `(fn [state])`. State can be one of `:detached`, `:resumed`, `:inactive`, `:hidden`, `:paused`
+- `child` — The child widget."
   [observer child]
   (lco/LifeCycleObserver observer child))
 
-(defn ^w/Widget on-app-became-active 
+(defn ^w/Widget on-app-became-active
   "A widget that calls a function when the app becomes active.
 
-   Args:
-    - `action`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `action` — The function to call.
+- `child` — The child widget."
   [action child]
   (life-cycle-observer
    (fn [state]
@@ -2051,9 +2098,10 @@
 (defn ^w/Widget on-app-became-inactive
   "A widget that calls a function when the app becomes inactive.
 
-   Args:
-    - `action`: The function to call.
-    - `child`: The child widget."
+Args:
+
+- `action` — The function to call.
+- `child` — The child widget."
   [action child]
   (life-cycle-observer
    (fn [state]
@@ -2064,12 +2112,13 @@
 (defn ^w/Widget observe-visibility
   "A widget that calls a function when the widget's visibility changes.
 
-   Args:
-    - `:on-enter`: The function to call when the widget becomes fully visible.
-    - `:on-first-enter`: The function to call when the widget becomes fully visible for the first time.
-    - `:on-exit`: The function to call when the widget becomes fully invisible.
-    - `:on-change`: The function to call. (fn [VisibilityInfo]).
-    - `child`: The child widget."
+Args:
+
+- `:on-enter` — The function to call when the widget becomes fully visible.
+- `:on-first-enter` — The function to call when the widget becomes fully visible for the first time.
+- `:on-exit` — The function to call when the widget becomes fully invisible.
+- `:on-change` — The function to call. `(fn [VisibilityInfo])`.
+- `child` — The child widget."
   [& args]
   (let [[args children] (ut/key-values-args-and-children args)]
     (ovc/observe-visibility* args (last children))))
@@ -2077,22 +2126,22 @@
 (defn ^w/Widget unconstrained
   "A widget that imposes no constraints on its child, allowing it to render at its \"natural\" size.
 
-   This allows a child to render at the size it would render if it were alone on an infinite canvas with no constraints.
-   This container will then attempt to adopt the same size, within the limits of its own constraints.
-   If it ends up with a different size, it will align the child based on alignment.
-   If the box cannot expand enough to accommodate the entire child, the child will be clipped.
+This allows a child to render at the size it would render if it were alone on an infinite canvas with no constraints.
+This container will then attempt to adopt the same size, within the limits of its own constraints.
+If it ends up with a different size, it will align the child based on alignment.
+If the box cannot expand enough to accommodate the entire child, the child will be clipped.
 
-   Args:
-      - `args`: Optional map of arguments:
-        - `:key` - Widget key
-        - `:text-direction` - The text direction to use for the child.
-        - `:alignment` - The alignment of the child.
-        - `:axis` - The axis to retain constraints on, if any.
-        - `:clip` - The clip behavior to use when painting the child.
-          Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
-      - `child`: The child widget.
+Args:
 
-   [Flutter docs](https://api.flutter.dev/flutter/widgets/UnconstrainedBox-class.html)"
+- `args` — Optional map of arguments:
+  - `:key` — Widget key
+  - `:text-direction` — The text direction to use for the child.
+  - `:alignment` — The alignment of the child.
+  - `:axis` — The axis to retain constraints on, if any.
+  - `:clip` — The clip behavior to use when painting the child. Possible values: `:none`, `:hard-edge`, `:anti-alias`, `:anti-alias-with-save-layer`.
+- `child` — The child widget.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/UnconstrainedBox-class.html)"
   [arg0 & args]
   (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
     (uc/unconstrained* args (last children))))
@@ -2100,35 +2149,42 @@
 (defn ^w/Widget hero
   "A widget that marks its child as being a candidate for hero animations.
 
-   When a PageRoute is pushed or popped with the Navigator, the entire screen's content is replaced.
-   An old route disappears and a new route appears.
-   If there's a common visual feature on both routes then it can be helpful for orienting the user for the feature to physically move from one page to the other during the routes' transition.
-   Such an animation is called a hero animation. The hero widgets \"fly\" in the Navigator's overlay during the transition and while they're in-flight they're, by default, not shown in their original locations in the old and new routes.
-   
-   Args:
-    - `tag`: A tag to identify the hero. Tags must be unique within the same route.
-    - args: Optional map of arguments:
-      - `:key` - Widget key
-      - `:create-rect-tween` - Defines how the destination hero's bounds change as it flies from the starting route to the destination route.
-        ```clojure
-        (fn [^Rect? begin, ^Rect? end])])
-        ```
-      - `:flight-shuttle-builder` - Optional override to supply a widget that's shown during the hero's flight.
-         ```clojure
-         (fn [^BuildContext flightContext
-              ^Animation<double> animation
-              ^HeroFlightDirection flightDirection
-              ^BuildContext fromHeroContext
-              ^BuildContext toHeroContext])])
-          ```
-      - `:placeholder-builder` - Placeholder widget left in place as the Hero's child once the flight takes off.
-         ```clojure
-         (fn [^BuildContext flightContext
-              ^Size heroSize
-              ^Widget child])])
-         ```
-      - `:transition-on-user-gestures` - Whether to perform the hero transition if the PageRoute transition was triggered by a user gesture, such as a back swipe on iOS. Default is false.
-    - `child`: The child widget to animate."
+When a PageRoute is pushed or popped with the Navigator, the entire screen's content is replaced.
+An old route disappears and a new route appears.
+If there's a common visual feature on both routes then it can be helpful for orienting the user for the feature to physically move from one page to the other during the routes' transition.
+Such an animation is called a hero animation. The hero widgets \"fly\" in the Navigator's overlay during the transition and while they're in-flight they're, by default, not shown in their original locations in the old and new routes.
+
+Args:
+
+- `tag` — A tag to identify the hero. Tags must be unique within the same route.
+- `args` — Optional map of arguments:
+  - `:key` — Widget key
+  - `:create-rect-tween` — Defines how the destination hero's bounds change as it flies from the starting route to the destination route.
+
+    ```clojure
+    (fn [^Rect? begin, ^Rect? end])
+    ```
+
+  - `:flight-shuttle-builder` — Optional override to supply a widget that's shown during the hero's flight.
+
+    ```clojure
+    (fn [^BuildContext flightContext
+         ^Animation<double> animation
+         ^HeroFlightDirection flightDirection
+         ^BuildContext fromHeroContext
+         ^BuildContext toHeroContext])
+    ```
+
+  - `:placeholder-builder` — Placeholder widget left in place as the Hero's child once the flight takes off.
+
+    ```clojure
+    (fn [^BuildContext flightContext
+         ^Size heroSize
+         ^Widget child])
+    ```
+
+  - `:transition-on-user-gestures` — Whether to perform the hero transition if the PageRoute transition was triggered by a user gesture, such as a back swipe on iOS. Default is `false`.
+- `child` — The child widget to animate."
   ([tag child] (hr/hero* tag {} child))
   ([tag arg0 & args]
    (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
@@ -2136,37 +2192,41 @@
 
 (defn ^w/Widget listening
   "A widget whose content stays synced with a `ValueListenable` or an atom.
-   
-   Given a `ValueListenable<dynamic>` or an atom, a builder which builds widgets from concrete value
-   this widget will automatically register itself as a listener of the `ValueListenable` and call the builder with updated values when the value changes.
 
-   This widget accepts:
-     1. An `ValueListenable` or `Atom`.
-     2. A builder function that creates the child widget. (fn [value Widget?])
-     3. An optional list of arguments that will be passed before the value to the builder function.
-     4. An optional child widget that is passed to the builder function.
+Given a `ValueListenable<dynamic>` or an atom, a builder which builds widgets from concrete value
+this widget will automatically register itself as a listener of the `ValueListenable` and call the builder with updated values when the value changes.
 
-  ```clojure
-  (widget
-    :managed [counter (value 0)]
-    (column
-      (listening counter #(text \"Counter: \" %))
-      (button #(swap! counter inc) (text \"Increase\"))))
-  ```
-     If your builder function contains a subtree that doesn't depend on the value,
-     it's more efficient to build that subtree once instead of rebuilding it on every value changing
-     
-     To achieve this, listening can be inserted before any modifier call:
-     
-  ```clojure
-   (->> (some-widget)
-        (listening counter text))
-   
-  (widget
-    :managed [width (value 10.0)]
-    (->> (some-widget)
-         (listening width sized :width)))
-  ```"
+This widget accepts:
+
+1. A `ValueListenable` or `Atom`.
+2. A builder function that creates the child widget. `(fn [value Widget?])`
+3. An optional list of arguments that will be passed before the value to the builder function.
+4. An optional child widget that is passed to the builder function.
+
+Example:
+
+```clojure
+(widget
+  :managed [counter (value 0)]
+  (column
+    (listening counter #(text \"Counter: \" %))
+    (button #(swap! counter inc) (text \"Increase\"))))
+```
+
+If your builder function contains a subtree that doesn't depend on the value,
+it's more efficient to build that subtree once instead of rebuilding it on every value changing
+
+To achieve this, listening can be inserted before any modifier call:
+
+```clojure
+(->> (some-widget)
+     (listening counter text))
+
+(widget
+  :managed [width (value 10.0)]
+  (->> (some-widget)
+       (listening width sized :width)))
+```"
   ([listenable builder & values]
    (lstn/listening* listenable builder values)))
 
@@ -2202,15 +2262,16 @@ Options:
 (defn ^w/Widget drag-target
   "Drop zone that receives data from `draggable` widgets.
 
-  `builder` is `(fn [context candidate-data])` — called to build the widget,
-  where `candidate-data` is a seq of `:data` values from draggables currently hovering.
+`builder` is `(fn [context candidate-data])` — called to build the widget,
+where `candidate-data` is a seq of `:data` values from draggables currently hovering.
 
-  Options:
-    :on-will-accept   — `(fn [data offset])` return truthy to accept the draggable
-    :on-accept        — `(fn [data offset])` called when an accepted draggable is dropped
-    :on-leave         — `(fn [data])` called when a draggable leaves the target
-    :on-move          — `(fn [data offset])` called on each move while hovering
-    :hit-test-behavior — HitTestBehavior (default `:translucent`)"
+Options:
+
+- `:on-will-accept` — `(fn [data offset])` return truthy to accept the draggable
+- `:on-accept` — `(fn [data offset])` called when an accepted draggable is dropped
+- `:on-leave` — `(fn [data])` called when a draggable leaves the target
+- `:on-move` — `(fn [data offset])` called on each move while hovering
+- `:hit-test-behavior` — HitTestBehavior (default `:translucent`)"
   [builder & {:keys [key on-will-accept on-accept on-leave on-move hit-test-behavior] :as args}]
   (drg/drag-target* (assoc args :builder builder)))
 
@@ -2224,66 +2285,72 @@ Options:
 (defn ^w/Widget list-view
   "Scrollable list of widgets.
 
-  Trailing `fn` → lazy builder `(fn [ctx item-or-index] ...)`.
-  Two trailing `fn`s → item builder + separator builder.
-  A collection or number before the builder(s) sets the data source.
+Trailing `fn` → lazy builder `(fn [ctx item-or-index] ...)`.
+Two trailing `fn`s → item builder + separator builder.
+A collection or number before the builder(s) sets the data source.
 
-  ```clojure
-  ;; static children
-  (list-view (text \"A\") (text \"B\") (text \"C\"))
-  ;; builder from collection — fn receives element
-  (list-view items (fn [ctx item] (text (:name item))))
-  ;; builder from count — fn receives index
-  (list-view 100 (fn [ctx i] (text (str i))))
-  ;; separated — second fn builds separators
-  (list-view items
-             (fn [ctx item] (text (:name item)))
-             (fn [ctx i] (divider)))
-  ;; infinite builder (no data source)
-  (list-view (fn [ctx i] (text (str i))))
-  ```
+Examples:
 
-  Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
-  `:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`), `:shrink-wrap`,
-  `:padding`, `:clip`, `:cache-extent`.
+```clojure
+;; static children
+(list-view (text \"A\") (text \"B\") (text \"C\"))
+;; builder from collection — fn receives element
+(list-view items (fn [ctx item] (text (:name item))))
+;; builder from count — fn receives index
+(list-view 100 (fn [ctx i] (text (str i))))
+;; separated — second fn builds separators
+(list-view items
+           (fn [ctx item] (text (:name item)))
+           (fn [ctx i] (divider)))
+;; infinite builder (no data source)
+(list-view (fn [ctx i] (text (str i))))
+```
 
-  Extra: `:item-extent`,
-  `:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
+Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
+`:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`), `:shrink-wrap`,
+`:padding`, `:clip`, `:cache-extent`.
+
+Extra: `:item-extent`,
+`:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
   [& args]
   (scrl/list-view* args))
 
 (defn ^w/Widget grid-view
   "Scrollable grid of widgets.
 
-  Requires `:cross-axis-count` or `:max-cross-axis-extent`.
-  Trailing `fn` → lazy builder; collection/number before it sets data source.
+Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+Trailing `fn` → lazy builder; collection/number before it sets data source.
 
-  ```clojure
-  (grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
-  (grid-view :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
-  (grid-view :max-cross-axis-extent 200 50 (fn [ctx i] (text (str i))))
-  ```
+Examples:
 
-  Grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
-  `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
+```clojure
+(grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
+(grid-view :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
+(grid-view :max-cross-axis-extent 200 50 (fn [ctx i] (text (str i))))
+```
 
-  Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
-  `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
+Grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
+`:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
+
+Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
+`:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
   [& args]
   (scrl/grid-view* args))
 
 (defn ^w/Widget custom-scroll-view
   "Scroll view composed of slivers.
 
-  ```clojure
-  (custom-scroll-view
-    (sliver-app-bar :title (text \"Title\") :floating true)
-    (sliver-list (text \"A\") (text \"B\")))
-  (custom-scroll-view :physics :bouncing sliver1 sliver2)
-  ```
+Examples:
 
-  Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
-  `:shrink-wrap`, `:clip`, `:cache-extent`, `:center`, `:anchor`, `:semantic-child-count`."
+```clojure
+(custom-scroll-view
+  (sliver-app-bar :title (text \"Title\") :floating true)
+  (sliver-list (text \"A\") (text \"B\")))
+(custom-scroll-view :physics :bouncing sliver1 sliver2)
+```
+
+Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
+`:shrink-wrap`, `:clip`, `:cache-extent`, `:center`, `:anchor`, `:semantic-child-count`."
   [& args]
   (let [[args slivers] (ut/key-values-args-and-children args)]
     (scrl/custom-scroll-view* args slivers)))
@@ -2291,39 +2358,43 @@ Options:
 (defn ^w/Widget single-child-scroll-view
   "Makes a single child scrollable.
 
-  ```clojure
-  (single-child-scroll-view (column (text \"A\") (text \"B\")))
-  (single-child-scroll-view :axis :horizontal child)
-  ```
+Examples:
 
-  Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
-  `:padding`, `:clip`, `:keyboard-dismiss-behavior` (`:manual`/`:on-drag`),
-  `:drag-start-behavior` (`:start`/`:down`)."
+```clojure
+(single-child-scroll-view (column (text \"A\") (text \"B\")))
+(single-child-scroll-view :axis :horizontal child)
+```
+
+Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
+`:padding`, `:clip`, `:keyboard-dismiss-behavior` (`:manual`/`:on-drag`),
+`:drag-start-behavior` (`:start`/`:down`)."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/single-child-scroll-view* args child)))
 
 (defn ^w/Widget scrollable
   "Low-level scrollable widget. Prefer `list-view`, `grid-view`, or `single-child-scroll-view`
-  unless you need direct viewport control.
+unless you need direct viewport control.
 
-  `:view-builder` is `(fn [context offset] widget)` — builds the viewport given a scroll offset.
+`:view-builder` is `(fn [context offset] widget)` — builds the viewport given a scroll offset.
 
-  Options: `:axis-direction` (`:down`/`:up`/`:left`/`:right`), `:controller`, `:physics`,
-  `:drag-start-behavior`, `:clip`."
+Options: `:axis-direction` (`:down`/`:up`/`:left`/`:right`), `:controller`, `:physics`,
+`:drag-start-behavior`, `:clip`."
   [& {:as args}]
   (scrl/scrollable* args))
 
 (defn ^w/Widget scrollbar
   "Wraps a scrollable child with a material scrollbar.
 
-  ```clojure
-  (scrollbar (list-view (text \"A\") (text \"B\")))
-  (scrollbar :thickness 6 :radius 3 (list-view ...))
-  ```
+Examples:
 
-  Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
-  `:thumb-visibility`, `:track-visibility`, `:orientation` (`:left`/`:right`/`:top`/`:bottom`)."
+```clojure
+(scrollbar (list-view (text \"A\") (text \"B\")))
+(scrollbar :thickness 6 :radius 3 (list-view ...))
+```
+
+Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
+`:thumb-visibility`, `:track-visibility`, `:orientation` (`:left`/`:right`/`:top`/`:bottom`)."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/scrollbar* args child)))
@@ -2333,23 +2404,27 @@ Options:
 (defn ^w/Widget sliver-list
   "Sliver that displays children in a list. Use inside `custom-scroll-view`.
 
-  ```clojure
-  (sliver-list (text \"A\") (text \"B\"))
-  (sliver-list items (fn [ctx item] (text (:name item))))
-  (sliver-list 100 (fn [ctx i] (text (str i))))
-  ```"
+Examples:
+
+```clojure
+(sliver-list (text \"A\") (text \"B\"))
+(sliver-list items (fn [ctx item] (text (:name item))))
+(sliver-list 100 (fn [ctx i] (text (str i))))
+```"
   [& args]
   (scrl/sliver-list* args))
 
 (defn ^w/Widget sliver-grid
   "Sliver that displays children in a grid. Use inside `custom-scroll-view`.
 
-  Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+Requires `:cross-axis-count` or `:max-cross-axis-extent`.
 
-  ```clojure
-  (sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
-  (sliver-grid :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
-  ```"
+Examples:
+
+```clojure
+(sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
+(sliver-grid :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
+```"
   [& args]
   (scrl/sliver-grid* args))
 
@@ -2362,17 +2437,19 @@ Options:
 (defn ^w/Widget sliver-padding
   "Adds padding around a sliver. Use inside `custom-scroll-view`.
 
-  ```clojure
-  (sliver-padding 16 (sliver-list ...))
-  (sliver-padding {:left 8 :right 8} (sliver-list ...))
-  ```"
+Examples:
+
+```clojure
+(sliver-padding 16 (sliver-list ...))
+(sliver-padding {:left 8 :right 8} (sliver-list ...))
+```"
   [padding sliver]
   (scrl/sliver-padding* {:padding padding} sliver))
 
 (defn ^w/Widget sliver-fill-remaining
   "Sliver that fills the remaining space in the viewport. Use inside `custom-scroll-view`.
 
-  Options: `:has-scroll-body` (default true), `:fill-overscroll`."
+Options: `:has-scroll-body` (default `true`), `:fill-overscroll`."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/sliver-fill-remaining* args child)))
@@ -2380,50 +2457,58 @@ Options:
 (defn ^w/Widget sliver-app-bar
   "Material sliver app bar for use inside `custom-scroll-view`.
 
-  ```clojure
-  (sliver-app-bar :title (text \"Title\") :floating true :snap true)
-  (sliver-app-bar :title (text \"Title\") :pinned true :expanded-height 200
-                  :flexible-space (m/FlexibleSpaceBar .background image))
-  ```
+Examples:
 
-  Options: `:title`, `:leading`, `:actions`, `:flexible-space`, `:floating`, `:pinned`,
-  `:snap`, `:stretch`, `:expanded-height`, `:collapsed-height`, `:background-color`,
-  `:foreground-color`, `:elevation`, `:toolbar-height`, `:center-title`, `:bottom`."
+```clojure
+(sliver-app-bar :title (text \"Title\") :floating true :snap true)
+(sliver-app-bar :title (text \"Title\") :pinned true :expanded-height 200
+                :flexible-space (m/FlexibleSpaceBar .background image))
+```
+
+Options: `:title`, `:leading`, `:actions`, `:flexible-space`, `:floating`, `:pinned`,
+`:snap`, `:stretch`, `:expanded-height`, `:collapsed-height`, `:background-color`,
+`:foreground-color`, `:elevation`, `:toolbar-height`, `:center-title`, `:bottom`."
   [& {:as args}]
   (scrl/sliver-app-bar* args))
 
 (defn ^w/Widget sliver-collection
   "Powerful data-driven sliver for lists, grids, and custom layouts.
-   Use inside `custom-scroll-view`. Supports diffable animations,
-   reordering, prefetching, and auto keep-alive.
+Use inside `custom-scroll-view`. Supports diffable animations,
+reordering, prefetching, and auto keep-alive.
 
-  Data source (first positional arg, optional):
-    - Collection: builder receives `(fn [ctx item] Widget)`
-    - Integer count: builder receives `(fn [ctx index] Widget)`
-    - Omitted: builder receives `(fn [ctx index] Widget)`, requires `:item-count`
+Data source (first positional arg, optional):
 
-  Last positional arg must be the builder function.
+- Collection: builder receives `(fn [ctx item] Widget)`
+- Integer count: builder receives `(fn [ctx index] Widget)`
+- Omitted: builder receives `(fn [ctx index] Widget)`, requires `:item-count`
 
-  ```clojure
-  (sliver-collection items (fn [ctx item] (text (:name item))))
-  (sliver-collection 1000 :item-extent 48 (fn [ctx i] (text (str i))))
-  (sliver-collection items :layout :grid :cross-axis-count 3
-    (fn [ctx item] (card (:title item))))
-  (sliver-collection items :key-fn :id :animate true
-    (fn [ctx item] (my-card item)))
-  ```
+Last positional arg must be the builder function.
 
-  Layout (default `:list`):
-    `:layout`     `:list` | `:grid` | `SliverGridDelegate`
-    `:item-extent` fixed main-axis extent (enables O(1) index lookup)
+Examples:
 
-  Grid options (when `:layout :grid`):
-    `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
-    `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`
+```clojure
+(sliver-collection items (fn [ctx item] (text (:name item))))
+(sliver-collection 1000 :item-extent 48 (fn [ctx i] (text (str i))))
+(sliver-collection items :layout :grid :cross-axis-count 3
+  (fn [ctx item] (card (:title item))))
+(sliver-collection items :key-fn :id :animate true
+  (fn [ctx item] (my-card item)))
+```
 
-  Diffable animations (off by default, requires `:key-fn`):
-    `:key-fn`   `(fn [item] identity-key)`
-    `:animate`  `true` | config map `{:duration :curve :insert :remove :move}`
+Layout (default `:list`):
+
+- `:layout` — `:list` | `:grid` | `SliverGridDelegate`
+- `:item-extent` — fixed main-axis extent (enables O(1) index lookup)
+
+Grid options (when `:layout :grid`):
+
+`:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
+`:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`
+
+Diffable animations (off by default, requires `:key-fn`):
+
+- `:key-fn` — `(fn [item] identity-key)`
+- `:animate` — `true` | config map `{:duration :curve :insert :remove :move}`
 
   Reorder:
     `:reorderable`  `true` — enables drag-to-reorder
