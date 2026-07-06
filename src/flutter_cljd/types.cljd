@@ -1540,6 +1540,12 @@
    Note: `:horizontal` means the left & right edges (as in `insets`), NOT
    Flutter's `Border.symmetric`, where `horizontal` is the top & bottom edges.
 
+   A uniform side map may also carry a `:gradient` (`{:width 2 :gradient {...}}`).
+   A `BoxBorder` can't hold a gradient, so `border` ignores it (the side keeps
+   its color); the gradient is honored only by `decoration`, which strokes it on
+   the smooth painter — just as `:rel`/`:smoothing` in a radius are honored only
+   by smooth-corner consumers.
+
    Examples:
    ```clojure
    (border 2)                         ;; Border.all(width: 2)
@@ -1574,6 +1580,26 @@
     ;; otherwise the whole map is one side, applied to every edge
     :else (m/Border.fromBorderSide (border-side spec))))
 
+(defn- border-gradient-of
+  "The gradient of a uniform gradient border, or nil. A gradient border is a
+   uniform side map carrying a `:gradient` (e.g. `{:width 2 :gradient {...}}`);
+   `BorderSide` can't hold a gradient, so it is honored only by `decoration`,
+   which strokes it on the smooth painter. Per-side gradients aren't supported."
+  [spec]
+  (when (and (map? spec)
+             (not (some spec border-side-keys))
+             (contains? spec :gradient))
+    (gradient (:gradient spec))))
+
+(defn- border-mentions-gradient?
+  "True when a per-side border spec smuggles a `:gradient` somewhere — an
+   unsupported combination `decoration` rejects loudly."
+  [spec]
+  (and (map? spec)
+       (some spec border-side-keys)
+       (some (fn [k] (let [v (spec k)] (and (map? v) (contains? v :gradient))))
+             border-side-keys)))
+
 (defn ^m/Decoration decoration
   "Creates a Decoration object from the specified arguments.
    Pass an existing `Decoration` (returned as is) or a map / key-value pairs.
@@ -1589,6 +1615,12 @@
     - `:border`: a width number, a color, a uniform `{:width :color :style :align}`
       map, or a per-edge `{:top :bottom :left :right :start :end :horizontal
       :vertical :all}` map (each edge is a `border-side` spec). See `border`.
+      A uniform border may carry a `:gradient` (`{:width 2 :gradient {...}}`)
+      instead of a color — the stroke is painted with that gradient. Gradient
+      borders render on the smooth path and require a rectangle (any
+      `:border-radius`, including none) or `:shape :circle`; per-side gradients
+      are unsupported. A circle gradient border is a true circle only in a
+      square box (a capsule otherwise; asserted in debug).
     - `:border-radius`: a number, an `[x y]` vector, or a per-corner map
       (`:top-left :top-right … :all`); each corner is a `radius` spec. Extra
       keys `:smoothing` (squircle) and `:rel` (radius relative to the shorter
@@ -1638,39 +1670,66 @@
          .shape shape))
 
       (instance? m/BoxShape shape)
-      (let [border (some-> (args :border) border)
+      (let [border-spec (args :border)
+            border (some-> border-spec border)
+            border-gradient (border-gradient-of border-spec)
+            side (when (some? border) (.-top ^m/Border border))
             blend-mode (some-> (args :background-blend-mode) blend-mode)
+            circle? (= shape m/BoxShape.circle)
             ;; a non-uniform border needs per-side strokes Flutter only draws on
             ;; RRects — that case falls back to a plain BoxDecoration. Images and
             ;; blend modes are handled on the smooth path (SmoothBoxPainter).
-            smooth-eligible? (and (= shape m/BoxShape.rectangle)
+            smooth-eligible? (and (not circle?)
                                   (not (instance? m/BorderRadiusGeometry (args :border-radius)))
                                   (or (nil? border)
                                       (and (instance? m/Border border)
                                            (.-isUniform ^m/Border border))))
             corners (when (and smooth-eligible? (some? (args :border-radius)))
-                      (sc/corners (args :border-radius)))]
+                      (sc/corners (args :border-radius)))
+            fill-color (some-> (args :color) color)
+            fill-gradient (some-> (args :gradient) gradient)]
+        (when (border-mentions-gradient? border-spec)
+          (throw (Exception. "Per-side gradient borders are not supported — use a uniform :border {:width _ :gradient _}")))
+        ;; a gradient border can't be expressed as a native BoxBorder — it only
+        ;; renders on the smooth painter, which strokes a uniform side
+        (when (and (some? border-gradient)
+                   (or (nil? side) (not (instance? m/Border border)) (not (.-isUniform ^m/Border border))))
+          (throw (Exception. ":border with a :gradient must be a uniform border")))
         ;; inset shadows have no native BoxDecoration form — they only render on
         ;; the smooth painter, which is rectangle-only
         (when (and has-inset? (not smooth-eligible?))
           (throw (Exception. "Inset shadows require a rectangular decoration with a uniform border")))
-        (if (or (and (some? corners) (sc/needs-smooth-path? corners))
-                has-inset?)
+        (cond
+          ;; a gradient border on a circle: Flutter can't gradient-stroke a native
+          ;; circle, so stroke a rel-0.5 outline (a true circle in a square box;
+          ;; the painter asserts squareness in debug)
+          (and circle? (some? border-gradient))
+          (sc/smooth-decoration
+           (sc/corners {:rel 0.5 :smoothing 0})
+           fill-color fill-gradient shadows side (args :image) blend-mode
+           border-gradient true)
+
+          (some? border-gradient)
+          (if smooth-eligible?
+            (sc/smooth-decoration
+             (or corners (sc/corners 0))
+             fill-color fill-gradient shadows side (args :image) blend-mode
+             border-gradient false)
+            (throw (Exception. ":border with a :gradient needs :border-radius as a spec, not a ready BorderRadius instance")))
+
+          (or (and (some? corners) (sc/needs-smooth-path? corners)) has-inset?)
           (sc/smooth-decoration
            (or corners (sc/corners 0))
-           (some-> (args :color) color)
-           (some-> (args :gradient) gradient)
-           shadows
-           (when (some? border) (.-top ^m/Border border))
-           (args :image)
-           blend-mode)
+           fill-color fill-gradient shadows side (args :image) blend-mode)
+
+          :else
           (m/BoxDecoration
-           .color (some-> (args :color) color)
+           .color fill-color
            .image (args :image)
            .border border
            .borderRadius (some-> (args :border-radius) border-radius)
            .boxShadow (some->> shadows (mapv :box))
-           .gradient (some-> (args :gradient) gradient)
+           .gradient fill-gradient
            .backgroundBlendMode blend-mode
            .shape shape)))
 

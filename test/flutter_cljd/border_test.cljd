@@ -2,7 +2,10 @@
 (ns flutter-cljd.border-test
   (:require [clojure.test :refer [deftest is testing]]
             [flutter-cljd.types :as t]
+            [flutter-cljd.smooth-corner :as sc]
             ["package:flutter/material.dart" :as m]))
+
+(def ^:private grad {:type :linear :colors [:red :blue]})
 
 (defn- approx? [^double a ^double b]
   (< (abs (- a b)) 0.001))
@@ -101,3 +104,36 @@
   (testing "decoration accepts a keyword background blend mode"
     (let [^m/BoxDecoration d (t/decoration {:color :white :background-blend-mode :multiply})]
       (is (= m/BlendMode.multiply (.-backgroundBlendMode d))))))
+
+(deftest test-gradient-border
+  (testing "a uniform border with :gradient routes to the smooth painter"
+    (let [d (t/decoration {:color :white :border {:width 3 :gradient grad}})]
+      (is (instance? sc/SmoothDecoration d))
+      ;; the stroked side keeps its width; the gradient rides alongside it
+      (is (approx? 3.0 (.-width (.-side ^sc/SmoothDecoration d))))
+      (is (some? (.-border-gradient ^sc/SmoothDecoration d)))
+      (is (not (.-assert-square? ^sc/SmoothDecoration d)))))
+
+  (testing "gradient border works with any corners (incl. sharp, radius 0)"
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:border {:width 2 :gradient grad}})))
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:border-radius 12 :border {:width 2 :gradient grad}}))))
+
+  (testing "gradient border on a circle → rel-0.5 outline, asserts squareness"
+    (let [d (t/decoration {:shape :circle :border {:width 4 :gradient grad}})]
+      (is (instance? sc/SmoothDecoration d))
+      (is (.-assert-square? ^sc/SmoothDecoration d))))
+
+  (testing "per-side gradient borders are rejected"
+    (is (thrown? Exception (t/decoration {:border {:top {:width 2 :gradient grad}}}))))
+
+  (testing "a gradient border without an explicit width defaults to 1px"
+    (let [d (t/decoration {:border {:gradient grad}})]
+      (is (instance? sc/SmoothDecoration d))
+      (is (approx? 1.0 (.-width (.-side ^sc/SmoothDecoration d))))))
+
+  (testing "a ready BorderRadius instance can't carry a gradient border"
+    (is (thrown? Exception
+                 (t/decoration {:border-radius (m/BorderRadius.circular 8)
+                                :border {:width 2 :gradient grad}})))))

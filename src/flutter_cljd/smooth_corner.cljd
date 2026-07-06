@@ -533,6 +533,7 @@
     (.restore canvas)))
 
 (deftype SmoothBoxPainter [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+                           ^m/Gradient? border-gradient ^bool assert-square?
                            ^m/DecorationImage? image ^m/BlendMode? blend-mode ^dc/Function? on-changed
                            ^:mutable ^ui/Rect? cached-rect
                            ^:mutable ^ui/Path? cached-path
@@ -552,6 +553,13 @@
                        (let [p (ui/Paint)]
                          (when (some? blend-mode) (.-blendMode! p blend-mode))
                          p))]
+      ;; a rel-0.5 outline is a true circle only in a square box; a non-square
+      ;; box paints as a capsule — flag the mismatch in debug (a `:shape :circle`
+      ;; with a gradient border is routed here since Flutter can't gradient-stroke
+      ;; a native circle)
+      (assert (or (not assert-square?)
+                  (< (.abs (- (.-width rect) (.-height rect))) 0.5))
+              "decoration :shape :circle with a gradient border renders a true circle only in a square box; this box is not square, so it paints as a capsule")
       ;; outer (drop) shadows sit under the fill; inset shadows go on top of it
       (doseq [shadow shadows]
         (when-not (:inset? shadow)
@@ -577,11 +585,16 @@
       (when (and (some? side)
                  (pos? (.-width side))
                  (= (.-style side) m/BorderStyle.solid))
-        (let [hw (/ (.-width side) 2.0)]
+        (let [hw (/ (.-width side) 2.0)
+              stroke (.toPaint side)]
+          ;; a gradient border strokes the same inset path, but its paint is a
+          ;; shader spanning the whole box instead of the side's flat color
+          (when (some? border-gradient)
+            (.-shader! stroke (.createShader border-gradient rect)))
           (.drawPath canvas
                      (smooth-path (.deflate rect hw)
                                   (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
-                     (.toPaint side))))
+                     stroke)))
       nil))
 
   (dispose [this]
@@ -605,6 +618,7 @@
 (declare lerp-smooth-decoration)
 
 (deftype SmoothDecoration [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+                           ^m/Gradient? border-gradient ^bool assert-square?
                            ^m/DecorationImage? image ^m/BlendMode? blend-mode]
   :extends (m/Decoration)
 
@@ -615,7 +629,7 @@
   ;; VoidCallback is a typedef the cljd analyzer can't resolve, so Function? is
   ;; the closest expressible type for the parameter
   (createBoxPainter [this ... ^dc/Function? on-changed]
-    (SmoothBoxPainter corners color gradient shadows side image blend-mode on-changed nil nil nil))
+    (SmoothBoxPainter corners color gradient shadows side border-gradient assert-square? image blend-mode on-changed nil nil nil))
 
   (hitTest [this ^ui/Size size ^ui/Offset position ^ui/TextDirection? .textDirection]
     (.contains (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size)) corners)
@@ -642,10 +656,11 @@
                 (= gradient (.-gradient other))
                 (= shadows (.-shadows other))
                 (= side (.-side other))
+                (= border-gradient (.-border-gradient other))
                 (= image (.-image other))
                 (= blend-mode (.-blend-mode other))))))
 
-  (hashCode [this] (hash [corners color gradient shadows side image blend-mode])))
+  (hashCode [this] (hash [corners color gradient shadows side border-gradient image blend-mode])))
 
 (defn- lerp-smooth-decoration [^SmoothDecoration a ^SmoothDecoration b ^double t]
   (SmoothDecoration
@@ -657,7 +672,9 @@
      (m/BorderSide.lerp (or (.-side a) m/BorderSide.none)
                         (or (.-side b) m/BorderSide.none)
                         t))
-   ;; DecorationImage and BlendMode have no interpolation — switch halfway
+   (m/Gradient.lerp (.-border-gradient a) (.-border-gradient b) t)
+   ;; assert-square?, DecorationImage and BlendMode don't interpolate — switch halfway
+   (if (< t 0.5) (.-assert-square? a) (.-assert-square? b))
    (if (< t 0.5) (.-image a) (.-image b))
    (if (< t 0.5) (.-blend-mode a) (.-blend-mode b))))
 
@@ -675,13 +692,20 @@
    (gradient wins over color), the image (clipped to the outline), inset
    shadows, then a uniform inside-aligned border. `blend-mode` applies to the
    fill. `shadows` is a single shadow or a collection; each entry is a
-   `{:box BoxShadow :inset? bool}` map or a bare BoxShadow (a drop shadow)."
-  [corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
-   ^m/DecorationImage? image ^m/BlendMode? blend-mode]
-  (SmoothDecoration
-   corners color gradient
-   (cond
-     (nil? shadows) nil
-     (or (map? shadows) (instance? m/BoxShadow shadows)) [(->shadow-map shadows)]
-     :else (mapv ->shadow-map shadows))
-   side image blend-mode))
+   `{:box BoxShadow :inset? bool}` map or a bare BoxShadow (a drop shadow).
+
+   `border-gradient` (optional) strokes the border with a gradient instead of
+   the side's color. `assert-square?` (optional) makes the painter assert, in
+   debug, that the box is square — used when a `:shape :circle` gradient border
+   is approximated by a rel-0.5 outline (a capsule on non-square boxes)."
+  ([corners color gradient shadows side image blend-mode]
+   (smooth-decoration corners color gradient shadows side image blend-mode nil false))
+  ([corners ^ui/Color? color ^m/Gradient? gradient shadows ^m/BorderSide? side
+    ^m/DecorationImage? image ^m/BlendMode? blend-mode ^m/Gradient? border-gradient ^bool assert-square?]
+   (SmoothDecoration
+    corners color gradient
+    (cond
+      (nil? shadows) nil
+      (or (map? shadows) (instance? m/BoxShadow shadows)) [(->shadow-map shadows)]
+      :else (mapv ->shadow-map shadows))
+    side border-gradient assert-square? image blend-mode)))

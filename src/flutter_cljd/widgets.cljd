@@ -906,7 +906,8 @@
        `:shape`, `:color`, `:gradient`, `:border`, `:border-radius`, `:box-shadow`,
        `:image`, `:background-blend-mode`. See `decoration` for the full reference.
        - `:border` - width number / color / `{:width :color :style :align}` /
-         per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`
+         per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`;
+         a uniform border may use `:gradient` instead of a color for a gradient stroke
        - `:border-radius` - number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
        - `:gradient` - a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
        - `:box-shadow` - one or many `{:color :offset :blur :spread :blur-style :inset}`
@@ -1363,7 +1364,8 @@
      - `:color` - fill color (`Color`, keyword, hex, `[r g b]`)
      - `:gradient` - a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
      - `:border` - width number / color / `{:width :color :style :align}` /
-       per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`
+       per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`;
+       a uniform border may use `:gradient` instead of a color for a gradient stroke
      - `:border-radius` - number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
      - `:box-shadow` / `:shadow` / `:shadows` - one or many
        `{:color :offset :blur :spread :blur-style :inset}` (or `BoxShadow`)
