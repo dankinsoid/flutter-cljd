@@ -157,3 +157,29 @@
   (testing "a color works as a (solid) gradient border"
     (is (instance? sc/SmoothDecoration
                    (t/decoration {:border {:width 2 :gradient :red}})))))
+
+(deftest test-gradient-stop-pairs
+  (testing "[color location] pairs set colors and stops in parallel"
+    (let [g (t/linear-gradient {:colors [[:red 0] [:white 0.25] [:blue 1]]
+                                :color-space :srgb})]
+      (is (= 3 (count (.-colors g))))
+      (is (= [0.0 0.25 1.0] (vec (.-stops g))))
+      (is (= m/Colors.red (first (.-colors g))))
+      (is (= m/Colors.blue (last (.-colors g))))))
+
+  (testing "pairs also work via the :gradient key on a decoration"
+    (is (instance? m/Gradient
+                   (t/gradient {:type :linear :colors [[:red 0] [:blue 1]]}))))
+
+  (testing "the separate :stops field is rejected — pairs are the only way"
+    (is (thrown? Exception
+                 (t/linear-gradient {:colors [:red :blue] :stops [0 1]}))))
+
+  (testing "mixing pairs with plain colors is rejected"
+    (is (thrown? Exception
+                 (t/linear-gradient {:colors [[:red 0] :blue]}))))
+
+  (testing "a plain colors list still works (spread evenly, no stops)"
+    (let [g (t/linear-gradient {:colors [:red :blue] :color-space :srgb})]
+      (is (= 2 (count (.-colors g))))
+      (is (nil? (.-stops g))))))

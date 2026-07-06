@@ -819,6 +819,29 @@
       :decal m/TileMode.decal
       (throw (Exception. (str "Invalid tile-mode: " mode))))))
 
+(defn- pair-stop?
+  "A `[color location]` gradient-stop pair: a 2-element sequential whose second
+   element is the location (a number). A color vector is 3–4 numbers, so it can
+   never look like a pair."
+  [el]
+  (and (sequential? el) (= 2 (count el)) (number? (second el))))
+
+(defn- color-stops
+  "Splits a gradient's `:colors` into parallel colors + stops. Stop positions are
+   given inline as `[color location]` pairs, which guarantees one location per
+   color (Flutter only checks that lazily at paint time, and throws). When every
+   entry is a pair the locations become the stops; a plain colors list is
+   distributed evenly (stops nil). There is no separate `:stops` field — passing
+   one, or mixing pairs with plain colors, is an error."
+  [colors stops]
+  (when (some? stops)
+    (throw (Exception. "Gradient :stops is not supported — give positions inline as [color location] pairs in :colors")))
+  (cond
+    (not (and (sequential? colors) (seq colors))) [colors nil]
+    (every? pair-stop? colors) [(mapv first colors) (mapv #(double (second %)) colors)]
+    (some pair-stop? colors) (throw (Exception. "Gradient :colors mixes plain colors and [color location] pairs — make them all pairs or all plain colors"))
+    :else [colors nil]))
+
 (defn- gradient-colors [colors]
   (cond
     (nil? colors) [:transparent :transparent]
@@ -1025,8 +1048,12 @@
 
    - `:begin` (alignment, default: :center-start)
    - `:end` (alignment, default: :center-end)
-   - `:colors` (list of colors, default: [:transparent :transparent])
-   - `:stops` (list of numbers, default: nil)
+   - `:colors` (list of colors, default: [:transparent :transparent]).
+     Give explicit positions inline as `[color location]` pairs, e.g.
+     `[[:red 0] [:white 0.2] [:blue 1]]`; a plain colors list is spread
+     evenly. There is no separate `:stops` field — pairs guarantee one
+     location per color (Flutter checks that only lazily, at paint), so
+     passing `:stops`, or mixing pairs with plain colors, throws.
    - `:tile-mode` (tile-mode, default: :clamp)
    - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
      `:oklch-mix` blends OKLCH with OKLab interpolation based on chroma difference,
@@ -1043,8 +1070,8 @@
       (map? args)
       (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
-            colors (vec (gradient-colors (:colors args)))
-            stops (:stops args)
+            [raw-colors stops] (color-stops (:colors args) (:stops args))
+            colors (vec (gradient-colors raw-colors))
             tm (:tile-mode args :clamp)
             begin (alignment-geometry (:begin args m/AlignmentDirectional.centerStart))
             end (alignment-geometry (:end args m/AlignmentDirectional.centerEnd))
@@ -1069,8 +1096,12 @@
    - `:center` (alignment, default: :center)
    - `:start-angle` (number, default: 0)
    - `:end-angle` (number, default: 2*PI)
-   - `:colors` (list of colors, default: [:transparent :transparent])
-   - `:stops` (list of numbers, default: nil)
+   - `:colors` (list of colors, default: [:transparent :transparent]).
+     Give explicit positions inline as `[color location]` pairs, e.g.
+     `[[:red 0] [:white 0.2] [:blue 1]]`; a plain colors list is spread
+     evenly. There is no separate `:stops` field — pairs guarantee one
+     location per color (Flutter checks that only lazily, at paint), so
+     passing `:stops`, or mixing pairs with plain colors, throws.
    - `:tile-mode` (tile-mode, default: :clamp)
    - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
      (see `linear-gradient` for `:oklch-mix` description)
@@ -1085,8 +1116,8 @@
       (map? args)
       (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
-            colors (vec (gradient-colors (:colors args)))
-            stops (:stops args)
+            [raw-colors stops] (color-stops (:colors args) (:stops args))
+            colors (vec (gradient-colors raw-colors))
             tm (:tile-mode args :clamp)
             center (alignment-geometry (:center args m/Alignment.center))
             sa (double (:start-angle args 0))
@@ -1115,8 +1146,12 @@
    - `:radius` (number, default: 0.5) — outer edge, fraction of shortestSide
    - `:start-radius` (number, default: 0) — inner edge for ring gradients (OKLab/OKLCH only)
    - `:shape` (keyword, default: :circle): `:circle` or `:diamond` (Manhattan distance)
-   - `:colors` (list of colors, default: [:transparent :transparent])
-   - `:stops` (list of numbers, default: nil)
+   - `:colors` (list of colors, default: [:transparent :transparent]).
+     Give explicit positions inline as `[color location]` pairs, e.g.
+     `[[:red 0] [:white 0.2] [:blue 1]]`; a plain colors list is spread
+     evenly. There is no separate `:stops` field — pairs guarantee one
+     location per color (Flutter checks that only lazily, at paint), so
+     passing `:stops`, or mixing pairs with plain colors, throws.
    - `:tile-mode` (tile-mode, default: :clamp)
    - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, `:oklch-mix`, or `:srgb`
      (see `linear-gradient` for `:oklch-mix` description)
@@ -1131,8 +1166,8 @@
       (map? args)
       (let [cs (:color-space args :oklch-mix)
             hue (:hue args)
-            colors (vec (gradient-colors (:colors args)))
-            stops (:stops args)
+            [raw-colors stops] (color-stops (:colors args) (:stops args))
+            colors (vec (gradient-colors raw-colors))
             tm (:tile-mode args :clamp)
             center (alignment-geometry (:center args m/Alignment.center))
             r (double (:radius args 0.5))
@@ -1336,8 +1371,10 @@
 
 (defmethod gradient ::instance [g] g)
 (defmethod gradient ::color [c]
+  ;; a solid color has nothing to interpolate — force :srgb so it stays two
+  ;; native stops instead of being resampled by the OKLCH shader path
   (let [c (color c)]
-    (linear-gradient {:colors [c c]})))
+    (linear-gradient {:colors [c c] :color-space :srgb})))
 (defmethod gradient :linear [args] (linear-gradient args))
 (defmethod gradient :radial [args] (radial-gradient args))
 (defmethod gradient :sweep [args] (sweep-gradient args))

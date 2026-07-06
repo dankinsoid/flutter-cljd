@@ -447,8 +447,7 @@
     ;; Blue → transparent → yellow: no dark band in the middle
     (ui/text "blue → transparent → yellow" :style {:size 13 :weight :bold})
     (->> (ui/decorated {:gradient {:type :linear
-                                   :colors [0xFF2196F3 0x00000000 0xFFFFEB3B]
-                                   :stops [0.0 0.5 1.0]
+                                   :colors [[0xFF2196F3 0.0] [0x00000000 0.5] [0xFFFFEB3B 1.0]]
                                    :begin :left :end :right}
                         :border-radius 8})
          (ui/sized {:h 48}))
