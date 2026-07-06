@@ -476,10 +476,64 @@
                     :oversized-radius :smooth-shadows :smooth-border
                     :clip-corners-smooth :smooth-image])))))
 
+;; ====== DRAG GRID (draggable / drag-target) ======
+
+(def ^:private drag-emojis ["🍎" "🍌" "🍇" "🍊" "🍓" "🥝" "🍑" "🍒" "🥥"])
+
+(defn- initial-drag-items []
+  (vec (map-indexed (fn [i e] {:id i :icon e}) drag-emojis)))
+
+(defn- swap-by-id [items id-a id-b]
+  (let [idx (fn [id] (first (keep-indexed (fn [i x] (when (= (:id x) id) i)) items)))
+        ia (idx id-a) ib (idx id-b)]
+    (if (and ia ib) (-> items (assoc ia (nth items ib)) (assoc ib (nth items ia))) items)))
+
+(defn- drag-tile [item ^bool hovered?]
+  (->> (ui/text (:icon item) {:size 40})
+       (ui/center)
+       (ui/sized {:w 96 :h 96})
+       (ui/clip-corners :all 18)
+       (ui/colored (if hovered?
+                     (c/CupertinoColors.activeGreen)
+                     (nth colors (mod (:id item) (count colors)))))))
+
+(defn draggable-grid-preview []
+  (f/widget
+   :watch [items (atom (initial-drag-items)) :as $items
+           return? (atom true) :as $return]
+   (ui/column
+    :cross-axis-alignment :stretch
+    (action-bar
+     (btn (str "return-on-drop: " (if return? "ON" "OFF")) #(swap! $return not))
+     (btn "Reset" (fn [] (reset! $items (initial-drag-items)))))
+    (->> (ui/text "Drag an icon onto another to swap. Dragged icon must stay on top."
+                  {:size 12 :color :grey})
+         (ui/center)
+         (ui/padding {:v 6}))
+    (->> (apply ui/column
+                :main-axis-alignment :center
+                (for [row (partition-all 3 items)]
+                  (apply ui/row
+                         :main-axis-alignment :center
+                         (for [item row]
+                           (->> (ui/drag-target
+                                 (fn [_ candidates _]
+                                   (ui/draggable
+                                    :data item
+                                    :return-on-drop return?
+                                    :placeholder (ui/opacity 0.25 (drag-tile item false))
+                                    (drag-tile item (boolean (seq candidates)))))
+                                 :on-will-accept (fn [data _] (not= (:id data) (:id item)))
+                                 :on-accept (fn [data _] (swap! $items swap-by-id (:id data) (:id item))))
+                                (ui/padding 6))))))
+         (ui/center)
+         (ui/expanded)))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
-  [["Corners"    corners-preview]
+  [["Drag Grid"  draggable-grid-preview]
+   ["Corners"    corners-preview]
    ["List"       list-layout-preview]
    ["Grid"       grid-layout-preview]
    ["Animate"    animation-preview]
