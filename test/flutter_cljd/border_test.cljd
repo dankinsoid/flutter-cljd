@@ -1,0 +1,103 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.border-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.types :as t]
+            ["package:flutter/material.dart" :as m]))
+
+(defn- approx? [^double a ^double b]
+  (< (abs (- a b)) 0.001))
+
+(deftest test-border-style
+  (is (= m/BorderStyle.solid (t/border-style :solid)))
+  (is (= m/BorderStyle.none (t/border-style :none)))
+  (is (= m/BorderStyle.solid (t/border-style m/BorderStyle.solid)))
+  (is (thrown? Exception (t/border-style :bogus))))
+
+(deftest test-border-side
+  (testing "number is the stroke width, black solid"
+    (let [^m/BorderSide s (t/border-side 3)]
+      (is (approx? 3.0 (.-width s)))
+      (is (= m/Colors.black (.-color s)))
+      (is (= m/BorderStyle.solid (.-style s)))))
+
+  (testing ":none is BorderSide.none"
+    (is (= m/BorderSide.none (t/border-side :none))))
+
+  (testing "a bare color keyword sets the color, width 1"
+    (let [^m/BorderSide s (t/border-side :red)]
+      (is (= m/Colors.red (.-color s)))
+      (is (approx? 1.0 (.-width s)))))
+
+  (testing "map spec with width/color/style/align"
+    (let [^m/BorderSide s (t/border-side {:width 2 :color :red :style :solid :align :outside})]
+      (is (approx? 2.0 (.-width s)))
+      (is (= m/Colors.red (.-color s)))
+      (is (approx? m/BorderSide.strokeAlignOutside (.-strokeAlign s)))))
+
+  (testing "map defaults: width 1, black, solid, inside"
+    (let [^m/BorderSide s (t/border-side {:color :blue})]
+      (is (approx? 1.0 (.-width s)))
+      (is (= m/Colors.blue (.-color s)))
+      (is (approx? m/BorderSide.strokeAlignInside (.-strokeAlign s)))))
+
+  (testing "a BorderSide passes through"
+    (let [side (m/BorderSide .width 5.0)]
+      (is (= side (t/border-side side))))))
+
+(deftest test-border
+  (testing "number is a uniform width"
+    (let [^m/Border b (t/border 2)]
+      (is (.-isUniform b))
+      (is (approx? 2.0 (.-width (.-top b))))))
+
+  (testing "bare color is a uniform colored border"
+    (let [^m/Border b (t/border :red)]
+      (is (.-isUniform b))
+      (is (= m/Colors.red (.-color (.-top b))))))
+
+  (testing "a single-side map is applied to every edge"
+    (let [^m/Border b (t/border {:width 2 :color :black})]
+      (is (.-isUniform b))
+      (is (approx? 2.0 (.-width (.-top b))))
+      (is (approx? 2.0 (.-width (.-bottom b))))))
+
+  (testing "per-edge map only sets named edges"
+    (let [^m/Border b (t/border {:bottom 3})]
+      (is (approx? 3.0 (.-width (.-bottom b))))
+      (is (= m/BorderStyle.none (.-style (.-top b))))))
+
+  (testing ":all is the fallback for unset edges"
+    (let [^m/Border b (t/border {:all 1 :bottom 3})]
+      (is (approx? 1.0 (.-width (.-top b))))
+      (is (approx? 1.0 (.-width (.-left b))))
+      (is (approx? 3.0 (.-width (.-bottom b))))))
+
+  (testing ":horizontal is left & right (DSL convention, not Border.symmetric)"
+    (let [^m/Border b (t/border {:horizontal 2})]
+      (is (approx? 2.0 (.-width (.-left b))))
+      (is (approx? 2.0 (.-width (.-right b))))
+      (is (= m/BorderStyle.none (.-style (.-top b))))))
+
+  (testing ":vertical is top & bottom"
+    (let [^m/Border b (t/border {:vertical 2})]
+      (is (approx? 2.0 (.-width (.-top b))))
+      (is (approx? 2.0 (.-width (.-bottom b))))
+      (is (= m/BorderStyle.none (.-style (.-left b))))))
+
+  (testing "start/end produce a BorderDirectional"
+    (let [b (t/border {:start {:color :red} :end 2})]
+      (is (instance? m/BorderDirectional b))))
+
+  (testing "a BoxBorder passes through"
+    (let [b (m/Border.all .width 4.0)]
+      (is (= b (t/border b))))))
+
+(deftest test-decoration-border-and-blend-mode
+  (testing "decoration accepts a border map"
+    (let [^m/BoxDecoration d (t/decoration {:color :white :border {:width 2 :color :black}})]
+      (is (instance? m/Border (.-border d)))
+      (is (approx? 2.0 (.-width (.-top ^m/Border (.-border d)))))))
+
+  (testing "decoration accepts a keyword background blend mode"
+    (let [^m/BoxDecoration d (t/decoration {:color :white :background-blend-mode :multiply})]
+      (is (= m/BlendMode.multiply (.-backgroundBlendMode d))))))

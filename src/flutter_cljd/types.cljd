@@ -1466,20 +1466,140 @@
       [(box-shadow v)]
       (mapv box-shadow v))))
 
+;; @ai-generated(guided)
+(defn ^m/BorderStyle border-style
+  "Returns the `BorderStyle` for the specified value: a `BorderStyle` instance,
+   `:solid` (a solid line), or `:none` (no line — zero width, paints nothing)."
+  [style]
+  (if (instance? m/BorderStyle style)
+    style
+    (case style
+      :solid m/BorderStyle.solid
+      :none m/BorderStyle.none
+      (throw (Exception. (str "Invalid border-style: " style))))))
+
+;; @ai-generated(guided)
+(defn- ^double stroke-align
+  "Resolves a stroke-align spec to the double Flutter expects: `:inside`
+   (default), `:center`, `:outside`, or a number used verbatim
+   (-1 inside … 1 outside)."
+  [align]
+  (if (number? align)
+    (double align)
+    (case align
+      :inside m/BorderSide.strokeAlignInside
+      :center m/BorderSide.strokeAlignCenter
+      :outside m/BorderSide.strokeAlignOutside
+      (throw (Exception. (str "Invalid stroke-align: " align))))))
+
+;; @ai-generated(guided)
+(defn ^m/BorderSide border-side
+  "Creates a `BorderSide` — one edge of a border. Accepts:
+    - a `BorderSide` instance
+    - `:none` — no side (`BorderSide.none`)
+    - a number — the stroke width (black, solid)
+    - a color (keyword/`Color`/int) — the stroke color (width 1, solid)
+    - a map:
+      - `:width`/`:w` (default 1)
+      - `:color` (default `:black`)
+      - `:style` (`:solid`/`:none`, default `:solid`)
+      - `:align`/`:stroke-align` (`:inside`/`:center`/`:outside` or number, default `:inside`)"
+  [spec]
+  (cond
+    (instance? m/BorderSide spec) spec
+    (= spec :none) m/BorderSide.none
+    (number? spec) (m/BorderSide .width (double spec))
+    (map? spec) (m/BorderSide
+                 .color (color (get spec :color :black))
+                 .width (double (or (:width spec) (:w spec) 1))
+                 .style (border-style (get spec :style :solid))
+                 .strokeAlign (stroke-align (or (:align spec) (:stroke-align spec) :inside)))
+    ;; anything else is taken as a color (:red, a Color, 0xFF…)
+    :else (m/BorderSide .color (color spec))))
+
+(def ^:private border-side-keys
+  #{:top :t :bottom :b :left :l :right :r :start :s :end :e
+    :horizontal :h :vertical :v :all})
+
+;; @ai-generated(guided)
+(defn ^m/BoxBorder border
+  "Creates a `Border`/`BorderDirectional` for a box decoration. Accepts:
+    - a `BoxBorder` instance
+    - a `BorderSide` — a uniform border with that side on all four edges
+    - a number — a uniform border of that width
+    - a color (keyword/`Color`) — a uniform border of that color
+    - a map describing a single side (`:width`/`:color`/`:style`/`:align`,
+      see `border-side`) — applied uniformly to all four edges
+    - a map of per-edge sides, where each edge value is a `border-side` spec:
+      - `:top`/`:t`, `:bottom`/`:b`
+      - `:left`/`:l`, `:right`/`:r` (a directionless `Border`)
+      - `:start`/`:s`, `:end`/`:e` (a `BorderDirectional`)
+      - `:horizontal`/`:h` (left & right), `:vertical`/`:v` (top & bottom)
+      - `:all` — the side for every edge not set explicitly
+
+   Note: `:horizontal` means the left & right edges (as in `insets`), NOT
+   Flutter's `Border.symmetric`, where `horizontal` is the top & bottom edges.
+
+   Examples:
+   ```clojure
+   (border 2)                         ;; Border.all(width: 2)
+   (border :red)                      ;; Border.all(color: red)
+   (border {:width 2 :color :black})  ;; uniform 2px black border
+   (border {:bottom 2})               ;; only the bottom edge, 2px
+   (border {:all 1 :bottom 3})        ;; 1px everywhere, 3px on the bottom
+   (border {:start {:color :red}})    ;; BorderDirectional, red start edge
+   ```"
+  [spec]
+  (cond
+    (instance? m/BoxBorder spec) spec
+    (instance? m/BorderSide spec) (m/Border.fromBorderSide spec)
+    (number? spec) (m/Border.all .width (double spec))
+    (not (map? spec)) (m/Border.all .color (color spec))
+
+    ;; a map with any edge key → per-side edges
+    (some spec border-side-keys)
+    (let [side (fn [ks] (border-side (or (some spec ks) :none)))]
+      (if (some spec [:start :s :end :e])
+        (m/BorderDirectional
+         .top    (side [:top :t :vertical :v :all])
+         .start  (side [:start :s :horizontal :h :all])
+         .end    (side [:end :e :horizontal :h :all])
+         .bottom (side [:bottom :b :vertical :v :all]))
+        (m/Border
+         .top    (side [:top :t :vertical :v :all])
+         .left   (side [:left :l :horizontal :h :all])
+         .right  (side [:right :r :horizontal :h :all])
+         .bottom (side [:bottom :b :vertical :v :all]))))
+
+    ;; otherwise the whole map is one side, applied to every edge
+    :else (m/Border.fromBorderSide (border-side spec))))
+
 (defn ^m/Decoration decoration
   "Creates a Decoration object from the specified arguments.
-   The arguments can be specified as a Decoration objects or a key-values pairs with the following keys:
-    - `:shape` (ShapeBorder or BoxShape or a keyword default: nil): The shape of the decoration.
-    - `:color` (Color, default: nil): The color of the decoration.
-    - `:image` (ImageProvider, default: nil): The image of the decoration.
-    - `:gradient` (Gradient, default: nil): The gradient of the decoration.
-    - `:border` (Border, default: nil): The border of the decoration.
-    - `:border-radius` (BorderRadius, default: nil): The border radius of the decoration.
-    - `:box-shadow` or `:shadow` or `:shadows` (default: nil): one shadow or a
-      list of them. Each is a `BoxShadow` or a map (see `box-shadow`); a map with
-      `:inset true` paints an inner (CSS `inset`) shadow. Inset shadows render
-      only on rectangular decorations (with or without `:border-radius`).
-    - `:background-blend-mode` (BlendMode, default: nil): The background blend mode of the decoration.
+   Pass an existing `Decoration` (returned as is) or a map / key-value pairs.
+   Every value is run through its converter, so keywords/maps work everywhere:
+
+    - `:shape` (default `:rectangle`): `:rectangle`/`:rect`, `:circle`, or a
+      `ShapeBorder` (a custom `ShapeBorder` makes a `ShapeDecoration`; then
+      `:border`/`:border-radius` are ignored — the shape carries them). See `shape`.
+    - `:color`: a `Color`, a keyword (`:red` …), a hex string/number, or an
+      `[r g b]`/`[r g b a]` vector. See `color`.
+    - `:gradient`: a `Gradient` or a map `{:type :linear|:radial|:sweep|:mesh …
+      :colors [...]}`. See `linear-gradient`/`radial-gradient`/`sweep-gradient`/`mesh-gradient`.
+    - `:border`: a width number, a color, a uniform `{:width :color :style :align}`
+      map, or a per-edge `{:top :bottom :left :right :start :end :horizontal
+      :vertical :all}` map (each edge is a `border-side` spec). See `border`.
+    - `:border-radius`: a number, an `[x y]` vector, or a per-corner map
+      (`:top-left :top-right … :all`); each corner is a `radius` spec. Extra
+      keys `:smoothing` (squircle) and `:rel` (radius relative to the shorter
+      side) are honored here. See `border-radius`.
+    - `:box-shadow` / `:shadow` / `:shadows`: one shadow or a list of them. Each
+      is a `BoxShadow` or a map `{:color :offset :blur :spread :blur-style
+      :inset}`; `:inset true` paints an inner (CSS `inset`) shadow. Inset shadows
+      render only on rectangular decorations (with or without `:border-radius`).
+      See `box-shadow`.
+    - `:image` (default: nil): a `DecorationImage` to paint as the background.
+    - `:background-blend-mode`: a `BlendMode` or a keyword (`:multiply` …). See `blend-mode`.
 
     Rectangles with `:border-radius` get Figma-style smooth (squircle) corners
     by default (see `flutter-cljd.smooth-corner/set-default-smoothing!`).
@@ -1518,7 +1638,8 @@
          .shape shape))
 
       (instance? m/BoxShape shape)
-      (let [border (args :border)
+      (let [border (some-> (args :border) border)
+            blend-mode (some-> (args :background-blend-mode) blend-mode)
             ;; a non-uniform border needs per-side strokes Flutter only draws on
             ;; RRects — that case falls back to a plain BoxDecoration. Images and
             ;; blend modes are handled on the smooth path (SmoothBoxPainter).
@@ -1542,7 +1663,7 @@
            shadows
            (when (some? border) (.-top ^m/Border border))
            (args :image)
-           (args :background-blend-mode))
+           blend-mode)
           (m/BoxDecoration
            .color (some-> (args :color) color)
            .image (args :image)
@@ -1550,7 +1671,7 @@
            .borderRadius (some-> (args :border-radius) border-radius)
            .boxShadow (some->> shadows (mapv :box))
            .gradient (some-> (args :gradient) gradient)
-           .backgroundBlendMode (args :background-blend-mode)
+           .backgroundBlendMode blend-mode
            .shape shape)))
 
       :else (throw (Exception. (str "Invalid decoration: " args))))))

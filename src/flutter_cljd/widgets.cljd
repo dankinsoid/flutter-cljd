@@ -899,9 +899,19 @@
      - `:key` An identifier for the container
      - `:alignment` (Alignment) How to align the child
      - `:padding` (EdgeInsets) Empty space inside the container. Cannot be negative.
-     - `:color` (Color) Background color
-     - `:decoration` (BoxDecoration) Background decoration
-     - `:foreground-decoration` (BoxDecoration) Foreground decoration
+     - `:color` (Color) Background color — a shorthand for `{:decoration {:color …}}`;
+       cannot be combined with a `:decoration` that already sets `:color`.
+     - `:decoration` Background decoration. A `Decoration` or a map passed to
+       `flutter-cljd.types/decoration`, so keyword/map forms work for every key:
+       `:shape`, `:color`, `:gradient`, `:border`, `:border-radius`, `:box-shadow`,
+       `:image`, `:background-blend-mode`. See `decoration` for the full reference.
+       - `:border` - width number / color / `{:width :color :style :align}` /
+         per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`
+       - `:border-radius` - number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
+       - `:gradient` - a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
+       - `:box-shadow` - one or many `{:color :offset :blur :spread :blur-style :inset}`
+     - `:foreground-decoration` A decoration painted in front of the child; same
+       shape as `:decoration`.
      - `:width`, `:w` (number) Container width
      - `:height`, `:h` (number) Container height  
      - `:size` (Size or :hug) Container size. Use :hug to fit content
@@ -931,7 +941,8 @@
     
   (container
     {:decoration {:color :blue
-                 :border-radius 8}
+                 :border-radius 8
+                 :border {:width 2 :color :black}}
      :animation {:duration 0.3}}
     (text \"Animated\"))
   ```
@@ -1342,15 +1353,22 @@
   "A widget that paints a Decoration either before or after its child paints.
 
   Args:
-   - with-decoration: A map describing the decoration to paint.
-     Common decoration properties include:
-     - `:position` - The position of the decoration relative to the child. Can be `DecorationPosition.background` (default) or `DecorationPosition.foreground`.
-     - `:color` - The color to fill the decoration
-     - `:border` - Border properties like width, color, style
-     - `:border-radius` - Corner radius values
-     - `:box-shadow` - Shadow effects
-     - `:gradient` - Gradient with `:type` — `:linear`, `:radial`, `:sweep`, `:diamond`, `:mesh` (OKLab/diamond/mesh require Impeller)
-     - `:image` - Background image
+   - with-decoration: the decoration to paint, plus `:position`. Accepts a map or
+     inline/trailing key-value pairs. Everything except `:position` is passed to
+     `flutter-cljd.types/decoration`, so all of its keys and nested map/keyword
+     forms work here — see that function for the full reference:
+     - `:position` - where to paint relative to the child: `:background`
+       (default) or `:foreground` (a `DecorationPosition` is also accepted).
+     - `:shape` - `:rectangle` (default) / `:circle`, or a `ShapeBorder`
+     - `:color` - fill color (`Color`, keyword, hex, `[r g b]`)
+     - `:gradient` - a `Gradient` or `{:type :linear|:radial|:sweep|:mesh …}`
+     - `:border` - width number / color / `{:width :color :style :align}` /
+       per-edge `{:top :bottom :left :right :start :end :horizontal :vertical :all}`
+     - `:border-radius` - number / `[x y]` / per-corner map, with `:smoothing`/`:rel`
+     - `:box-shadow` / `:shadow` / `:shadows` - one or many
+       `{:color :offset :blur :spread :blur-style :inset}` (or `BoxShadow`)
+     - `:image` - a `DecorationImage` background
+     - `:background-blend-mode` - a `BlendMode` or keyword (`:multiply` …)
    - child: The widget to decorate
 
   The decoration position determines whether to paint the decoration before the child
