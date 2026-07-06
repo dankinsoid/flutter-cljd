@@ -1,6 +1,7 @@
 (ns flutter-cljd.internal.draggable
   (:require
    [flutter-cljd.types :as t]
+   [cljd.flutter :as f]
    ["dart:core" :as core]
    ["package:flutter/painting.dart" :as p]
    ["package:flutter/rendering.dart" :as r]
@@ -8,6 +9,17 @@
    ["package:flutter/animation.dart" :as a]
    ["package:flutter/gestures.dart" :as g]
    ["package:flutter/services.dart" :as s]))
+
+(defn ^w/Widget capture-inherited
+  "Re-injects the inherited environment of `from` around `child`, which is about
+  to be mounted under `to` (an Overlay). Captures both Flutter's InheritedThemes
+  (Theme, DefaultTextStyle, IconTheme…) and this project's `with-inherited`
+  bindings, which live in a single InheritedBindings widget."
+  [^w/BuildContext from ^w/BuildContext to ^w/Widget child]
+  (let [child (.wrap (w/InheritedTheme.capture .from from .to to) child)
+        elt (#/(.getElementForInheritedWidgetOfExactType f/InheritedBindings) from)
+        bindings (some-> elt ^f/InheritedBindings (.-widget) .-bindings)]
+    (if bindings (f/InheritedBindings. bindings child) child)))
 
 (declare DraggableState)
 (declare DragAvatar)
@@ -165,12 +177,11 @@
                                        (.-feedback widget)
                                        ((.-feedback widget) (.-child widget)))
               ;; Feedback is mounted under the Overlay, so it loses the inherited
-              ;; themes (text style, icon theme, Theme…) living above the draggable.
-              ;; Re-inject everything between the draggable and the overlay contexts.
-              ^w/Widget feedback (.wrap (w/InheritedTheme.capture
-                                         .from (.-context this)
-                                         .to (.-context overlay-state))
-                                        raw-feedback)
+              ;; environment (themes + `with-inherited` bindings) living above the
+              ;; draggable. Re-inject it between the draggable and overlay contexts.
+              ^w/Widget feedback (capture-inherited (.-context this)
+                                                    (.-context overlay-state)
+                                                    raw-feedback)
               ^DragAvatar avatar (DragAvatar
                                   overlay-state
                                   (.-data widget)
