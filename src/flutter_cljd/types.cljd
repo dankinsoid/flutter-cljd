@@ -557,7 +557,7 @@
     - a vector of length 3 or 4: [r g b] or [r g b o]
     - a number: 0xRRGGBB or 0xAARRGGBB
     - a hex string: \"#RRGGBB\" or \"#AARRGGBB\". Prefer using the number format for better performance.
-    - a keyword: :blue, :red, :green, :yellow, :orange, :purple, :pink, :cyan, :teal, :amber, :lime, :light-blue, :light-green, :deep-orange, :deep-purple, :indigo, :blue-grey, :grey, :black, :white, :transparent
+    - a keyword: :blue, :red, :green, :yellow, :orange, :purple, :pink, :cyan, :magenta, :teal, :amber, :lime, :light-blue, :light-green, :deep-orange, :deep-purple, :indigo, :blue-grey, :grey, :black, :white, :transparent
 
    [Flutter docs](https://api.flutter.dev/flutter/dart-ui/Color-class.html)"
   ([r g b] (m/Color.fromRGBO r g b 1.0))
@@ -582,6 +582,7 @@
                         :purple m/Colors.purple
                         :pink m/Colors.pink
                         :cyan m/Colors.cyan
+                        :magenta (m/Color 0xFFFF00FF)
                         :teal m/Colors.teal
                         :amber m/Colors.amber
                         :lime m/Colors.lime
