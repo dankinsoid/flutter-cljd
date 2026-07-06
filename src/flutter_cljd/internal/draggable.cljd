@@ -462,6 +462,7 @@
                      onLeave
                      onMove
                      acceptRegion
+                     ^bool enabled
                      ^w/HitTestBehavior hitTestBehavior]
   :extends (w/StatefulWidget .key k)
 
@@ -474,15 +475,12 @@
 
   (initState [^DragTargetState this]
     (.initState ^super this)
-    (when (-> this .-widget .-acceptRegion)
-      (swap! extended-region-targets conj this))
+    (.reconcileRegistration this)
     nil)
 
   (didUpdateWidget [^DragTargetState this ^DragTarget _]
     (.didUpdateWidget ^super this _)
-    (if (-> this .-widget .-acceptRegion)
-      (swap! extended-region-targets conj this)
-      (swap! extended-region-targets disj this))
+    (.reconcileRegistration this)
     nil)
 
   (dispose [^DragTargetState this]
@@ -490,13 +488,16 @@
     (.dispose ^super this))
 
   (^w/Widget build [^DragTargetState this ^w/BuildContext context]
-    (w/MetaData
-     .metaData this
-     .behavior (-> this .-widget .-hitTestBehavior)
-     .child ((-> this .-widget .-builder)
-             context
-             (map #(.-data ^DragAvatar %) (.-candidateAvatars this))
-             (map #(.-data ^DragAvatar %) (.-rejectedAvatars this)))))
+    (let [^DragTarget widget (.-widget this)
+          child ((.-builder widget)
+                 context
+                 (map #(.-data ^DragAvatar %) (.-candidateAvatars this))
+                 (map #(.-data ^DragAvatar %) (.-rejectedAvatars this)))]
+      ;; When disabled, drop out of hit-testing entirely: no MetaData node, so
+      ;; drag avatars can't discover this target and other gestures pass through.
+      (if (.-enabled widget)
+        (w/MetaData .metaData this .behavior (.-hitTestBehavior widget) .child child)
+        child)))
 
   (setState [^DraggableState this modify]
     (if (.-mounted this)
@@ -504,14 +505,26 @@
       (modify)))
 
   DragTargetState
+  ;; Register in extended-region-targets only while enabled and carrying a
+  ;; region that can reach past the box. Called on init and every widget update.
+  (reconcileRegistration [^DragTargetState this]
+    (let [^DragTarget widget (.-widget this)]
+      (if (and (.-enabled widget) (.-acceptRegion widget))
+        (swap! extended-region-targets conj this)
+        (swap! extended-region-targets disj this)))
+    nil)
+
   ;; Whether `global-point` falls inside this target's accept region. With no
   ;; custom region the region is the box, and hitTestInView already guaranteed
   ;; the hit, so it's a plain yes. A custom `:accept-region` maps the box rect
   ;; (in local coords) to any rect — narrower, wider, or shifted.
   (^bool acceptsPoint [^DragTargetState this ^w/Offset global-point]
-    (let [region-fn (-> this .-widget .-acceptRegion)]
-      (if (nil? region-fn)
-        true
+    (let [^DragTarget widget (.-widget this)
+          region-fn (.-acceptRegion widget)]
+      (cond
+        (not (.-enabled widget)) false
+        (nil? region-fn) true
+        :else
         (if-let [^r/RenderBox box (some-> this .-context .findRenderObject)]
           (let [^w/Size size (.-size box)
                 ^w/Rect region (region-fn (.& w/Offset.zero size))]
@@ -619,7 +632,8 @@
      child)))
 
 (defn ^w/Widget drag-target*
-  [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior]}]
+  [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior enabled]
+    :or {enabled true}}]
   (DragTarget
    (t/widget-key key)
    (if (fn? builder)
@@ -630,4 +644,5 @@
    on-leave
    on-move
    accept-region
+   (boolean enabled)
    (t/hit-test-behavior (or hit-test-behavior r/HitTestBehavior.translucent))))

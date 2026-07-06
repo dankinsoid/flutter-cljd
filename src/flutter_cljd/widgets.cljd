@@ -2275,7 +2275,8 @@ Options:
 - `:on-leave` — `(fn [data])` called when a draggable leaves the target
 - `:on-move` — `(fn [data offset])` called on each move while hovering
 - `:accept-region` — `(fn [rect] -> Rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
-- `:hit-test-behavior` — HitTestBehavior (default `:translucent`)"
+- `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
+- `:enabled` — bool (default true); when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through"
   [builder & {:keys [key on-will-accept on-accept on-leave on-move hit-test-behavior] :as args}]
   (drg/drag-target* (assoc args :builder builder)))
 
