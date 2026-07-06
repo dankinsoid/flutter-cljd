@@ -1,35 +1,48 @@
 #!/usr/bin/env bash
-# Compile ClojureDart → Dart, then statically analyze the generated Dart.
+# Compile the example app (ClojureDart → Dart) and statically analyze the result.
 #
-# `clojure -M:cljd compile` only emits Dart; it does not run the Dart analyzer,
-# so type/interop mistakes that survive as valid-but-wrong Dart slip through.
-# This runs `dart analyze` over the generated tree as a second gate.
+# Why the example and not the library alone: `clojure -M:cljd compile` only emits
+# Dart, it never runs the Dart front-end — so an internally-inconsistent build
+# still reports success and blows up only when `flutter run` compiles it at launch.
+# The example app is the artifact that launches; it pulls the library in as a
+# `:local/root` dep, so library errors surface here too.
 #
-# What it catches: malformed emitted Dart, broken/stale imports, and type
-# errors on statically-resolved targets. What it does NOT catch: calls to
-# members ClojureDart couldn't resolve — those become `(x as dynamic).m()`.
-# The compiler's `DYNAMIC WARNING:` lines (~240 on a clean build) are baseline
-# noise from idiomatic dynamic interop, not an error signal.
+# `dart analyze` reproduces the exact errors the Flutter front-end raises for the
+# common failure mode (stale incremental output: dangling `IFnMixin_*` mixin
+# references → `mixin_of_non_class`), in ~3s instead of a full `flutter build`.
 #
-# Warnings/infos are the generated-code baseline (deprecations, protected-member
-# access into Flutter internals) and never fail the check. Only error-severity
-# analyzer issues do.
+# Usage:
+#   bin/check            incremental compile + analyze (fast, matches dev loop)
+#   bin/check --clean     wipe the ClojureDart cache first (fixes stale builds)
+#
+# Warnings/infos are the generated-code baseline; only error-severity issues fail.
 set -uo pipefail
-cd "$(dirname "$0")/.." || exit 1
+cd "$(dirname "$0")/../example" || exit 1
 
-echo "▶ Compiling ClojureDart → Dart…"
+if [ "${1:-}" = "--clean" ]; then
+	echo "▶ Wiping ClojureDart cache…"
+	rm -rf .clojuredart lib/cljd-out
+fi
+
+echo "▶ Compiling example (ClojureDart → Dart)…"
 if ! clojure -M:cljd compile; then
 	echo "✖ ClojureDart compilation failed."
 	exit 1
 fi
 
-echo "▶ Analyzing generated Dart (lib/cljd-out)…"
+echo "▶ Analyzing generated Dart (example/lib/cljd-out)…"
 report=$(dart analyze lib/cljd-out 2>&1)
 errors=$(printf '%s\n' "$report" | grep -E '^[[:space:]]*error ' || true)
 if [ -n "$errors" ]; then
 	printf '%s\n' "$errors"
 	count=$(printf '%s\n' "$errors" | grep -c .)
 	echo "✖ ${count} Dart error(s) in generated code."
+	# Dangling IFnMixin_* references are stale incremental output, not a real
+	# source bug — a clean rebuild fixes them.
+	if printf '%s\n' "$errors" | grep -q mixin_of_non_class; then
+		echo "  ↳ 'mixin_of_non_class' usually means a stale incremental build."
+		echo "    Retry with: bin/check --clean"
+	fi
 	exit 1
 fi
 echo "✓ No Dart errors (warnings/infos are the generated-code baseline)."
