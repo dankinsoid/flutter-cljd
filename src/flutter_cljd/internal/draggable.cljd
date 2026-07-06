@@ -351,11 +351,12 @@
           target-box (some-> target .-context .findRenderObject)
           target-size (some-> target-box .-size)
           child-box (some-> this .-originalContext .findRenderObject)
+          ;; Center-to-center delta by which the child must be translated to land
+          ;; on the target. Used both as the Transform.translate offset and,
+          ;; via localToGlobal below, as the feedback's resting position.
           expected-offset (if (and target-box child-box)
-                            (.globalToLocal
-                             child-box
-                             (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
-                                 (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero))))
+                            (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
+                                (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero)))
                             w/Offset.zero)
           was-accepted (boolean
                         (when target
