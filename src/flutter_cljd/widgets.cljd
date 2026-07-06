@@ -2172,31 +2172,29 @@
 
 (defn ^w/Widget draggable
   "Makes its child draggable via touch/pointer.
-  The last positional arg is the child widget; all preceding kwargs configure behavior.
 
-  Options:
-    :data                    — payload delivered to `drag-target` on drop
-    :feedback                — widget (or (fn [child] widget)) shown under the pointer while dragging;
-                               defaults to the child itself
-    :placeholder             — widget shown in place of the child while dragging
-    :delay                   — Duration or `:default` (long-press) before drag starts
-    :axis                    — `:horizontal` / `:vertical` to constrain drag direction
-    :affinity                — gesture recognizer axis affinity (defaults to :axis)
-    :feedback-offset         — Offset added to feedback position (default `Offset.zero`)
-    :drag-anchor-strategy    — `(fn [draggable context position])` returning anchor Offset
-    :max-simultaneous-drags  — max concurrent drags (nil = unlimited)
-    :on-drag-start           — `(fn [])` called when drag begins
-    :on-drag-update          — `(fn [details])` called on each drag move
-    :on-drag-will-end        — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back;
-                               return an Offset to override the final position
-    :on-drag-end             — `(fn [{:keys [was-accepted velocity offset]}])` called after drag completes
-    :haptic-feedback-on-start — bool, defaults to true when :delay is set
-    :root-overlay            — bool, use root overlay (default false)
-    :hit-test-behavior       — HitTestBehavior (default `:defer-to-child`)
-    :allowed-buttons-filter  — predicate filtering pointer buttons
-    :enabled                 — bool (default true); when false the widget collapses to
-                               the bare child — no gesture recognizer, no Listener node,
-                               zero hit-test footprint, so other gestures pass through freely"
+The last positional arg is the child widget; all preceding kwargs configure behavior.
+
+Options:
+
+- `:data` — payload delivered to `drag-target` on drop
+- `:feedback` — widget (or `(fn [child] widget)`) shown under the pointer while dragging; defaults to the child itself
+- `:placeholder` — widget shown in place of the child while dragging
+- `:delay` — Duration or `:default` (long-press) before drag starts
+- `:axis` — `:horizontal` / `:vertical` to constrain drag direction
+- `:affinity` — gesture recognizer axis affinity (defaults to `:axis`)
+- `:feedback-offset` — Offset added to feedback position (default `Offset.zero`)
+- `:drag-anchor-strategy` — `(fn [draggable context position])` returning anchor Offset
+- `:max-simultaneous-drags` — max concurrent drags (`nil` = unlimited)
+- `:on-drag-start` — `(fn [])` called when drag begins
+- `:on-drag-update` — `(fn [details])` called on each drag move
+- `:on-drag-will-end` — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back; return an Offset to override the final position
+- `:on-drag-end` — `(fn [{:keys [was-accepted velocity offset]}])` called after drag completes
+- `:haptic-feedback-on-start` — bool, defaults to true when `:delay` is set
+- `:root-overlay` — bool, use root overlay (default false)
+- `:hit-test-behavior` — HitTestBehavior (default `:defer-to-child`)
+- `:allowed-buttons-filter` — predicate filtering pointer buttons
+- `:enabled` — bool (default true); when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely"
   [& args]
   (let [[args children] (ut/key-values-args-and-children args)]
     (drg/draggable* args (last children))))
