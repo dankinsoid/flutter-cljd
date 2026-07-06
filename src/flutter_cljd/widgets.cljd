@@ -2243,7 +2243,8 @@ Options:
 - `:delay` — Duration or `:default` (long-press) before drag starts
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction
 - `:affinity` — gesture recognizer axis affinity (defaults to `:axis`)
-- `:feedback-offset` — Offset added to feedback position (default `Offset.zero`)
+- `:feedback-offset` — Offset added to the pointer position when probing for drag targets (default `Offset.zero`); does not move the feedback visually
+- `:catch-point` — `(fn [feedback-rect finger-point] -> Offset)` overriding the point used to hit-test targets; `feedback-rect` is the feedback's current global bounds, `finger-point` the global pointer position. Defaults to `finger-point + :feedback-offset`
 - `:drag-anchor-strategy` — `(fn [draggable context position])` returning anchor Offset
 - `:max-simultaneous-drags` — max concurrent drags (`nil` = unlimited)
 - `:on-drag-start` — `(fn [])` called when drag begins
@@ -2271,6 +2272,7 @@ Options:
 - `:on-accept` — `(fn [data offset])` called when an accepted draggable is dropped
 - `:on-leave` — `(fn [data])` called when a draggable leaves the target
 - `:on-move` — `(fn [data offset])` called on each move while hovering
+- `:accept-region` — `(fn [rect] -> Rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)"
   [builder & {:keys [key on-will-accept on-accept on-leave on-move hit-test-behavior] :as args}]
   (drg/drag-target* (assoc args :builder builder)))

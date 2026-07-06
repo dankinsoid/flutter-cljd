@@ -26,6 +26,12 @@
 (declare DragTarget)
 (declare DragTargetState)
 
+;; Targets whose accept region may extend past their layout box, so a single
+;; hit-test at the catch point can't discover them. They register here on mount
+;; and the drag avatar tests each one's region directly. Targets with the
+;; default (box) region are NOT here — those are found via hitTestInView.
+(def ^:private extended-region-targets (atom #{}))
+
 ;; Draggable widget
 (deftype Draggable [^w/Key? k
                     ^core/Duration? delay
@@ -34,6 +40,7 @@
                     ^p/Axis? axis
                     ^w/Widget? childWhenDragging
                     ^w/Offset feedbackOffset
+                    catchPoint
                     dragAnchorStrategy
                     ^p/Axis? affinity
                     ^int? maxSimultaneousDrags
@@ -191,6 +198,7 @@
                                   drag-start-point
                                   feedback
                                   (.-feedbackOffset widget)
+                                  (.-catchPoint widget)
                                   (fn [details ^w/Offset offset]
                                     (when (and (.-mounted this) (.-onDragUpdate widget))
                                       ((.-onDragUpdate widget) details)))
@@ -249,6 +257,7 @@
                      ^w/Offset dragStartPoint
                      ^w/Widget? feedback
                      ^w/Offset feedbackOffset
+                     catchPoint
                      onDragUpdate
                      onDragWillEnd
                      onDragEnd
@@ -303,12 +312,15 @@
         (.-finalOffset! this offset)
         (.markNeedsBuild (.-entry this))))
 
-    (let [^g/HitTestResult result (g/HitTestResult)
+    (let [^w/Offset catch-point (if-let [catch-fn (.-catchPoint this)]
+                                  (catch-fn (.feedbackRect this) global-position)
+                                  (.+ global-position (.-feedbackOffset this)))
+          ^g/HitTestResult result (g/HitTestResult)
           _ (.hitTestInView (.-instance w/WidgetsBinding)
                             result
-                            (.+ global-position (.-feedbackOffset this))
+                            catch-point
                             (.-viewId this))
-          targets (.getDragTargets this (.-path result))
+          targets (.getDragTargets this catch-point (.-path result))
           lists-match? (and (>= (count targets)
                                 (count (.-enteredTargets this)))
                             (seq (.-enteredTargets this))
@@ -332,13 +344,32 @@
 
             (.-activeTarget! this new-target))))))
 
-  (getDragTargets [^DragAvatar _ path]
-    (for [entry path
-          :let [target (.-target entry)]
-          :when (instance? r/RenderMetaData target)
-          :let [meta-data (.-metaData target)]
-          :when (instance? DragTargetState meta-data)]
-      meta-data))
+  ;; Current global bounds of the feedback, for custom catch-point functions.
+  (^w/Rect feedbackRect [^DragAvatar this]
+    (let [^w/Offset top-left (.-lastOffset this)
+          ^w/Size size (or (some-> this .-context .findRenderObject .-size) w/Size.zero)]
+      (.& top-left size)))
+
+  ;; Targets under the catch point, front-to-back. First the hit-test path
+  ;; (true z-order) filtered by each target's accept region — this is where a
+  ;; region *narrower* than the box drops the target. Then registered targets
+  ;; whose region reaches *past* their box and thus can't be found by hit-test.
+  (getDragTargets [^DragAvatar this ^w/Offset point path]
+    (let [path-targets (vec (for [entry path
+                                  :let [target (.-target entry)]
+                                  :when (instance? r/RenderMetaData target)
+                                  :let [meta-data (.-metaData target)]
+                                  :when (instance? DragTargetState meta-data)
+                                  :when (.acceptsPoint ^DragTargetState meta-data point)]
+                              meta-data))
+          seen (set path-targets)]
+      (concat path-targets
+              (for [^DragTargetState t @extended-region-targets
+                    :when (not (contains? seen t))
+                    :when (and (.-mounted t) (some-> t .-context .findRenderObject))
+                    :when (= (-> t .-context w/View.of .-viewId) (.-viewId this))
+                    :when (.acceptsPoint t point)]
+                t))))
 
   (leaveAllEntered [^DragAvatar this]
     (doseq [target (.-enteredTargets this)]
@@ -430,6 +461,7 @@
                      onAccept
                      onLeave
                      onMove
+                     acceptRegion
                      ^w/HitTestBehavior hitTestBehavior]
   :extends (w/StatefulWidget .key k)
 
@@ -439,6 +471,23 @@
 (deftype DragTargetState [^:mutable candidateAvatars
                           ^:mutable rejectedAvatars]
   :extends (#/(w/State DragTarget))
+
+  (initState [^DragTargetState this]
+    (.initState ^super this)
+    (when (-> this .-widget .-acceptRegion)
+      (swap! extended-region-targets conj this))
+    nil)
+
+  (didUpdateWidget [^DragTargetState this ^DragTarget _]
+    (.didUpdateWidget ^super this _)
+    (if (-> this .-widget .-acceptRegion)
+      (swap! extended-region-targets conj this)
+      (swap! extended-region-targets disj this))
+    nil)
+
+  (dispose [^DragTargetState this]
+    (swap! extended-region-targets disj this)
+    (.dispose ^super this))
 
   (^w/Widget build [^DragTargetState this ^w/BuildContext context]
     (w/MetaData
@@ -454,6 +503,20 @@
       (modify)))
 
   DragTargetState
+  ;; Whether `global-point` falls inside this target's accept region. With no
+  ;; custom region the region is the box, and hitTestInView already guaranteed
+  ;; the hit, so it's a plain yes. A custom `:accept-region` maps the box rect
+  ;; (in local coords) to any rect — narrower, wider, or shifted.
+  (^bool acceptsPoint [^DragTargetState this ^w/Offset global-point]
+    (let [region-fn (-> this .-widget .-acceptRegion)]
+      (if (nil? region-fn)
+        true
+        (if-let [^r/RenderBox box (some-> this .-context .findRenderObject)]
+          (let [^w/Size size (.-size box)
+                ^w/Rect region (region-fn (.& w/Offset.zero size))]
+            (.contains region (.globalToLocal box global-point)))
+          false))))
+
   (^bool didEnter [^DragTargetState this ^DragAvatar avatar]
     (assert (not (-> this .-candidateAvatars (contains? avatar))))
     (assert (not (-> this .-rejectedAvatars (contains? avatar))))
@@ -502,6 +565,7 @@
                           axis
                           placeholder
                           feedback-offset
+                          catch-point
                           drag-anchor-strategy
                           affinity
                           max-simultaneous-drags
@@ -533,6 +597,7 @@
      (some-> axis t/axis)
      placeholder
      (t/offset feedback-offset)
+     catch-point
      drag-anchor-strategy
      (some-> (or affinity axis) t/axis)
      (some-> max-simultaneous-drags int)
@@ -553,7 +618,7 @@
      child)))
 
 (defn ^w/Widget drag-target*
-  [{:keys [key builder on-will-accept on-accept on-leave on-move hit-test-behavior]}]
+  [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior]}]
   (DragTarget
    (t/widget-key key)
    (if (fn? builder)
@@ -563,4 +628,5 @@
    on-accept
    on-leave
    on-move
+   accept-region
    (t/hit-test-behavior (or hit-test-behavior r/HitTestBehavior.translucent))))
