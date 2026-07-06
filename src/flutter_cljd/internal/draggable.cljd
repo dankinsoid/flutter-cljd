@@ -35,6 +35,7 @@
                     ^bool rootOverlay
                     ^w/HitTestBehavior hitTestBehavior
                     allowedButtonsFilter
+                    ^bool enabled
                     ^w/Widget child]
   :extends (w/StatefulWidget .key k)
 
@@ -83,16 +84,30 @@
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
   (initState [^DraggableState this]
     (.initState ^super this)
-    (set! (.-recognizer this) (.createRecognizer (.-widget this) #(.startDrag this %)))
+    (when (.-enabled (.-widget this))
+      (set! (.-recognizer this) (.createRecognizer (.-widget this) #(.startDrag this %))))
     nil)
+
+  (didUpdateWidget [^DraggableState this ^Draggable _]
+    (.didUpdateWidget ^super this _)
+    (let [^Draggable widget (.-widget this)]
+      (cond
+        ;; enabled -> create the recognizer lazily
+        (and (.-enabled widget) (nil? recognizer))
+        (do (set! (.-recognizer this) (.createRecognizer widget #(.startDrag this %)))
+            (set! (.-gestureSettings (.-recognizer this))
+                  (w/MediaQuery.maybeGestureSettingsOf (.-context this))))
+        ;; disabled -> drop the recognizer once no drag is in flight
+        (and (not (.-enabled widget)) recognizer)
+        (.disposeRecognizerIfInactive this))))
 
   (dispose [^DraggableState this]
     (.disposeRecognizerIfInactive this)
     (.dispose ^super this))
 
   (didChangeDependencies [^DraggableState this]
-    (set! (.-gestureSettings recognizer)
-          (w/MediaQuery.maybeGestureSettingsOf (.-context this)))
+    (some-> recognizer
+            (.-gestureSettings! (w/MediaQuery.maybeGestureSettingsOf (.-context this))))
     (.didChangeDependencies ^super this))
 
   ;; Build method
@@ -100,17 +115,22 @@
     (assert (w/debugCheckHasOverlay context))
     (let [^int activeCount (.-activeCount this)
           ^Draggable widget (.-widget this)
-          ^bool can-drag (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget)))
+          ^bool can-drag (and (.-enabled widget)
+                              (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget))))
           ^bool show-child (zero? activeCount)
           ^w/Size? size (some-> context .findRenderObject .-size)]
-      (w/Transform.translate
-       .offset (-> this .-offset)
-       .child (w/Listener
-               .behavior (.-hitTestBehavior widget)
-               .onPointerDown (when can-drag #(.routePointer this %))
-               .child (if show-child
-                        (.-child widget)
-                        (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size)))))))
+      ;; When disabled and idle, collapse to the bare child: no Listener node,
+      ;; zero hit-test footprint, no recognizer held.
+      (if (and (not (.-enabled widget)) show-child)
+        (.-child widget)
+        (w/Transform.translate
+         .offset (-> this .-offset)
+         .child (w/Listener
+                 .behavior (.-hitTestBehavior widget)
+                 .onPointerDown (when can-drag #(.routePointer this %))
+                 .child (if show-child
+                          (.-child widget)
+                          (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))))))
 
   (setState [^DraggableState this modify]
     (if (.-mounted this)
@@ -137,14 +157,22 @@
                 (< activeCount (.-maxSimultaneousDrags widget)))
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
               _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
-              ^w/Widget feedback (if (instance? w/Widget (.-feedback widget))
-                                   (.-feedback widget)
-                                   ((.-feedback widget) (.-child widget)))
+              ^w/OverlayState overlay-state (w/Overlay.of
+                                             (.-context this)
+                                             .debugRequiredFor widget
+                                             .rootOverlay (.-rootOverlay widget))
+              ^w/Widget raw-feedback (if (instance? w/Widget (.-feedback widget))
+                                       (.-feedback widget)
+                                       ((.-feedback widget) (.-child widget)))
+              ;; Feedback is mounted under the Overlay, so it loses the inherited
+              ;; themes (text style, icon theme, Theme…) living above the draggable.
+              ;; Re-inject everything between the draggable and the overlay contexts.
+              ^w/Widget feedback (.wrap (w/InheritedTheme.capture
+                                         .from (.-context this)
+                                         .to (.-context overlay-state))
+                                        raw-feedback)
               ^DragAvatar avatar (DragAvatar
-                                  (w/Overlay.of
-                                   (.-context this)
-                                   .debugRequiredFor widget
-                                   .rootOverlay (.-rootOverlay widget))
+                                  overlay-state
                                   (.-data widget)
                                   (.-axis widget)
                                   (.+ position (.-offset this))
@@ -473,13 +501,15 @@
                           ignoring-feedback-pointer
                           root-overlay
                           hit-test-behavior
-                          allowed-buttons-filter]
+                          allowed-buttons-filter
+                          enabled]
                    :or {feedback-offset w/Offset.zero
                         drag-anchor-strategy child-drag-anchor-strategy
                         hit-test-behavior w/HitTestBehavior.deferToChild
                         ignoring-feedback-semantics true
                         ignoring-feedback-pointer true
-                        root-overlay false}}
+                        root-overlay false
+                        enabled true}}
                   child]
   (let [delay (some-> (if (= :default delay) g/kLongPressTimeout delay) t/duration)]
     (Draggable
@@ -506,6 +536,7 @@
      (boolean root-overlay)
      (t/hit-test-behavior hit-test-behavior)
      allowed-buttons-filter
+     (boolean enabled)
      child)))
 
 (defn ^w/Widget drag-target*
