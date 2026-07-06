@@ -20,6 +20,8 @@ bin/check
 It compiles, then runs `dart analyze lib/cljd-out`, failing only on
 error-severity issues (warnings/infos are the generated-code baseline).
 
-Caveat: ClojureDart emits unresolved member accesses as `(x as dynamic).m()`, so
-those are NOT caught by `dart analyze` — the compiler reports them as
-`DYNAMIC WARNING:` lines during the compile step instead. Watch both.
+Scope: `dart analyze` catches malformed emitted Dart, broken imports, and type
+mismatches on statically-resolved targets. It does NOT catch calls to unresolved
+members — ClojureDart emits those as `(x as dynamic).m()`. Dynamic dispatch is
+idiomatic here (~240 `DYNAMIC WARNING:` lines on a clean build), so those
+warnings are baseline noise, not an error gate — don't try to read them.

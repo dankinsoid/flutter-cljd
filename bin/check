@@ -7,8 +7,9 @@
 #
 # What it catches: malformed emitted Dart, broken/stale imports, and type
 # errors on statically-resolved targets. What it does NOT catch: calls to
-# members ClojureDart couldn't resolve — those are emitted as `(x as dynamic).m()`
-# and instead reported by the compiler as `DYNAMIC WARNING:` lines above.
+# members ClojureDart couldn't resolve — those become `(x as dynamic).m()`.
+# The compiler's `DYNAMIC WARNING:` lines (~240 on a clean build) are baseline
+# noise from idiomatic dynamic interop, not an error signal.
 #
 # Warnings/infos are the generated-code baseline (deprecations, protected-member
 # access into Flutter internals) and never fail the check. Only error-severity
