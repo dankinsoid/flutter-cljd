@@ -542,6 +542,10 @@
 
   (paint [this ^ui/Canvas canvas ^ui/Offset offset ^m/ImageConfiguration configuration]
     (let [^ui/Size size (.-size configuration)
+          ;; directional gradients (the default :begin/:end are AlignmentDirectional)
+          ;; need a text direction to resolve start/end into a shader — the native
+          ;; BoxDecoration painter forwards it from the configuration, so we do too
+          ^m/TextDirection? text-direction (.-textDirection configuration)
           rect (ui/Rect.fromLTWH (.-dx offset) (.-dy offset) (.-width size) (.-height size))
           path (if (= rect cached-rect)
                  cached-path
@@ -565,7 +569,7 @@
         (when-not (:inset? shadow)
           (paint-shadow canvas rect corners (:box shadow))))
       (when (some? gradient)
-        (.drawPath canvas path (doto (fill-paint) (.-shader! (.createShader gradient rect)))))
+        (.drawPath canvas path (doto (fill-paint) (.-shader! (.createShader gradient rect .textDirection text-direction)))))
       (when (and (nil? gradient) (some? color))
         (.drawPath canvas path (doto (fill-paint) (.-color! color))))
       ;; the image is clipped to the smooth outline via DecorationImagePainter's
@@ -590,7 +594,7 @@
           ;; a gradient border strokes the same inset path, but its paint is a
           ;; shader spanning the whole box instead of the side's flat color
           (when (some? border-gradient)
-            (.-shader! stroke (.createShader border-gradient rect)))
+            (.-shader! stroke (.createShader border-gradient rect .textDirection text-direction)))
           (.drawPath canvas
                      (smooth-path (.deflate rect hw)
                                   (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
