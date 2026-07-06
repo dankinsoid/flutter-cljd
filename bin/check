@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Compile ClojureDart → Dart, then statically analyze the generated Dart.
+#
+# `clojure -M:cljd compile` only emits Dart; it does not run the Dart analyzer,
+# so type/interop mistakes that survive as valid-but-wrong Dart slip through.
+# This runs `dart analyze` over the generated tree as a second gate.
+#
+# What it catches: malformed emitted Dart, broken/stale imports, and type
+# errors on statically-resolved targets. What it does NOT catch: calls to
+# members ClojureDart couldn't resolve — those are emitted as `(x as dynamic).m()`
+# and instead reported by the compiler as `DYNAMIC WARNING:` lines above.
+#
+# Warnings/infos are the generated-code baseline (deprecations, protected-member
+# access into Flutter internals) and never fail the check. Only error-severity
+# analyzer issues do.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+echo "▶ Compiling ClojureDart → Dart…"
+if ! clojure -M:cljd compile; then
+	echo "✖ ClojureDart compilation failed."
+	exit 1
+fi
+
+echo "▶ Analyzing generated Dart (lib/cljd-out)…"
+report=$(dart analyze lib/cljd-out 2>&1)
+errors=$(printf '%s\n' "$report" | grep -E '^[[:space:]]*error ' || true)
+if [ -n "$errors" ]; then
+	printf '%s\n' "$errors"
+	count=$(printf '%s\n' "$errors" | grep -c .)
+	echo "✖ ${count} Dart error(s) in generated code."
+	exit 1
+fi
+echo "✓ No Dart errors (warnings/infos are the generated-code baseline)."
