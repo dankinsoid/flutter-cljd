@@ -111,7 +111,8 @@
                   (w/MediaQuery.maybeGestureSettingsOf (.-context this))))
         ;; disabled -> drop the recognizer once no drag is in flight
         (and (not (.-enabled widget)) recognizer)
-        (.disposeRecognizerIfInactive this))))
+        (.disposeRecognizerIfInactive this)))
+    nil)
 
   (dispose [^DraggableState this]
     (.disposeRecognizerIfInactive this)
