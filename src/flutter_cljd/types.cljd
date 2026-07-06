@@ -1321,12 +1321,23 @@
    Types: `:linear`, `:radial`, `:sweep`, `:diamond`, `:mesh`.
    Passes through existing Gradient instances.
 
+   A plain color (anything `color` accepts — a keyword, `Color`, hex, `[r g b]`)
+   is coerced to a solid single-color `LinearGradient`, so a color can be used
+   wherever a gradient is expected (e.g. animating a fill or border between a
+   solid color and a gradient).
+
    Requires `(shader/load-shaders!)` before use (Impeller only).
    Without it: `:linear`/`:radial`/`:sweep` fall back to sRGB,
    `:diamond` falls back to radial, `:mesh` falls back to a two-color linear."
-  (fn [g] (if (instance? m/Gradient g) ::instance (:type g))))
+  (fn [g] (cond
+            (instance? m/Gradient g) ::instance
+            (map? g) (:type g)
+            :else ::color)))
 
 (defmethod gradient ::instance [g] g)
+(defmethod gradient ::color [c]
+  (let [c (color c)]
+    (linear-gradient {:colors [c c]})))
 (defmethod gradient :linear [args] (linear-gradient args))
 (defmethod gradient :radial [args] (radial-gradient args))
 (defmethod gradient :sweep [args] (sweep-gradient args))

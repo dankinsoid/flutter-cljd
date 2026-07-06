@@ -137,3 +137,23 @@
     (is (thrown? Exception
                  (t/decoration {:border-radius (m/BorderRadius.circular 8)
                                 :border {:width 2 :gradient grad}})))))
+
+(deftest test-gradient-color-coercion
+  (testing "t/gradient coerces a color into a solid gradient (same at both ends)"
+    (let [g (t/gradient :red)
+          colors (.-colors g)]
+      (is (instance? m/Gradient g))
+      ;; solid: every stop is the same color, whatever resampling happened
+      (is (apply = colors))))
+
+  (testing "a Color instance and a hex string coerce too"
+    (is (instance? m/Gradient (t/gradient m/Colors.blue)))
+    (is (instance? m/Gradient (t/gradient "#ff0000"))))
+
+  (testing "an existing gradient and a typed map still pass through"
+    (is (instance? m/Gradient (t/gradient grad)))
+    (is (instance? m/Gradient (t/gradient (t/linear-gradient {:colors [:red :blue]})))))
+
+  (testing "a color works as a (solid) gradient border"
+    (is (instance? sc/SmoothDecoration
+                   (t/decoration {:border {:width 2 :gradient :red}})))))
