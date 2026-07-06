@@ -2263,8 +2263,10 @@ Options:
 (defn ^w/Widget drag-target
   "Drop zone that receives data from `draggable` widgets.
 
-`builder` is `(fn [context candidate-data])` — called to build the widget,
-where `candidate-data` is a seq of `:data` values from draggables currently hovering.
+`builder` is `(fn [context candidate-data rejected-data])` — called to build the widget.
+`candidate-data` is a seq of `:data` values from hovering draggables this target *will* accept
+(`:on-will-accept` returned truthy); `rejected-data` is those it *won't*. Use them to change
+appearance on hover — e.g. highlight when `candidate-data` is non-empty.
 
 Options:
 
