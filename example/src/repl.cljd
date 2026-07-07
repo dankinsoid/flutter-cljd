@@ -503,9 +503,11 @@
            return? (atom true) :as $return]
    (ui/column
     :cross-axis-alignment :stretch
-    (action-bar
-     (btn (str "return-on-drop: " (if return? "ON" "OFF")) #(swap! $return not))
-     (btn "Reset" (fn [] (reset! $items (initial-drag-items)))))
+    (->> (ui/row
+          :main-axis-alignment :space-evenly
+          (btn (str "return-on-drop: " (if return? "ON" "OFF")) #(swap! $return not))
+          (btn "Reset" (fn [] (reset! $items (initial-drag-items)))))
+         (ui/padding {:v 8}))
     (->> (ui/text "Drag an icon onto another to swap. Dragged icon must stay on top."
                   {:size 12 :color :grey})
          (ui/center)
@@ -581,8 +583,10 @@
 (def current preview-switcher)
 
 (defn ^:async main []
-  (await (shader/load-oklab-shader!))
-  (await (shader/load-mesh-shader!))
+  ;; Shaders fail to compile (Invalid SkSL) on some macOS/Impeller setups; don't
+  ;; let that block the whole preview app — gradient tabs just won't render.
+  (try (await (shader/load-oklab-shader!)) (catch Object _ nil))
+  (try (await (shader/load-mesh-shader!)) (catch Object _ nil))
   (c/runApp
    (c/CupertinoApp
     .debugShowCheckedModeBanner false

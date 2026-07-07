@@ -1,6 +1,7 @@
 (ns flutter-cljd.internal.draggable
   (:require
    [flutter-cljd.types :as t]
+   [cljd.flutter :as f]
    ["dart:core" :as core]
    ["package:flutter/painting.dart" :as p]
    ["package:flutter/rendering.dart" :as r]
@@ -8,6 +9,17 @@
    ["package:flutter/animation.dart" :as a]
    ["package:flutter/gestures.dart" :as g]
    ["package:flutter/services.dart" :as s]))
+
+(defn ^w/Widget capture-inherited
+  "Re-injects the inherited environment of `from` around `child`, which is about
+  to be mounted under `to` (an Overlay). Captures both Flutter's InheritedThemes
+  (Theme, DefaultTextStyle, IconTheme…) and this project's `with-inherited`
+  bindings, which live in a single InheritedBindings widget."
+  [^w/BuildContext from ^w/BuildContext to ^w/Widget child]
+  (let [child (.wrap (w/InheritedTheme.capture .from from .to to) child)
+        elt (#/(.getElementForInheritedWidgetOfExactType f/InheritedBindings) from)
+        bindings (some-> elt ^f/InheritedBindings (.-widget) .-bindings)]
+    (if bindings (f/InheritedBindings. bindings child) child)))
 
 (declare DraggableState)
 (declare DragAvatar)
@@ -48,11 +60,7 @@
                     ^w/Widget child]
   :extends (w/StatefulWidget .key k)
 
-  (createState [^Draggable _]
-    (DraggableState nil 0
-                    (w/LayerLink) (w/GlobalKey) (w/OverlayPortalController)
-                    (w/ValueNotifier w/Offset.zero)
-                    false nil nil nil))
+  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil))
 
    ;; Creates a gesture recognizer that recognizes the start of the drag  
   Draggable
@@ -88,33 +96,10 @@
 (defn pointer-drag-anchor-strategy [^Draggable _ ^w/BuildContext _ ^w/Offset _] w/Offset.zero)
 
 ;; DraggableState class
-;;
-;; All three phases of a draggable — active drag, resting displaced at a drop
-;; target, and returning home — share ONE overlay-based renderer so the moving
-;; visual is ALWAYS painted on top (no z-order pop, no handoff flicker):
-;;
-;;   In-tree  — a CompositedTransformTarget (LayerLink leader) that always holds
-;;              layout. It renders the live child only at home & idle; otherwise
-;;              a same-sized placeholder so the slot keeps its size.
-;;   Floating — an OverlayPortal (shown whenever dragging OR visualOffset ≠ 0)
-;;              whose child is a CompositedTransformFollower(link, visualOffset).
-;;              It carries the `feedback` while a drag/snap is in flight and the
-;;              live child (preserved by `childKey`) while resting/returning.
-;;
-;; `visualOffset` is the displacement of the visual from its home slot (0 =
-;; home). Because the follower is in the overlay whenever floating, every phase
-;; paints on top; the only in-tree materialization happens at offset 0, where the
-;; follower sits exactly on the leader, so the home handoff is seamless.
 (deftype DraggableState [^:mutable ^g/GestureRecognizer? recognizer
                          ^:mutable ^int activeCount
-                         ^w/LayerLink link
-                         ^w/GlobalKey childKey
-                         ^w/OverlayPortalController portalController
-                         ^#/(w/ValueNotifier w/Offset) visualOffset
-                         ^:mutable ^bool floating
-                         ^:mutable ^w/Widget? activeFeedback
-                         ^:mutable activeAvatar
-                         ^:mutable ^a/AnimationController? animController]
+                         ^:mutable ^w/Offset offset
+                         ^:mutable ^a/AnimationController? returnController]
   :extends (#/(w/State Draggable))
 
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
@@ -140,15 +125,14 @@
       ;; home. Skip if a return is already animating, so a parent rebuild mid-flight
       ;; doesn't restart it.
       (when (and (.-returnOnDrop widget)
-                 (nil? (.-animController this))
-                 (not (= (.-value (.-visualOffset this)) w/Offset.zero)))
+                 (nil? (.-returnController this))
+                 (not (= (.-offset this) w/Offset.zero)))
         (.returnHome this)))
     nil)
 
   (dispose [^DraggableState this]
-    (.stopAnim this)
+    (.stopReturn this)
     (.disposeRecognizerIfInactive this)
-    (.dispose (.-visualOffset this))
     (.dispose ^super this))
 
   (didChangeDependencies [^DraggableState this]
@@ -161,39 +145,22 @@
     (assert (w/debugCheckHasOverlay context))
     (let [^int activeCount (.-activeCount this)
           ^Draggable widget (.-widget this)
-          ^bool floating (.-floating this)
           ^bool can-drag (and (.-enabled widget)
                               (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget))))
-          ^w/Size? size (some-> context .findRenderObject .-size)
-          ^w/Widget in-tree
-          (cond
-            ;; disabled & settled at home: collapse to the bare child — no
-            ;; Listener node, zero hit-test footprint, no recognizer held.
-            (and (not (.-enabled widget)) (not floating) (zero? activeCount))
-            (w/KeyedSubtree .key (.-childKey this) .child (.-child widget))
-
-            ;; floating: a same-sized placeholder holds the slot. It is grabbable
-            ;; only while an active drag is in flight (to start an additional
-            ;; simultaneous drag) — at rest the displaced overlay child is grabbed.
-            floating
-            (w/Listener
-             .behavior (.-hitTestBehavior widget)
-             .onPointerDown (when (and can-drag (pos? activeCount)) #(.routePointer this %))
-             .child (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size)))
-
-            ;; at home & idle: the live child, grabbable.
-            :else
-            (w/Listener
-             .behavior (.-hitTestBehavior widget)
-             .onPointerDown (when can-drag #(.routePointer this %))
-             .child (w/KeyedSubtree .key (.-childKey this) .child (.-child widget))))]
-      (w/OverlayPortal
-       .controller (.-portalController this)
-       .overlayLocation (if (.-rootOverlay widget)
-                          w/OverlayChildLocation.rootOverlay
-                          w/OverlayChildLocation.nearestOverlay)
-       .overlayChildBuilder (fn [^w/BuildContext ctx] (.buildOverlayChild this ctx))
-       .child (w/CompositedTransformTarget .link (.-link this) .child in-tree))))
+          ^bool show-child (zero? activeCount)
+          ^w/Size? size (some-> context .findRenderObject .-size)]
+      ;; When disabled and idle, collapse to the bare child: no Listener node,
+      ;; zero hit-test footprint, no recognizer held.
+      (if (and (not (.-enabled widget)) show-child)
+        (.-child widget)
+        (w/Transform.translate
+         .offset (-> this .-offset)
+         .child (w/Listener
+                 .behavior (.-hitTestBehavior widget)
+                 .onPointerDown (when can-drag #(.routePointer this %))
+                 .child (if show-child
+                          (.-child widget)
+                          (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))))))
 
   (setState [^DraggableState this modify]
     (if (.-mounted this)
@@ -201,153 +168,102 @@
       (modify)))
 
   DraggableState
-  ;; The follower content shown in the overlay: the feedback while a drag/snap is
-  ;; in flight, otherwise the live child (preserved across the in-tree↔overlay
-  ;; toggle by `childKey`). The follower sits on the leader offset by
-  ;; `visualOffset`; only the follower rebuilds per drag frame (ValueNotifier).
-  (^w/Widget buildOverlayChild [^DraggableState this ^w/BuildContext _]
-    (let [^Draggable widget (.-widget this)
-          ^bool can-drag (.-enabled widget)
-          ^w/Widget content
-          (if-let [^w/Widget fb (.-activeFeedback this)]
-            (w/ExcludeSemantics
-             .excluding (.-ignoringFeedbackSemantics widget)
-             .child (w/IgnorePointer
-                     .ignoring (.-ignoringFeedbackPointer widget)
-                     .child fb))
-            (w/Listener
-             .behavior (.-hitTestBehavior widget)
-             .onPointerDown (when can-drag #(.routePointer this %))
-             .child (w/KeyedSubtree .key (.-childKey this) .child (.-child widget))))]
-      (w/ValueListenableBuilder
-       .valueListenable (.-visualOffset this)
-       .child content
-       .builder (fn [_ ^w/Offset offset ^w/Widget? child]
-                  (w/CompositedTransformFollower
-                   .link (.-link this)
-                   .offset offset
-                   .child child)))))
-
   (disposeRecognizerIfInactive [^DraggableState this]
     (when (and (.-recognizer this) (<= (.-activeCount this) 0))
       (-> this .-recognizer .dispose)
       (set! (.-recognizer this) nil)))
 
-  (stopAnim [^DraggableState this]
-    (when-let [^a/AnimationController ctrl (.-animController this)]
+  (stopReturn [^DraggableState this]
+    (when-let [^a/AnimationController ctrl (.-returnController this)]
       (.dispose ctrl)
-      (set! (.-animController this) nil))
-    nil)
+      (set! (.-returnController this) nil)))
 
-  ;; Drive `visualOffset` from its current value to `target` over `dur` along
-  ;; `curve`, then run `on-done`. A nil/zero duration (or an already-equal value)
-  ;; jumps instantly.
-  (animateVisual [^DraggableState this ^w/Offset target ^core/Duration? dur ^a/Curve curve on-done]
-    (.stopAnim this)
-    (let [^w/Offset start (.-value (.-visualOffset this))]
-      (if (or (nil? dur) (<= (.-inMicroseconds dur) 0) (= start target))
-        (do (set! (.-value (.-visualOffset this)) target)
-            (on-done))
-        (let [^a/AnimationController ctrl (a/AnimationController .vsync this .duration dur)]
-          (set! (.-animController this) ctrl)
-          (.addListener ctrl
-                        (fn [] (set! (.-value (.-visualOffset this))
-                                     (or (w/Offset.lerp start target (.transform curve (.-value ctrl)))
-                                         target))
-                          nil))
-          (.addStatusListener ctrl
-                              (fn [^a/AnimationStatus status]
-                                (when (= a/AnimationStatus.completed status)
-                                  (.stopAnim this)
-                                  (set! (.-value (.-visualOffset this)) target)
-                                  (on-done))
-                                nil))
-          (.forward ctrl))))
-    nil)
-
-  ;; Animate the displaced visual back to its home slot, then materialize it
-  ;; in-tree. Duration comes from :return-duration; 0/nil returns instantly.
+  ;; Animate the child's persisted offset back to zero (its home slot). Duration
+  ;; comes from :return-duration; 0/nil returns instantly.
   (returnHome [^DraggableState this]
-    (.animateVisual this w/Offset.zero (.-returnDuration (.-widget this)) a/Curves.linear
-                    (fn [] (.hideFloating this)))
-    nil)
+    (.stopReturn this)
+    (let [^w/Offset start (.-offset this)
+          ^core/Duration? dur (.-returnDuration (.-widget this))]
+      (when-not (= start w/Offset.zero)
+        (if (or (nil? dur) (<= (.-inMicroseconds dur) 0))
+          (.setState this #(set! (.-offset this) w/Offset.zero))
+          (let [^a/AnimationController ctrl (a/AnimationController .vsync this .duration dur)]
+            (set! (.-returnController this) ctrl)
+            (.addListener ctrl
+                          (fn [] (.setState this #(set! (.-offset this)
+                                                        (or (w/Offset.lerp start w/Offset.zero (.-value ctrl))
+                                                            w/Offset.zero)))))
+            (.addStatusListener ctrl
+                                (fn [^a/AnimationStatus status]
+                                  (when (= a/AnimationStatus.completed status)
+                                    (.setState this #(set! (.-offset this) w/Offset.zero))
+                                    (.stopReturn this))
+                                  nil))
+            (.forward ctrl))))
+      nil))
 
-  ;; Leave the floating state: hide the overlay and let the live child settle
-  ;; in-tree at the home slot (offset 0, so its position is unchanged).
-  (hideFloating [^DraggableState this]
-    (set! (.-value (.-visualOffset this)) w/Offset.zero)
-    (set! (.-floating this) false)
-    (.hide (.-portalController this))
-    (.setState this (fn []))
-    nil)
-
-  ;; Route pointer event to recognizer
+    ;; Route pointer event to recognizer
   (routePointer [^DraggableState this ^g/PointerDownEvent event]
     (let [^Draggable widget (.-widget this)]
       (when (or (nil? (.-maxSimultaneousDrags widget))
                 (< (.-activeCount this) (.-maxSimultaneousDrags widget)))
         (.addPointer (.-recognizer this) event))))
 
-  ;; Start drag handling
+    ;; Start drag handling
   (startDrag [^DraggableState this ^w/Offset position]
     (let [^Draggable widget (.-widget this)]
       (when (or (nil? (.-maxSimultaneousDrags widget))
                 (< activeCount (.-maxSimultaneousDrags widget)))
-        ;; Grabbing it again cancels any in-flight snap/return; drag from where it is.
-        (.stopAnim this)
+        ;; Grabbing it again cancels any in-flight return; drag from where it is.
+        (.stopReturn this)
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
-              ;; Persisted displacement of a resting child. The visual sits at
-              ;; home+visualOffset, but the in-tree leader is at home, so shift the
-              ;; probe position by it to keep the grab point under the finger.
-              ^w/Offset persisted (.-value (.-visualOffset this))
+              _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
               ^w/OverlayState overlay-state (w/Overlay.of
                                              (.-context this)
                                              .debugRequiredFor widget
                                              .rootOverlay (.-rootOverlay widget))
-              ;; The overlay child (feedback / live child) is a widget-tree child
-              ;; of the OverlayPortal, so it keeps the inherited environment
-              ;; (themes + `with-inherited` bindings) — no manual re-injection.
               ^w/Widget raw-feedback (if (instance? w/Widget (.-feedback widget))
                                        (.-feedback widget)
                                        ((.-feedback widget) (.-child widget)))
-              avatar (DragAvatar
-                      this
-                      overlay-state
-                      (.-data widget)
-                      (.-axis widget)
-                      (.+ position persisted)
-                      drag-start-point
-                      (.-feedbackOffset widget)
-                      (.-catchPoint widget)
-                      (fn [^g/DragUpdateDetails details]
-                        (when (and (.-mounted this) (.-onDragUpdate widget))
-                          ((.-onDragUpdate widget) details)))
-                      (fn [^w/Velocity velocity ^w/Offset offset ^w/Offset final-offset ^bool was-accepted]
-                        (.willEndDrag this velocity offset final-offset was-accepted))
-                      (.-context this)
-                      (-> this .-context w/View.of .-viewId)
-                      nil
-                      #{}
-                      w/Offset.zero
-                      nil)]
-          ;; Enter the floating state: show the overlay carrying the feedback and
-          ;; swap the in-tree slot to a placeholder.
-          (set! (.-activeFeedback this) raw-feedback)
-          (set! (.-activeAvatar this) avatar)
-          (set! (.-floating this) true)
-          (.show (.-portalController this))
-          (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
+              ;; Feedback is mounted under the Overlay, so it loses the inherited
+              ;; environment (themes + `with-inherited` bindings) living above the
+              ;; draggable. Re-inject it between the draggable and overlay contexts.
+              ^w/Widget feedback (capture-inherited (.-context this)
+                                                    (.-context overlay-state)
+                                                    raw-feedback)
+              ^DragAvatar avatar (DragAvatar
+                                  overlay-state
+                                  (.-data widget)
+                                  (.-axis widget)
+                                  (.+ position (.-offset this))
+                                  drag-start-point
+                                  feedback
+                                  (.-feedbackOffset widget)
+                                  (.-catchPoint widget)
+                                  (fn [details ^w/Offset offset]
+                                    (when (and (.-mounted this) (.-onDragUpdate widget))
+                                      ((.-onDragUpdate widget) details)))
+                                  (fn [^w/Velocity velocity ^w/Offset offset ^w/Offset final-offset ^bool was-accepted]
+                                    (.willEndDrag this velocity offset final-offset was-accepted))
+                                  (fn [^w/Velocity velocity ^w/Offset offset ^bool was-accepted]
+                                    (.didEndDrag this velocity offset was-accepted))
+                                  (.-ignoringFeedbackSemantics widget)
+                                  (.-ignoringFeedbackPointer widget)
+                                  (-> this .-context w/View.of .-viewId)
+                                  nil
+                                  []
+                                  w/Offset.zero
+                                  nil
+                                  w/Offset.zero
+                                  w/Offset.zero
+                                  nil
+                                  nil
+                                  (.-context this)
+                                  (a/AnimationController .vsync this))]
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
           avatar))))
-
-  ;; Live drag frames push the visual displacement here (only the active avatar
-  ;; owns the shared overlay; stale multi-drag avatars are ignored visually).
-  (setDragVisual [^DraggableState this avatar ^w/Offset offset]
-    (when (identical? avatar (.-activeAvatar this))
-      (set! (.-value (.-visualOffset this)) offset))
-    nil)
 
   (willEndDrag [^DraggableState this
                 ^w/Velocity velocity
@@ -360,56 +276,48 @@
         :velocity velocity
         :offset offset})))
 
-  ;; On finger-up the active avatar snaps the visual (still the feedback) to the
-  ;; accepted target's center-delta (or 0 if rejected/overridden) in the same
-  ;; overlay, then finishes. Stale avatars finish immediately without a visual.
-  (settleDrag [^DraggableState this avatar ^w/Velocity velocity ^w/Offset final-offset ^bool was-accepted]
-    (if (identical? avatar (.-activeAvatar this))
-      (.animateVisual this final-offset (t/duration 200) a/Curves.easeInOut
-                      (fn [] (.finishAvatar this avatar velocity final-offset was-accepted true)))
-      (.finishAvatar this avatar velocity final-offset was-accepted false))
-    nil)
-
-  ;; End-of-drag bookkeeping: release targets, swap the overlay back to the live
-  ;; child, drop the active-drag count, fire :on-drag-end, then either return home
-  ;; (:return-on-drop), hide (settled at home), or rest displaced in the overlay.
-  (finishAvatar [^DraggableState this avatar ^w/Velocity velocity ^w/Offset final-offset ^bool was-accepted ^bool primary]
-    (.leaveAllEntered avatar)
-    (.-activeTarget! avatar nil)
-    (when (identical? avatar (.-activeAvatar this))
-      (set! (.-activeAvatar this) nil)
-      (set! (.-activeFeedback this) nil))
-    (.setState this #(set! (.-activeCount this) (dec (.-activeCount this))))
+  (didEndDrag [^DraggableState this
+               ^w/Velocity velocity
+               ^w/Offset offset
+               ^bool was-accepted]
+    (.setState this (fn []
+                      (.-offset! this offset)
+                      (.-activeCount! this (dec (.-activeCount this)))))
     (when-not (.-mounted this)
       (.disposeRecognizerIfInactive this))
     (when (and (.-mounted this) (.-onDragEnd (.-widget this)))
       ((.-onDragEnd (.-widget this))
        {:was-accepted was-accepted
         :velocity velocity
-        :offset final-offset}))
-    (when (and (.-mounted this) primary)
-      (cond
-        (.-returnOnDrop (.-widget this)) (.returnHome this)
-        (= final-offset w/Offset.zero) (.hideFloating this)
-        :else nil))
-    nil))
+        :offset offset}))
+    ;; The child now rests where it was dropped; :return-on-drop sends it home.
+    (when (and (.-mounted this) (.-returnOnDrop (.-widget this)))
+      (.returnHome this))))
 
-(deftype DragAvatar [^DraggableState state
-                     ^w/OverlayState overlayState
+(deftype DragAvatar [^w/OverlayState overlayState
                      data
                      ^p/Axis? axis
                      ^w/Offset initialPosition
                      ^w/Offset dragStartPoint
+                     ^w/Widget? feedback
                      ^w/Offset feedbackOffset
                      catchPoint
                      onDragUpdate
                      onDragWillEnd
-                     ^w/BuildContext originalContext
+                     onDragEnd
+                     ^bool ignoringFeedbackSemantics
+                     ^bool ignoringFeedbackPointer
                      ^int viewId
                      ^:mutable activeTarget
                      ^:mutable enteredTargets
                      ^:mutable ^w/Offset position
-                     ^:mutable ^w/Offset? lastOffset]
+                     ^:mutable ^w/Offset? lastOffset
+                     ^:mutable ^w/Offset finalOffset
+                     ^:mutable ^w/Offset overlayOffset
+                     ^:mutable ^w/OverlayEntry? entry
+                     ^:mutable ^w/BuildContext? context
+                     ^:mutable ^w/BuildContext originalContext
+                     ^:mutable ^a/AnimationController controller]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -425,31 +333,28 @@
 
   DragAvatar
   (prepare [^DragAvatar this]
-    (.updateDrag this (.-initialPosition this) (g/DragUpdateDetails .globalPosition (.-initialPosition this)))
+    (let [entry (w/OverlayEntry .builder #(.buildWidget this %))]
+      (set! (.-entry this) entry)
+      (.insert (.-overlayState this) entry)
+      (.updateDrag this (.-initialPosition this) (g/DragUpdateDetails .globalPosition (.-initialPosition this))))
     nil)
 
   (updateDrag [^DragAvatar this ^w/Offset global-position ^g/DragUpdateDetails details]
     (.-position! this global-position)
     (.-lastOffset! this (.- global-position (.-dragStartPoint this)))
 
-    (let [^DraggableState ds (.-state this)]
-      (when (and (.-mounted (.-overlayState this)) (.-mounted ds))
-        (let [^r/RenderBox overlay-box (.findRenderObject (.-context (.-overlayState this)))
-              ^r/RenderBox? child-box (some-> ds .-context .findRenderObject)
-              ^w/Offset overlay-space-offset (.globalToLocal overlay-box global-position)
-              ^w/Offset raw-offset (.- overlay-space-offset (.-dragStartPoint this))
-              delegate (w/DragBoundary.forRectOf (.-originalContext this))
-              ^w/Size? size (some-> child-box .-size)
-              rect (.nearestPositionWithinBoundary delegate (.& raw-offset (or size w/Size.zero)))
-              ;; The clamped feedback top-left (overlay-local), optionally
-              ;; overridden by :on-drag-update.
-              ^w/Offset offset (or ((.-onDragUpdate this) details) (.-topLeft rect))
-              ;; Home slot top-left in overlay-local space; the difference is the
-              ;; follower's displacement from its leader.
-              ^w/Offset home (if child-box
-                               (.globalToLocal overlay-box (.localToGlobal child-box w/Offset.zero))
-                               w/Offset.zero)]
-          (.setDragVisual ds this (.- offset home)))))
+    (when (.-mounted (.-overlayState this))
+      (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
+            ^w/Offset overlay-space-offset (.globalToLocal box global-position)
+            ^w/Offset offset (.- overlay-space-offset (.-dragStartPoint this))
+            delegate (w/DragBoundary.forRectOf (.-originalContext this))
+            size (some-> this .-context .findRenderObject .-size)
+            rect (.nearestPositionWithinBoundary delegate (.& offset (or size w/Size.zero)))
+            offset (or ((.-onDragUpdate this) details (.-topLeft rect))
+                       (.-topLeft rect))]
+        (.-overlayOffset! this offset)
+        (.-finalOffset! this offset)
+        (.markNeedsBuild (.-entry this))))
 
     (let [^w/Offset catch-point (if-let [catch-fn (.-catchPoint this)]
                                   (catch-fn (.feedbackRect this) global-position)
@@ -484,10 +389,9 @@
             (.-activeTarget! this new-target))))))
 
   ;; Current global bounds of the feedback, for custom catch-point functions.
-  ;; Sized from the in-tree slot (== child size == default feedback size).
   (^w/Rect feedbackRect [^DragAvatar this]
     (let [^w/Offset top-left (.-lastOffset this)
-          ^w/Size size (or (some-> this .-state .-context .findRenderObject .-size) w/Size.zero)]
+          ^w/Size size (or (some-> this .-context .findRenderObject .-size) w/Size.zero)]
       (.& top-left size)))
 
   ;; Targets under the catch point, front-to-back. First the hit-test path
@@ -517,14 +421,14 @@
     (.-enteredTargets! this #{}))
 
   (finishDrag [^DragAvatar this end-kind velocity]
-    (let [^DraggableState ds (.-state this)
+    (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
           target (when (= end-kind :dropped) (.-activeTarget this))
           target-box (some-> target .-context .findRenderObject)
           target-size (some-> target-box .-size)
-          child-box (some-> ds .-context .findRenderObject)
+          child-box (some-> this .-originalContext .findRenderObject)
           ;; Center-to-center delta by which the child must be translated to land
-          ;; on the target. This is also the resting `visualOffset` (displacement
-          ;; from the home slot), used directly by the follower.
+          ;; on the target. Used both as the Transform.translate offset and,
+          ;; via localToGlobal below, as the feedback's resting position.
           expected-offset (if (and target-box child-box)
                             (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
                                 (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero)))
@@ -537,8 +441,50 @@
           last-offset (.-lastOffset this)
           velocity (or velocity w/Velocity.zero)
           final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
-                           expected-offset)]
-      (.settleDrag ds this velocity final-offset was-accepted)))
+                           expected-offset)
+          duration (t/duration 200)]
+      (if-not (= final-offset last-offset)
+        (do
+          (.-duration! (.-controller this) duration)
+          (.-finalOffset! this (.localToGlobal child-box final-offset))
+          (.addStatusListener (.-controller this)
+                              (fn [status]
+                                (when (= a/AnimationStatus.completed status)
+                                  (.dragCompletion this velocity final-offset was-accepted))
+                                nil))
+          (.forward (.-controller this) .from 0.0))
+        (.dragCompletion this velocity final-offset was-accepted))))
+
+  (dragCompletion [^DragAvatar this
+                   ^w/Velocity velocity
+                   ^w/Offset offset
+                   ^bool was-accepted]
+    (.clearStatusListeners (.-controller this))
+    (.leaveAllEntered this)
+    (.-activeTarget! this nil)
+    (.remove (.-entry this))
+    (.dispose (.-entry this))
+    (.-entry! this nil)
+
+    ((.-onDragEnd this) velocity offset was-accepted))
+
+  (buildWidget [^DragAvatar this ^w/BuildContext context]
+    (.-context! this context)
+    (w/AnimatedBuilder
+     .animation (.-controller this)
+     .child (w/ExcludeSemantics
+             .excluding (.-ignoringFeedbackSemantics this)
+             .child (w/IgnorePointer
+                     .ignoring (.-ignoringFeedbackPointer this)
+                     .child (.-feedback this)))
+     .builder (fn [_ child]
+                (let [offset (w/Offset.lerp (.-overlayOffset this)
+                                            (.-finalOffset this)
+                                            (a/Curves.easeInOut.transform (.-value (.-controller this))))]
+                  (w/Positioned
+                   .left (.-dx offset)
+                   .top (.-dy offset)
+                   .child child)))))
 
   (^w/Velocity restrictVelocityAxis [^DragAvatar this ^w/Velocity velocity]
     (if-not (.-axis this)
