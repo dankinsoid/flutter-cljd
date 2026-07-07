@@ -2258,21 +2258,24 @@ To achieve this, listening can be inserted before any modifier call:
 (defn ^w/Widget draggable
   "Makes its child draggable via touch/pointer.
 
-The last positional arg is the child; all preceding kwargs configure behavior.
-The child is a widget, or a builder `(fn [ctx status])` where `status` is a map:
+The last positional arg is the child — what you drag. It is shown in place at
+rest and is the default feedback (the copy that flies) while dragging; in its
+place a size-preserving gap is left, or `:placeholder` if given. So
+`(draggable child)` drags `child` and leaves emptiness behind.
+
+The child, `:placeholder`, and `:feedback` may each be a plain widget or a
+builder `(fn [ctx status])`, where `status` is a map:
 - `:stage` — lifecycle stage, one of `:idle` `:dragging` `:dropping` (released,
   flying to a target) `:returning` (flying home).
 - `:over-target?` — whether the drag is currently over an accepting target. Only
   meaningful while `:dragging`; always false once released.
-A builder subsumes `:placeholder`: return the dragged-away look yourself when
-`:stage` is not `:idle`. The same `status` shape is passed to the `:feedback`
-builder. (status is a map so new keys can be added without changing the arity.)
+(status is a map so new keys can be added without changing the arity.)
 
 Options:
 
 - `:data` — payload delivered to `drag-target` on drop
-- `:feedback` — the widget under the pointer while dragging: a widget, or a builder `(fn [ctx status])` where `status` is `{:stage <kw> :over-target? <bool>}` (`:over-target?` true while hovering a target that will accept). Defaults to the child builder
-- `:placeholder` — widget shown in place of a plain-widget child while dragging (ignored when the child is a builder — handle it via `stage` there)
+- `:feedback` — the widget under the pointer while dragging: a widget or a builder `(fn [ctx status])`. Defaults to the child
+- `:placeholder` — what stays in the child's slot while a copy is dragging/flying: a widget or a builder `(fn [ctx status])`. Defaults to a size-preserving empty gap
 - `:delay` — Duration or `:default` (long-press) before drag starts
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction
 - `:affinity` — gesture recognizer axis affinity (defaults to `:axis`)

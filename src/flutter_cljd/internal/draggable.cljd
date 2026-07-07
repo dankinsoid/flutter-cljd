@@ -167,13 +167,19 @@
                               (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget))))
           ^bool show-child (zero? activeCount)
           ^w/Size? size (some-> context .findRenderObject .-size)
-          ;; In-place content: a builder handles every stage itself; a plain
-          ;; widget falls back to :placeholder / a size-preserving box while dragging.
-          ^w/Widget content (if (fn? child)
-                              (child context {:stage stage :over-target? (.-overTarget this)})
-                              (if show-child
-                                child
-                                (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))]
+          status {:stage stage :over-target? (.-overTarget this)}
+          ;; In place: the child itself at rest and after it lands; a size-
+          ;; preserving gap (or :placeholder) while a dragged copy is in flight.
+          ;; child is what you drag — the default feedback — so it is hidden in
+          ;; place during the drag, not duplicated. Both child and :placeholder
+          ;; may be a plain widget or a builder (fn [ctx status]).
+          ^w/Widget content (if show-child
+                              (if (fn? child) (child context status) child)
+                              (let [ph (.-childWhenDragging widget)]
+                                (cond
+                                  (nil? ph) (w/SizedBox.fromSize .size size)
+                                  (fn? ph)  (ph context status)
+                                  :else     ph)))]
       ;; When disabled and idle, collapse to the bare content: no Listener node,
       ;; zero hit-test footprint, no recognizer held.
       (if (and (not (.-enabled widget)) show-child)
