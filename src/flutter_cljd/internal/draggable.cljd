@@ -433,10 +433,12 @@
                             (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
                                 (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero)))
                             w/Offset.zero)
+          ;; Keep the accepted target in enteredTargets so its candidate clears
+          ;; via didLeave when the drop animation completes, not now — the target
+          ;; stays highlighted while the feedback flies in.
           was-accepted (boolean
                         (when target
                           (.didDrop target this)
-                          (.-enteredTargets! this (disj (.-enteredTargets this) target))
                           true))
           last-offset (.-lastOffset this)
           velocity (or velocity w/Velocity.zero)
@@ -601,10 +603,13 @@
         (on-leave (.-data avatar))))
     nil)
 
+  ;; Fires :on-accept at release but keeps the avatar in candidateAvatars, so
+  ;; `candidate-data` stays populated (the target keeps its highlight) while the
+  ;; feedback flies in. It clears later via didLeave when the drop animation
+  ;; completes — see leaveAllEntered in dragCompletion.
   (didDrop [^DragTargetState this ^DragAvatar avatar]
     (assert (-> this .-candidateAvatars (contains? avatar)))
     (when (.-mounted this)
-      (.setState this #(.-candidateAvatars! this (disj (.-candidateAvatars this) avatar)))
       (when-let [on-accept (-> this .-widget .-onAccept)]
         (when (some? (.-data avatar))
           (on-accept (.-data avatar) (.-lastOffset avatar)))))
