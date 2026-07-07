@@ -414,18 +414,23 @@ To access the inherited bindings, use `c/get-inherited` function."
    inherit them from here — `animated`, and `container`/`align`/`with-text-style`
    with `:animation`. `opts` takes the same forms as `animated`'s options: a map
    (`{:duration :curve}`), a number of milliseconds, or a `[duration curve]` vector.
-   Nested `with-animation` merge, with inner keys winning.
+   Nested `with-animation` merge, with inner keys winning. Options may also be
+   passed as trailing key-value pairs before the child.
 
    ```clojure
    (->> (text \"Hi\")
      (animated padding pd)   ; no opts → picks up 100ms below
      (with-animation {:duration 100}))
+
+   (with-animation :duration 100 :curve :ease-in child)
    ```"
-  [opts child]
-  (wi/with-transformed-inherited*
-   inh/animation
-   (fn [prev] (dissoc (t/animation-options opts prev) :on-end))
-   child))
+  ([opts child]
+   (wi/with-transformed-inherited*
+    inh/animation
+    (fn [prev] (dissoc (t/animation-options opts prev) :on-end))
+    child))
+  ([k v & kvs&child]
+   (with-animation (apply hash-map k v (butlast kvs&child)) (last kvs&child))))
 
 (defn ^w/Widget enabled
   "A widget that sets the `flutter-cljd.inherited-keys/enabled` inherited value"
