@@ -2265,7 +2265,10 @@ Options:
 (defn ^w/Widget drag-target
   "Drop zone that receives data from `draggable` widgets.
 
-`builder` is `(fn [context candidate-data rejected-data])` — called to build the widget.
+The last positional arg is the builder; all preceding kwargs configure behavior
+(so it composes with `->>`, like `draggable`). The builder is
+`(fn [context candidate-data rejected-data])` — or a plain widget when the content
+doesn't depend on hover state.
 `candidate-data` is a seq of `:data` values from hovering draggables this target *will* accept
 (`:on-will-accept` returned truthy); `rejected-data` is those it *won't*. Use them to change
 appearance on hover — e.g. highlight when `candidate-data` is non-empty.
@@ -2279,8 +2282,9 @@ Options:
 - `:accept-region` — `(fn [rect] -> Rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
 - `:enabled` — bool (default true); when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through"
-  [builder & {:keys [key on-will-accept on-accept on-leave on-move hit-test-behavior] :as args}]
-  (drg/drag-target* (assoc args :builder builder)))
+  [& args]
+  (let [[args children] (ut/key-values-args-and-children args)]
+    (drg/drag-target* (assoc args :builder (last children)))))
 
 (defn ^w/Widget drag-boundary
   "Constrains draggable movement to stay within this widget's bounds."
