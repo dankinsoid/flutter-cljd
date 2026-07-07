@@ -442,16 +442,23 @@
                      ^:mutable sourceState]
   :extends g/Drag
 
+  ;; A nil entry means this avatar was torn down (source disposed mid-drag). The
+  ;; gesture recognizer may still deliver moves/end for a pointer that was down at
+  ;; that moment — ignore them so we don't touch the removed entry or disposed
+  ;; controller.
   (update [^DragAvatar this ^g/DragUpdateDetails details]
-    (let [old-position (.-position this)
-          new-position (.+ old-position (.restrictAxis this (.-delta details)))]
-      (.updateDrag this new-position details)))
+    (when (some? (.-entry this))
+      (let [old-position (.-position this)
+            new-position (.+ old-position (.restrictAxis this (.-delta details)))]
+        (.updateDrag this new-position details))))
 
   (end [^DragAvatar this ^g/DragEndDetails details]
-    (.finishDrag this :dropped (.restrictVelocityAxis this (.-velocity details))))
+    (when (some? (.-entry this))
+      (.finishDrag this :dropped (.restrictVelocityAxis this (.-velocity details)))))
 
-  (cancel [this]
-    (.finishDrag this :canceled nil))
+  (cancel [^DragAvatar this]
+    (when (some? (.-entry this))
+      (.finishDrag this :canceled nil)))
 
   DragAvatar
   (prepare [^DragAvatar this]
@@ -598,16 +605,27 @@
             (.forward (.-controller this) .from 0.0))
           (.dragCompletion this velocity final-offset was-accepted)))))
 
+  ;; Remove the feedback overlay and dispose the controller. Safe to call from the
+  ;; controller's own completion listener — listeners are cleared first. Reached
+  ;; once per avatar: via dragCompletion on finish, or via the source state's
+  ;; dispose while still in flight, never both.
+  (teardown [^DragAvatar this]
+    (.clearStatusListeners (.-controller this))
+    (when-let [^w/OverlayEntry entry (.-entry this)]
+      (.remove entry)
+      (.dispose entry)
+      (.-entry! this nil))
+    (.dispose (.-controller this))
+    nil)
+
   (dragCompletion [^DragAvatar this
                    ^w/Velocity velocity
                    ^w/Offset offset
                    ^bool was-accepted]
-    (.clearStatusListeners (.-controller this))
     (.leaveAllEntered this)
     (.-activeTarget! this nil)
-    (.remove (.-entry this))
-    (.dispose (.-entry this))
-    (.-entry! this nil)
+    (.teardown this)
+    (some-> (.-sourceState this) (.unregisterAvatar this))
 
     ((.-onDragEnd this) velocity offset was-accepted)
     (when-let [on-end (:on-end (.-settleOptions this))] (on-end)))
