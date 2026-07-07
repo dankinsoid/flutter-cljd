@@ -34,6 +34,21 @@
 ;; default (box) region are NOT here — those are found via hitTestInView.
 (def ^:private extended-region-targets (atom #{}))
 
+;; Whether `box` sits under an `IgnorePointer` that is currently ignoring — the
+;; same subtrees `hitTestInView` skips. Extended-region targets are discovered
+;; outside the hit-test path, so they must replicate this exclusion by hand;
+;; otherwise a target with an `:accept-region` living inside a draggable's
+;; feedback (mounted under IgnorePointer) would be caught while an identical
+;; box-region one is not. With ignoring false — feedback intentionally
+;; hittable — neither path excludes it, so the two stay in parity.
+(defn ^:private ^bool pointer-ignored? [^r/RenderObject box]
+  (loop [^r/RenderObject? node box]
+    (cond
+      (nil? node) false
+      (and (instance? r/RenderIgnorePointer node)
+           (.-ignoring ^r/RenderIgnorePointer node)) true
+      :else (recur (.-parent node)))))
+
 ;; Draggable widget
 (deftype Draggable [^w/Key? k
                     ^core/Duration? delay
@@ -553,8 +568,14 @@
       (concat path-targets
               (for [^DragTargetState t @extended-region-targets
                     :when (not (contains? seen t))
-                    :when (and (.-mounted t) (some-> t .-context .findRenderObject))
+                    :when (.-mounted t)
+                    :let [^r/RenderObject? box (some-> t .-context .findRenderObject)]
+                    :when (some? box)
                     :when (= (-> t .-context w/View.of .-viewId) (.-viewId this))
+                    ;; Mirror hitTestInView: an IgnorePointer'd target (e.g. one
+                    ;; inside this drag's own feedback) is invisible to the hit
+                    ;; path, so it must be invisible here too.
+                    :when (not (pointer-ignored? box))
                     :when (.acceptsPoint t point)]
                 t))))
 
