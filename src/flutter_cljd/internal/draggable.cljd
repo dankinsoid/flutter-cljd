@@ -56,7 +56,8 @@
                     allowedButtonsFilter
                     ^bool enabled
                     ^bool returnOnDrop
-                    ^core/Duration? returnDuration
+                    returnAnimation
+                    dropAnimation
                     ^w/Widget child]
   :extends (w/StatefulWidget .key k)
 
@@ -179,25 +180,31 @@
       (set! (.-returnController this) nil)))
 
   ;; Animate the child's persisted offset back to zero (its home slot). Duration
-  ;; comes from :return-duration; 0/nil returns instantly.
+  ;; and curve come from :return-animation, resolved against the inherited
+  ;; animation theme; a 0 duration returns instantly. :on-end fires on arrival.
   (returnHome [^DraggableState this]
     (.stopReturn this)
     (let [^w/Offset start (.-offset this)
-          ^core/Duration? dur (.-returnDuration (.-widget this))]
+          opts (t/animation-options (.-returnAnimation (.-widget this)) (.-context this))
+          ^core/Duration dur (:duration opts)
+          ^a/Curve curve (:curve opts)
+          on-end (:on-end opts)]
       (when-not (= start w/Offset.zero)
-        (if (or (nil? dur) (<= (.-inMicroseconds dur) 0))
-          (.setState this #(set! (.-offset this) w/Offset.zero))
+        (if (<= (.-inMicroseconds dur) 0)
+          (do (.setState this #(set! (.-offset this) w/Offset.zero))
+              (when on-end (on-end)))
           (let [^a/AnimationController ctrl (a/AnimationController .vsync this .duration dur)]
             (set! (.-returnController this) ctrl)
             (.addListener ctrl
                           (fn [] (.setState this #(set! (.-offset this)
-                                                        (or (w/Offset.lerp start w/Offset.zero (.-value ctrl))
+                                                        (or (w/Offset.lerp start w/Offset.zero (.transform curve (.-value ctrl)))
                                                             w/Offset.zero)))))
             (.addStatusListener ctrl
                                 (fn [^a/AnimationStatus status]
                                   (when (= a/AnimationStatus.completed status)
                                     (.setState this #(set! (.-offset this) w/Offset.zero))
-                                    (.stopReturn this))
+                                    (.stopReturn this)
+                                    (when on-end (on-end)))
                                   nil))
             (.forward ctrl))))
       nil))
@@ -217,6 +224,7 @@
         ;; Grabbing it again cancels any in-flight return; drag from where it is.
         (.stopReturn this)
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
+              drop-options (t/animation-options (.-dropAnimation widget) (.-context this))
               _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
               ^w/OverlayState overlay-state (w/Overlay.of
                                              (.-context this)
@@ -259,7 +267,8 @@
                                   nil
                                   nil
                                   (.-context this)
-                                  (a/AnimationController .vsync this))]
+                                  (a/AnimationController .vsync this)
+                                  drop-options)]
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
@@ -317,7 +326,10 @@
                      ^:mutable ^w/OverlayEntry? entry
                      ^:mutable ^w/BuildContext? context
                      ^:mutable ^w/BuildContext originalContext
-                     ^:mutable ^a/AnimationController controller]
+                     ^:mutable ^a/AnimationController controller
+                     ;; Resolved drop animation `{:duration :curve :on-end}` for the
+                     ;; feedback settling onto the target (or back to origin).
+                     dropOptions]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -444,7 +456,7 @@
           velocity (or velocity w/Velocity.zero)
           final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
                            expected-offset)
-          duration (t/duration 200)]
+          ^core/Duration duration (:duration (.-dropOptions this))]
       (if-not (= final-offset last-offset)
         (do
           (.-duration! (.-controller this) duration)
@@ -468,7 +480,8 @@
     (.dispose (.-entry this))
     (.-entry! this nil)
 
-    ((.-onDragEnd this) velocity offset was-accepted))
+    ((.-onDragEnd this) velocity offset was-accepted)
+    (when-let [on-end (:on-end (.-dropOptions this))] (on-end)))
 
   (buildWidget [^DragAvatar this ^w/BuildContext context]
     (.-context! this context)
@@ -480,9 +493,10 @@
                      .ignoring (.-ignoringFeedbackPointer this)
                      .child (.-feedback this)))
      .builder (fn [_ child]
-                (let [offset (w/Offset.lerp (.-overlayOffset this)
+                (let [^a/Curve curve (:curve (.-dropOptions this))
+                      offset (w/Offset.lerp (.-overlayOffset this)
                                             (.-finalOffset this)
-                                            (a/Curves.easeInOut.transform (.-value (.-controller this))))]
+                                            (.transform curve (.-value (.-controller this))))]
                   (w/Positioned
                    .left (.-dx offset)
                    .top (.-dy offset)
@@ -644,7 +658,8 @@
                           allowed-buttons-filter
                           enabled
                           return-on-drop
-                          return-duration]
+                          return-animation
+                          drop-animation]
                    :or {feedback-offset w/Offset.zero
                         drag-anchor-strategy child-drag-anchor-strategy
                         hit-test-behavior w/HitTestBehavior.deferToChild
@@ -653,7 +668,8 @@
                         root-overlay false
                         enabled true
                         return-on-drop false
-                        return-duration 200}}
+                        return-animation {}
+                        drop-animation {}}}
                   child]
   (let [delay (some-> (if (= :default delay) g/kLongPressTimeout delay) t/duration)]
     (Draggable
@@ -683,7 +699,8 @@
      allowed-buttons-filter
      (boolean enabled)
      (boolean return-on-drop)
-     (some-> return-duration t/duration)
+     return-animation
+     drop-animation
      child)))
 
 (defn ^w/Widget drag-target*
