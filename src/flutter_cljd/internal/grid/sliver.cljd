@@ -128,7 +128,9 @@
    (int n)
    cross-sizer cross-gap cross-align
    (= cross-dir :end)
-   main-sizer main-gap main-align
+   main-sizer main-gap
+   ;; vertical-flavored aliases for the common (vertical) grid
+   (case main-align :top :start :bottom :end main-align)
    (= main-fit :fill)))
 
 (defn ^w/Widget sliver-grid

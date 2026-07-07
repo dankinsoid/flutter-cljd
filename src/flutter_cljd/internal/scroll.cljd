@@ -9,7 +9,7 @@
 
 (defn- ^r/SliverGridDelegate grid-delegate-for
   "Pick a SliverGridDelegate for grid args. `:max-columns` selects the flexible grid
-   (flex/min-max tracks, gap sizers, justify alignment, :main-fit); anything else
+   (flex/min-max tracks, gap sizers, justify alignment); anything else
    falls back to the native aspect-ratio delegates. The flexible delegate needs the
    item count up front (Flutter doesn't hand it to getLayout)."
   [args item-count]
@@ -134,14 +134,9 @@
   (let [[args children] (parse-scroll-args raw-args)
         key (t/widget-key (:key args))
         direction (t/axis (or (:axis args) :vertical))
-        ;; Smart default: `:main-align :end` is inert in :content mode (no leftover
-        ;; space to distribute), so the only way to honor "align to the far end" is
-        ;; to anchor the scroll there — reverse. :fill makes :main-align real, so it
-        ;; is excluded. Explicit :reverse always wins.
         reverse (if (contains? args :reverse)
                   (boolean (:reverse args))
-                  (and (= (:main-align args) :end)
-                       (not= (:main-fit args :content) :fill)))
+                  (contains? #{:end :bottom} (:main-align args)))
         controller (:controller args)
         primary (:primary args)
         physics (some-> (:physics args) t/scroll-physics)
@@ -151,7 +146,8 @@
         cache-extent (some-> (:cache-extent args) double)
         item-builder (:item-builder args)
         item-count (:item-count args)
-        delegate (grid-delegate-for args (if item-builder item-count (count children)))
+        delegate (grid-delegate-for (assoc args :main-fit (if shrink-wrap :content :fill))
+                                    (if item-builder item-count (count children)))
         add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
         add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
         add-semantic-indexes (boolean (:add-semantic-indexes args true))]
