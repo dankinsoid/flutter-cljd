@@ -10,16 +10,18 @@
    ["package:flutter/gestures.dart" :as g]
    ["package:flutter/services.dart" :as s]))
 
-(defn ^w/Widget capture-inherited
-  "Re-injects the inherited environment of `from` around `child`, which is about
-  to be mounted under `to` (an Overlay). Captures both Flutter's InheritedThemes
-  (Theme, DefaultTextStyle, IconTheme…) and this project's `with-inherited`
-  bindings, which live in a single InheritedBindings widget."
-  [^w/BuildContext from ^w/BuildContext to ^w/Widget child]
-  (let [child (.wrap (w/InheritedTheme.capture .from from .to to) child)
+(defn capture-inherited-wrapper
+  "Captures the inherited environment between `from` and `to` (Flutter's
+  InheritedThemes + this project's `with-inherited` bindings) once, and returns a
+  fn that wraps any widget with it. Used to keep overlay-mounted feedback themed
+  even though it is rebuilt each frame from a builder."
+  [^w/BuildContext from ^w/BuildContext to]
+  (let [captured (w/InheritedTheme.capture .from from .to to)
         elt (#/(.getElementForInheritedWidgetOfExactType f/InheritedBindings) from)
         bindings (some-> elt ^f/InheritedBindings (.-widget) .-bindings)]
-    (if bindings (f/InheritedBindings. bindings child) child)))
+    (fn [^w/Widget child]
+      (let [child (.wrap captured child)]
+        (if bindings (f/InheritedBindings. bindings child) child)))))
 
 (declare DraggableState)
 (declare DragAvatar)
@@ -267,28 +269,27 @@
                                              (.-context this)
                                              .debugRequiredFor widget
                                              .rootOverlay (.-rootOverlay widget))
-              ;; Feedback source: an explicit :feedback (widget or (fn [ctx stage over-target?]))
-              ;; or, by default, the child rendered at :dragging (builder or widget).
+              ;; Normalize feedback into (fn [ctx stage over-target?]): an explicit
+              ;; :feedback builder/widget, else the child rendered at its stage.
               fb (.-feedback widget)
               child (.-child widget)
-              ^w/Widget raw-feedback (cond
-                                       (fn? fb)    (fb (.-context this) :dragging false)
-                                       (some? fb)  fb
-                                       (fn? child) (child (.-context this) :dragging)
-                                       :else       child)
+              feedback-builder (cond
+                                 (fn? fb)    fb
+                                 (some? fb)  (fn [_ _ _] fb)
+                                 (fn? child) (fn [ctx stage _] (child ctx stage))
+                                 :else       (fn [_ _ _] child))
               ;; Feedback is mounted under the Overlay, so it loses the inherited
-              ;; environment (themes + `with-inherited` bindings) living above the
-              ;; draggable. Re-inject it between the draggable and overlay contexts.
-              ^w/Widget feedback (capture-inherited (.-context this)
-                                                    (.-context overlay-state)
-                                                    raw-feedback)
+              ;; environment (themes + `with-inherited` bindings) above the draggable.
+              ;; Capture it once here; buildWidget re-wraps each rebuild.
+              wrap-feedback (capture-inherited-wrapper (.-context this) (.-context overlay-state))
               ^DragAvatar avatar (DragAvatar
                                   overlay-state
                                   (.-data widget)
                                   (.-axis widget)
                                   (.+ position (.-offset this))
                                   drag-start-point
-                                  feedback
+                                  feedback-builder
+                                  wrap-feedback
                                   (.-feedbackOffset widget)
                                   (.-catchPoint widget)
                                   (fn [details ^w/Offset offset]
@@ -359,7 +360,10 @@
                      ^p/Axis? axis
                      ^w/Offset initialPosition
                      ^w/Offset dragStartPoint
-                     ^w/Widget? feedback
+                     ;; (fn [ctx stage over-target?]) → the feedback widget, rebuilt
+                     ;; on stage/hover changes; wrapFeedback re-injects captured themes.
+                     feedbackBuilder
+                     wrapFeedback
                      ^w/Offset feedbackOffset
                      catchPoint
                      onDragUpdate
@@ -523,8 +527,9 @@
           ^core/Duration duration (:duration settle-options)]
       (.-settleOptions! this settle-options)
       (.-stage! this (if was-accepted :dropping :returning))
-      ;; Targets still holding this avatar rebuild so their status seq reflects
-      ;; the new stage (a candidate now shows :dropping instead of :dragging).
+      ;; Rebuild the feedback (now :dropping/:returning) and the targets still
+      ;; holding this avatar, so their status seq reflects the new stage.
+      (.markNeedsBuild (.-entry this))
       (doseq [^DragTargetState t (.-enteredTargets this)] (.refreshStatus t))
       (if-not (= final-offset last-offset)
         (do
@@ -554,13 +559,16 @@
 
   (buildWidget [^DragAvatar this ^w/BuildContext context]
     (.-context! this context)
+    (let [^bool over-target? (some? (.-activeTarget this))
+          raw ((.-feedbackBuilder this) context (.-stage this) over-target?)
+          ^w/Widget feedback ((.-wrapFeedback this) raw)]
     (w/AnimatedBuilder
      .animation (.-controller this)
      .child (w/ExcludeSemantics
              .excluding (.-ignoringFeedbackSemantics this)
              .child (w/IgnorePointer
                      .ignoring (.-ignoringFeedbackPointer this)
-                     .child (.-feedback this)))
+                     .child feedback))
      .builder (fn [_ child]
                 (let [^a/Curve curve (:curve (or (.-settleOptions this) (.-dropOptions this)))
                       offset (w/Offset.lerp (.-overlayOffset this)
@@ -569,7 +577,7 @@
                   (w/Positioned
                    .left (.-dx offset)
                    .top (.-dy offset)
-                   .child child)))))
+                   .child child))))))
 
   (^w/Velocity restrictVelocityAxis [^DragAvatar this ^w/Velocity velocity]
     (if-not (.-axis this)
