@@ -560,10 +560,17 @@
     ;; recognizer.
     (if-not (.-mounted (.-overlayState this))
       (.dragCompletion this (or velocity w/Velocity.zero) (.-lastOffset this) false)
-      (let [target (when (= end-kind :dropped) (.-activeTarget this))
+      ;; A fast release can unmount the drop target (or the source) between the
+      ;; last updateDrag and this frame. some-> only stops on nil, so reading a
+      ;; defunct State's .-context still throws "unmounted" — drop such a target
+      ;; and treat it as no-hit.
+      (let [target (when (= end-kind :dropped)
+                     (when-let [t (.-activeTarget this)]
+                       (when (.-mounted t) t)))
             target-box (some-> target .-context .findRenderObject)
             target-size (some-> target-box .-size)
-            child-box (some-> this .-originalContext .findRenderObject)
+            ^w/BuildContext src-context (.-originalContext this)
+            child-box (when (.-mounted src-context) (.findRenderObject src-context))
             ;; Center-to-center delta by which the child must be translated to land
             ;; on the target. Used both as the Transform.translate offset and,
             ;; via localToGlobal below, as the feedback's resting position.
@@ -593,7 +600,9 @@
         ;; holding this avatar, so their status seq reflects the new stage.
         (.markNeedsBuild (.-entry this))
         (doseq [^DragTargetState t (.-enteredTargets this)] (.refreshStatus t))
-        (if-not (= final-offset last-offset)
+        ;; No child-box means the source unmounted mid-drag: there's no home to
+        ;; localToGlobal against, so skip the settle and finish now.
+        (if (and child-box (not= final-offset last-offset))
           (do
             (.-duration! (.-controller this) duration)
             (.-finalOffset! this (.localToGlobal child-box final-offset))
