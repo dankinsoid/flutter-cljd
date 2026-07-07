@@ -64,7 +64,7 @@
                     child]
   :extends (w/StatefulWidget .key k)
 
-  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil false))
+  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil false #{}))
 
    ;; Creates a gesture recognizer that recognizes the start of the drag  
   Draggable
@@ -115,7 +115,11 @@
                          ;; Whether the live drag is currently over an accepting target.
                          ;; Pushed from the avatar so the in-place child builder sees the
                          ;; same :over-target? the feedback does. False unless :dragging.
-                         ^:mutable ^bool overTarget]
+                         ^:mutable ^bool overTarget
+                         ;; In-flight avatars (feedback overlays), so dispose can tear
+                         ;; down any still flying — otherwise their entry leaks and their
+                         ;; controller keeps a ticker alive past this state's disposal.
+                         ^:mutable avatars]
   :extends (#/(w/State Draggable))
 
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
@@ -147,6 +151,11 @@
     nil)
 
   (dispose [^DraggableState this]
+    ;; Tear down any feedback still flying before super.dispose runs the ticker
+    ;; provider — its controllers are vsync'd to this state, so a live one would
+    ;; trip the "disposed with an active Ticker" assert and leak the overlay entry.
+    (doseq [^DragAvatar av (.-avatars this)] (.teardown av))
+    (set! (.-avatars this) #{})
     (.stopReturn this)
     (.disposeRecognizerIfInactive this)
     (.dispose ^super this))
@@ -221,6 +230,14 @@
   (setOverTarget [^DraggableState this ^bool over?]
     (when (not= (.-overTarget this) over?)
       (.setState this #(set! (.-overTarget this) over?)))
+    nil)
+
+  (registerAvatar [^DraggableState this ^DragAvatar av]
+    (set! (.-avatars this) (conj (.-avatars this) av))
+    nil)
+
+  (unregisterAvatar [^DraggableState this ^DragAvatar av]
+    (set! (.-avatars this) (disj (.-avatars this) av))
     nil)
 
   (stopReturn [^DraggableState this]
@@ -333,7 +350,9 @@
                                   drop-options
                                   return-options
                                   nil
-                                  :dragging)]
+                                  :dragging
+                                  this)]
+          (.registerAvatar this avatar)
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
@@ -417,7 +436,10 @@
                      ^:mutable settleOptions
                      ;; Stage of this drag as targets see it: :dragging while
                      ;; hovering, :dropping/:returning once released.
-                     ^:mutable stage]
+                     ^:mutable stage
+                     ;; The DraggableState that spawned this avatar — used to
+                     ;; unregister on completion so it can be torn down on dispose.
+                     ^:mutable sourceState]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -523,51 +545,58 @@
     (.-enteredTargets! this #{}))
 
   (finishDrag [^DragAvatar this end-kind velocity]
-    (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
-          target (when (= end-kind :dropped) (.-activeTarget this))
-          target-box (some-> target .-context .findRenderObject)
-          target-size (some-> target-box .-size)
-          child-box (some-> this .-originalContext .findRenderObject)
-          ;; Center-to-center delta by which the child must be translated to land
-          ;; on the target. Used both as the Transform.translate offset and,
-          ;; via localToGlobal below, as the feedback's resting position.
-          expected-offset (if (and target-box child-box)
-                            (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
-                                (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero)))
-                            w/Offset.zero)
-          ;; Keep the accepted target in enteredTargets so its candidate clears
-          ;; via didLeave when the drop animation completes, not now — the target
-          ;; stays highlighted while the feedback flies in.
-          was-accepted (boolean
-                        (when target
-                          (.didDrop target this)
-                          true))
-          last-offset (.-lastOffset this)
-          velocity (or velocity w/Velocity.zero)
-          final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
-                           expected-offset)
-          ;; Accepted → :drop-animation (docking onto the target); rejected/no
-          ;; target → :return-animation (flying back home, same motion as a
-          ;; :return-on-drop slide).
-          settle-options (if was-accepted (.-dropOptions this) (.-returnOptions this))
-          ^core/Duration duration (:duration settle-options)]
-      (.-settleOptions! this settle-options)
-      (.-stage! this (if was-accepted :dropping :returning))
-      ;; Rebuild the feedback (now :dropping/:returning) and the targets still
-      ;; holding this avatar, so their status seq reflects the new stage.
-      (.markNeedsBuild (.-entry this))
-      (doseq [^DragTargetState t (.-enteredTargets this)] (.refreshStatus t))
-      (if-not (= final-offset last-offset)
-        (do
-          (.-duration! (.-controller this) duration)
-          (.-finalOffset! this (.localToGlobal child-box final-offset))
-          (.addStatusListener (.-controller this)
-                              (fn [status]
-                                (when (= a/AnimationStatus.completed status)
-                                  (.dragCompletion this velocity final-offset was-accepted))
-                                nil))
-          (.forward (.-controller this) .from 0.0))
-        (.dragCompletion this velocity final-offset was-accepted))))
+    ;; Overlay torn down mid-drag — its page was popped while the pointer was
+    ;; still down, so this pointer-up still routes here through the recognizer
+    ;; the source keeps alive during a drag, but there's no overlay left to fly
+    ;; the feedback through. Finish immediately; updateDrag guards the same
+    ;; access. dragCompletion's onDragEnd lets the unmounted source drop the
+    ;; recognizer.
+    (if-not (.-mounted (.-overlayState this))
+      (.dragCompletion this (or velocity w/Velocity.zero) (.-lastOffset this) false)
+      (let [target (when (= end-kind :dropped) (.-activeTarget this))
+            target-box (some-> target .-context .findRenderObject)
+            target-size (some-> target-box .-size)
+            child-box (some-> this .-originalContext .findRenderObject)
+            ;; Center-to-center delta by which the child must be translated to land
+            ;; on the target. Used both as the Transform.translate offset and,
+            ;; via localToGlobal below, as the feedback's resting position.
+            expected-offset (if (and target-box child-box)
+                              (.- (.localToGlobal target-box (.center target-size w/Offset.zero))
+                                  (.localToGlobal child-box (.center (.-size child-box) w/Offset.zero)))
+                              w/Offset.zero)
+            ;; Keep the accepted target in enteredTargets so its candidate clears
+            ;; via didLeave when the drop animation completes, not now — the target
+            ;; stays highlighted while the feedback flies in.
+            was-accepted (boolean
+                          (when target
+                            (.didDrop target this)
+                            true))
+            last-offset (.-lastOffset this)
+            velocity (or velocity w/Velocity.zero)
+            final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
+                             expected-offset)
+            ;; Accepted → :drop-animation (docking onto the target); rejected/no
+            ;; target → :return-animation (flying back home, same motion as a
+            ;; :return-on-drop slide).
+            settle-options (if was-accepted (.-dropOptions this) (.-returnOptions this))
+            ^core/Duration duration (:duration settle-options)]
+        (.-settleOptions! this settle-options)
+        (.-stage! this (if was-accepted :dropping :returning))
+        ;; Rebuild the feedback (now :dropping/:returning) and the targets still
+        ;; holding this avatar, so their status seq reflects the new stage.
+        (.markNeedsBuild (.-entry this))
+        (doseq [^DragTargetState t (.-enteredTargets this)] (.refreshStatus t))
+        (if-not (= final-offset last-offset)
+          (do
+            (.-duration! (.-controller this) duration)
+            (.-finalOffset! this (.localToGlobal child-box final-offset))
+            (.addStatusListener (.-controller this)
+                                (fn [status]
+                                  (when (= a/AnimationStatus.completed status)
+                                    (.dragCompletion this velocity final-offset was-accepted))
+                                  nil))
+            (.forward (.-controller this) .from 0.0))
+          (.dragCompletion this velocity final-offset was-accepted)))))
 
   (dragCompletion [^DragAvatar this
                    ^w/Velocity velocity
