@@ -60,7 +60,8 @@
                     ^bool returnOnDrop
                     returnAnimation
                     dropAnimation
-                    ^w/Widget child]
+                    ;; A widget or a builder (fn [ctx status]) — untyped so it can be invoked.
+                    child]
   :extends (w/StatefulWidget .key k)
 
   (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil))
