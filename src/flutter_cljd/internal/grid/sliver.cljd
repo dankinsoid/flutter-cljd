@@ -165,10 +165,6 @@
                    slivers, so :main-align and flex rows/gaps get room to distribute;
                    overflowing content degrades to plain scrolling
 
-   Alignments are axis-relative (:start/:end/…) only — a sliver's axis is the
-   enclosing scroll view's, so the :top/:bottom/:left/:right sugar that grid-view
-   resolves per :axis isn't available here.
-
    item-builder: (fn [ctx index] widget), item-count: total number of items."
   [opts item-builder ^int item-count]
   (w/SliverGrid

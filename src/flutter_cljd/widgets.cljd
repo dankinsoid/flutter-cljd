@@ -2410,10 +2410,8 @@ Flexible grid options (with `:max-columns`): `:cross-sizer` (default `:flex`),
 `:cross-dir` (`:start`/`:end` for RTL), `:main-sizer` (row height), `:main-gap`,
 `:main-align`. Needs a finite item count.
 
-Alignments also accept concrete direction words resolved per `:axis`: `:top`/`:bottom`
-for the vertical axis, `:left`/`:right` for the horizontal one (so `:main-align :bottom`
-in a vertical grid = `:end`). `:main-align :end` with no explicit `:reverse` anchors to
-the far end by reversing the scroll.
+Alignments are axis-relative: `:start`/`:end`/`:center`/`:space-*`. `:main-align :end`
+with no explicit `:reverse` anchors to the far end by reversing the scroll.
 
 Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
@@ -2454,10 +2452,7 @@ row inside it; full rows unaffected); `:cross-fit` (`:fill` default — span the
 `:main-align` and flex rows); `:cross-dir`/`:main-dir` (`:start`/`:end`,
 `:forward`/`:reverse`); `:primary` (`:row`/`:column`); `:axis`
 (`:vertical`/`:horizontal`); `:item-align` (how a child sits in its cell when
-smaller — `:stretch` default, or an alignment like `:center`); `:key`.
-
-Alignments also accept concrete direction words resolved per `:axis`: `:top`/`:bottom`
-on the vertical axis, `:left`/`:right` on the horizontal one."
+smaller — `:stretch` default, or an alignment like `:center`); `:key`."
   [& args]
   (let [[opts children] (ut/key-values-args-and-children args)
         children (if (and (= 1 (count children)) (sequential? (first children)))

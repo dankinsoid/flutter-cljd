@@ -182,24 +182,6 @@
       :space-evenly m/MainAxisAlignment.spaceEvenly
       (throw (Exception. (str "Invalid main-axis-alignment: " alignment))))))
 
-(defn grid-align
-  "Canonicalize a flexible-grid alignment keyword to an axis-relative value.
-
-  `vertical?` says whether THIS alignment's axis runs vertically. Concrete
-  direction words map only on their matching axis (vertical → `:top`/`:bottom`,
-  horizontal → `:left`/`:right`); axis-relative words (`:start`, `:end`, `:center`,
-  `:space-between`, `:space-around`, `:space-evenly`) pass through unchanged.
-
-  Resolved at the widget boundary where the axis is known — the grid's internal
-  solver/geometry/delegates speak only the axis-relative vocabulary."
-  [align vertical?]
-  (case align
-    :top    (if vertical? :start align)
-    :bottom (if vertical? :end align)
-    :left   (if vertical? align :start)
-    :right  (if vertical? align :end)
-    align))
-
 (defn ^m/MainAxisSize main-axis-size [size]
   (if (instance? m/MainAxisSize size)
     size
