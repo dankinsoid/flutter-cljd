@@ -50,7 +50,9 @@
                     onDragUpdate
                     onDragWillEnd
                     onDragEnd
-                    ^bool hapticFeedbackOnStart
+                    ;; Set of drag events that trigger haptic feedback:
+                    ;; a subset of #{:start :enter :leave :drop}.
+                    haptics
                     ^bool ignoringFeedbackSemantics
                     ^bool ignoringFeedbackPointer
                     ^bool rootOverlay
@@ -86,7 +88,7 @@
       (set! (.-onStart recognizer)
             (fn [position]
               (let [^g/Drag? result (onStart position)]
-                (when (and result (.-hapticFeedbackOnStart this))
+                (when (and result (contains? (.-haptics this) :start))
                   (s/HapticFeedback.selectionClick))
                 result)))
       recognizer)))
@@ -333,6 +335,14 @@
                                   (fn [^w/Velocity velocity ^w/Offset offset ^bool was-accepted]
                                     (.didEndDrag this velocity offset was-accepted))
                                   (fn [^bool over-target?]
+                                    ;; Only real hover transitions reach here (the avatar
+                                    ;; pushes every updateDrag; dedup against current state).
+                                    ;; Release-time clears go through setOverTarget directly,
+                                    ;; so they don't fire a spurious :leave — :drop covers that.
+                                    (when (not= over-target? (.-overTarget this))
+                                      (when (contains? (.-haptics widget)
+                                                       (if over-target? :enter :leave))
+                                        (s/HapticFeedback.selectionClick)))
                                     (.setOverTarget this over-target?))
                                   (.-ignoringFeedbackSemantics widget)
                                   (.-ignoringFeedbackPointer widget)
@@ -367,6 +377,8 @@
     ;; No longer a live hover, so the in-place child's :over-target? goes false.
     (.setStage this (if was-accepted :dropping :returning))
     (.setOverTarget this false)
+    (when (and was-accepted (contains? (.-haptics (.-widget this)) :drop))
+      (s/HapticFeedback.selectionClick))
     (when (and (.-mounted this) (.-onDragWillEnd (.-widget this)))
       ((.-onDragWillEnd (.-widget this))
        {:was-accepted was-accepted
@@ -800,6 +812,26 @@
     (when (.-mounted this) (.setState this (fn [] nil)))
     nil))
 
+(def ^:private haptic-events #{:start :enter :leave :drop})
+
+;; @ai-generated(guided)
+(defn ^:private normalize-haptics
+  "Resolves the `:haptic-on` option into a set of event keywords.
+   nil → `#{:start}` when the drag is delayed (long-press), else none;
+   true/`:all` → every event; false → none; a keyword or collection → that set."
+  [haptic-on ^bool delayed?]
+  (let [events (cond
+                 (nil? haptic-on)     (if delayed? #{:start} #{})
+                 (true? haptic-on)    haptic-events
+                 (false? haptic-on)   #{}
+                 (= :all haptic-on)   haptic-events
+                 (keyword? haptic-on) #{haptic-on}
+                 :else                (set haptic-on))]
+    (assert (every? haptic-events events)
+            (str ":haptic-on got unknown event(s) " (remove haptic-events events)
+                 "; expected a subset of " haptic-events))
+    events))
+
 (defn ^w/Widget draggable* [{:keys [key
                           delay
                           feedback
@@ -815,7 +847,7 @@
                           on-drag-update
                           on-drag-will-end
                           on-drag-end
-                          haptic-feedback-on-start
+                          haptic-on
                           ignoring-feedback-semantics
                           ignoring-feedback-pointer
                           root-overlay
@@ -853,10 +885,7 @@
      on-drag-update
      on-drag-will-end
      on-drag-end
-     (boolean
-      (if (nil? haptic-feedback-on-start)
-        (some-> delay (.> core/Duration.zero))
-        haptic-feedback-on-start))
+     (normalize-haptics haptic-on (boolean (some-> delay (.> core/Duration.zero))))
      (boolean ignoring-feedback-semantics)
      (boolean ignoring-feedback-pointer)
      (boolean root-overlay)

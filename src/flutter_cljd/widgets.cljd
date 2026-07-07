@@ -2298,7 +2298,7 @@ Options:
 - `:on-drag-update` — `(fn [details])` called on each drag move
 - `:on-drag-will-end` — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back; return an Offset to override the final position
 - `:on-drag-end` — `(fn [{:keys [was-accepted velocity offset]}])` called after drag completes
-- `:haptic-feedback-on-start` — bool, defaults to true when `:delay` is set
+- `:haptic-on` — which drag events fire haptic feedback (Taptic Engine): a keyword or collection of `:start` `:enter` `:leave` `:drop`; `true`/`:all` for all, `false` for none. Defaults to `[:start]` when `:delay` is set, otherwise none. `:enter`/`:leave` fire as the feedback moves onto/off an accepting target; `:drop` fires when a target accepts it
 - `:root-overlay` — bool, use root overlay (default false)
 - `:hit-test-behavior` — HitTestBehavior (default `:defer-to-child`)
 - `:allowed-buttons-filter` — predicate filtering pointer buttons
