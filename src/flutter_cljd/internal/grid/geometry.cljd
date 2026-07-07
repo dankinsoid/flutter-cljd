@@ -1,0 +1,57 @@
+;; @ai-generated(paired)
+(ns flutter-cljd.internal.grid.geometry
+  "Pure 2-D placement for the flexible grid: compose the 1-D `solver` on both axes
+   and map item indices to cell rects.
+
+   Axis-agnostic — everything is expressed in cross/main track space; the host maps
+   cross/main onto x/y from the grid's orientation. The 8 fill directions are the
+   product of three orthogonal knobs (never an 8-way enum):
+     :primary   :row (fill a cross line, then advance main) | :column (fill main first)
+     :cross-dir :start | :end      (e.g. LTR | RTL)
+     :main-dir  :forward | :reverse (e.g. top→bottom | bottom→top)
+
+   Both traversal orders share the SAME grid shape (cols×rows); only the index→(row,col)
+   formula differs, so column-major works even under an unbounded main axis because
+   `rows` is derived from the known item count, not measured."
+  (:require [flutter-cljd.internal.grid.solver :as solver]))
+
+(defn- ceil-div [a b] (quot (+ a (dec b)) b))
+
+(defn resolve-grid
+  "Resolve track geometry once — O(cols+rows), no per-item work. The sliver host calls
+   this once, then `cell` per visible index; the box host calls `cell` for every item.
+
+   opts (extents are `##Inf` for shrink-wrap; sizer/gap specs are as in `solver/sizer`):
+     :count :max-columns
+     :primary :cross-dir :main-dir
+     :cross-available :main-available
+     :cross-sizer :main-sizer          per-cell size on each axis (uniform in v1)
+     :cross-gap :main-gap :cross-align :main-align
+
+   Returns {:cols :rows :primary :cross-dir :main-dir
+            :cross [{:offset :size}...] :main [{:offset :size}...]
+            :cross-extent :main-extent}."
+  [{:keys [max-columns primary cross-dir main-dir
+           cross-available main-available cross-sizer main-sizer
+           cross-gap main-gap cross-align main-align]
+    :or {primary :row cross-dir :start main-dir :forward
+         cross-gap 0 main-gap 0 cross-align :start main-align :start}
+    n :count}]
+  (let [cols (if (zero? n) 0 (min max-columns n))
+        rows (if (zero? cols) 0 (ceil-div n cols))
+        cross (solver/solve-tracks cross-available (vec (repeat cols cross-sizer)) cross-gap cross-align)
+        main (solver/solve-tracks main-available (vec (repeat rows main-sizer)) main-gap main-align)]
+    {:cols cols :rows rows :primary primary :cross-dir cross-dir :main-dir main-dir
+     :cross (:tracks cross) :main (:tracks main)
+     :cross-extent (:extent cross) :main-extent (:extent main)}))
+
+(defn cell
+  "Cross/main rect of item `i` in a resolved grid: `{:cross {:offset :size} :main {..}}`.
+   Maps `i` to (row, col) per :primary, then flips each axis per :cross-dir / :main-dir."
+  [{:keys [cols rows primary cross-dir main-dir cross main]} i]
+  (let [[r c] (if (= primary :column)
+                [(rem i rows) (quot i rows)]
+                [(quot i cols) (rem i cols)])
+        c (if (= cross-dir :end) (- cols 1 c) c)
+        r (if (= main-dir :reverse) (- rows 1 r) r)]
+    {:cross (nth cross c) :main (nth main r)}))

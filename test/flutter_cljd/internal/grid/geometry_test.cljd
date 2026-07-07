@@ -1,0 +1,72 @@
+(ns flutter-cljd.internal.grid.geometry-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.internal.grid.geometry :as g]))
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- at?
+  "True when cell `c` sits at the given cross/main offsets."
+  [c cross-off main-off]
+  (and (close? (get-in c [:cross :offset]) cross-off)
+       (close? (get-in c [:main :offset]) main-off)))
+
+;; 6 items, 3 columns, fixed 100 (cross) x 50 (main), no gaps.
+(def ^:private base
+  {:count 6 :max-columns 3
+   :cross-available 300.0 :main-available 100.0
+   :cross-sizer 100 :main-sizer 50})
+
+(deftest grid-shape
+  (let [gr (g/resolve-grid base)]
+    (is (= 3 (:cols gr)))
+    (is (= 2 (:rows gr)))
+    (is (close? (:cross-extent gr) 300))
+    (is (close? (:main-extent gr) 100)))
+  (testing "columns capped at item count"
+    (is (= 2 (:cols (g/resolve-grid (assoc base :count 2))))))
+  (testing "empty grid"
+    (let [gr (g/resolve-grid (assoc base :count 0))]
+      (is (= 0 (:cols gr)))
+      (is (= 0 (:rows gr))))))
+
+(deftest row-major-placement
+  (let [gr (g/resolve-grid base)]
+    (is (at? (g/cell gr 0) 0 0))
+    (is (at? (g/cell gr 2) 200 0))
+    (is (at? (g/cell gr 3) 0 50))
+    (is (at? (g/cell gr 4) 100 50))))
+
+(deftest column-major-placement
+  (testing "fill main axis first, then advance cross"
+    (let [gr (g/resolve-grid (assoc base :primary :column))]
+      (is (at? (g/cell gr 1) 0 50))
+      (is (at? (g/cell gr 2) 100 0))
+      (is (at? (g/cell gr 5) 200 50)))))
+
+(deftest direction-flips
+  (testing ":cross-dir :end mirrors columns (RTL)"
+    (let [gr (g/resolve-grid (assoc base :cross-dir :end))]
+      (is (at? (g/cell gr 0) 200 0))
+      (is (at? (g/cell gr 2) 0 0))))
+  (testing ":main-dir :reverse mirrors rows (bottom-up)"
+    (let [gr (g/resolve-grid (assoc base :main-dir :reverse))]
+      (is (at? (g/cell gr 0) 0 50))
+      (is (at? (g/cell gr 3) 0 0)))))
+
+(deftest partial-last-row
+  (let [gr (g/resolve-grid (assoc base :count 5))]
+    (is (= 2 (:rows gr)))
+    (is (at? (g/cell gr 4) 100 50))))
+
+(deftest composes-solver-features
+  (testing "flex cells split the cross extent"
+    (let [gr (g/resolve-grid (assoc base :cross-sizer :flex))]
+      (is (at? (g/cell gr 0) 0 0))
+      (is (at? (g/cell gr 1) 100 0))
+      (is (close? (:cross-extent gr) 300))))
+  (testing "unbounded main shrink-wraps to content"
+    (let [gr (g/resolve-grid (assoc base :main-available ##Inf))]
+      (is (close? (:main-extent gr) 100))))
+  (testing "main-axis gap offsets rows"
+    (let [gr (g/resolve-grid (assoc base :main-available 110.0 :main-gap 10))]
+      (is (at? (g/cell gr 3) 0 60)))))
