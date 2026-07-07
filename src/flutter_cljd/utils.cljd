@@ -178,7 +178,17 @@
      (constantly to)
 
      :else
-     #(if (> % 0.5) to from))))
+     (do
+       ;; Reaching here means we can't interpolate and will snap at t=0.5. Same-type
+       ;; non-tweenables (bool, keyword) snap silently — a legitimate use of `lerp`.
+       ;; A type mismatch (e.g. Color vs "#RRGGBB" for the same colour) is almost
+       ;; always an accidental inconsistency between frames, so fail loudly in debug.
+       (assert (or (nil? from) (nil? to) (= (.-runtimeType from) (.-runtimeType to)))
+               (str "Cannot interpolate between '" from "' (" (.-runtimeType from) ") and '"
+                    to "' (" (.-runtimeType to) "); the value would snap at t=0.5 instead of "
+                    "animating. Convert both endpoints to the same animatable type "
+                    "before animating, e.g. wrap colours with (t/color ...)."))
+       #(if (> % 0.5) to from)))))
 
 ;;; OKLab color space
 
