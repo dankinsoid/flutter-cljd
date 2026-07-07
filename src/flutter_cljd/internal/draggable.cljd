@@ -61,7 +61,7 @@
                     ^w/Widget child]
   :extends (w/StatefulWidget .key k)
 
-  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil))
+  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil))
 
    ;; Creates a gesture recognizer that recognizes the start of the drag  
   Draggable
@@ -100,7 +100,15 @@
 (deftype DraggableState [^:mutable ^g/GestureRecognizer? recognizer
                          ^:mutable ^int activeCount
                          ^:mutable ^w/Offset offset
-                         ^:mutable ^a/AnimationController? returnController]
+                         ^:mutable ^a/AnimationController? returnController
+                         ;; Lifecycle stage passed to the child builder:
+                         ;; :idle :dragging :dropping :returning.
+                         ^:mutable stage
+                         ;; While :returning, the offset the child animates from
+                         ;; and the curve to use — driven by an AnimatedBuilder so
+                         ;; the child builder isn't re-run per frame.
+                         ^:mutable ^w/Offset returnStart
+                         ^:mutable ^a/Curve? returnCurve]
   :extends (#/(w/State Draggable))
 
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
@@ -146,22 +154,40 @@
     (assert (w/debugCheckHasOverlay context))
     (let [^int activeCount (.-activeCount this)
           ^Draggable widget (.-widget this)
+          stage (.-stage this)
+          child (.-child widget)
           ^bool can-drag (and (.-enabled widget)
                               (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget))))
           ^bool show-child (zero? activeCount)
-          ^w/Size? size (some-> context .findRenderObject .-size)]
-      ;; When disabled and idle, collapse to the bare child: no Listener node,
+          ^w/Size? size (some-> context .findRenderObject .-size)
+          ;; In-place content: a builder handles every stage itself; a plain
+          ;; widget falls back to :placeholder / a size-preserving box while dragging.
+          ^w/Widget content (if (fn? child)
+                              (child context stage)
+                              (if show-child
+                                child
+                                (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))]
+      ;; When disabled and idle, collapse to the bare content: no Listener node,
       ;; zero hit-test footprint, no recognizer held.
       (if (and (not (.-enabled widget)) show-child)
-        (.-child widget)
-        (w/Transform.translate
-         .offset (-> this .-offset)
-         .child (w/Listener
-                 .behavior (.-hitTestBehavior widget)
-                 .onPointerDown (when can-drag #(.routePointer this %))
-                 .child (if show-child
-                          (.-child widget)
-                          (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))))))
+        content
+        (let [^w/Widget listener (w/Listener
+                                  .behavior (.-hitTestBehavior widget)
+                                  .onPointerDown (when can-drag #(.routePointer this %))
+                                  .child content)]
+          ;; The return-home slide is driven by the controller here, so the child
+          ;; builder above runs only on stage changes — not per animation frame.
+          (if-let [^a/AnimationController ctrl (.-returnController this)]
+            (w/AnimatedBuilder
+             .animation ctrl
+             .child listener
+             .builder (fn [_ c]
+                        (w/Transform.translate
+                         .offset (or (w/Offset.lerp (.-returnStart this) w/Offset.zero
+                                                    (.transform (.-returnCurve this) (.-value ctrl)))
+                                     w/Offset.zero)
+                         .child c)))
+            (w/Transform.translate .offset (.-offset this) .child listener))))))
 
   (setState [^DraggableState this modify]
     (if (.-mounted this)
@@ -174,6 +200,11 @@
       (-> this .-recognizer .dispose)
       (set! (.-recognizer this) nil)))
 
+  (setStage [^DraggableState this stage]
+    (when (not= (.-stage this) stage)
+      (.setState this #(set! (.-stage this) stage)))
+    nil)
+
   (stopReturn [^DraggableState this]
     (when-let [^a/AnimationController ctrl (.-returnController this)]
       (.dispose ctrl)
@@ -182,6 +213,8 @@
   ;; Animate the child's persisted offset back to zero (its home slot). Duration
   ;; and curve come from :return-animation, resolved against the inherited
   ;; animation theme; a 0 duration returns instantly. :on-end fires on arrival.
+  ;; The slide is driven by returnController + returnStart/returnCurve, which the
+  ;; build's AnimatedBuilder reads — so the child builder isn't re-run per frame.
   (returnHome [^DraggableState this]
     (.stopReturn this)
     (let [^w/Offset start (.-offset this)
@@ -189,23 +222,25 @@
           ^core/Duration dur (:duration opts)
           ^a/Curve curve (:curve opts)
           on-end (:on-end opts)]
-      (when-not (= start w/Offset.zero)
+      (if (= start w/Offset.zero)
+        (.setStage this :idle)
         (if (<= (.-inMicroseconds dur) 0)
-          (do (.setState this #(set! (.-offset this) w/Offset.zero))
+          (do (.setState this #(do (set! (.-offset this) w/Offset.zero)
+                                   (set! (.-stage this) :idle)))
               (when on-end (on-end)))
           (let [^a/AnimationController ctrl (a/AnimationController .vsync this .duration dur)]
+            (set! (.-returnStart this) start)
+            (set! (.-returnCurve this) curve)
             (set! (.-returnController this) ctrl)
-            (.addListener ctrl
-                          (fn [] (.setState this #(set! (.-offset this)
-                                                        (or (w/Offset.lerp start w/Offset.zero (.transform curve (.-value ctrl)))
-                                                            w/Offset.zero)))))
+            (set! (.-offset this) w/Offset.zero)
             (.addStatusListener ctrl
                                 (fn [^a/AnimationStatus status]
                                   (when (= a/AnimationStatus.completed status)
-                                    (.setState this #(set! (.-offset this) w/Offset.zero))
                                     (.stopReturn this)
+                                    (.setState this #(set! (.-stage this) :idle))
                                     (when on-end (on-end)))
                                   nil))
+            (.setState this #(set! (.-stage this) :returning))
             (.forward ctrl))))
       nil))
 
@@ -226,14 +261,21 @@
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
               drop-options (t/animation-options (.-dropAnimation widget) (.-context this))
               return-options (t/animation-options (.-returnAnimation widget) (.-context this))
-              _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
+              _ (.setState this #(do (set! (.-activeCount this) (inc (.-activeCount this)))
+                                     (set! (.-stage this) :dragging)))
               ^w/OverlayState overlay-state (w/Overlay.of
                                              (.-context this)
                                              .debugRequiredFor widget
                                              .rootOverlay (.-rootOverlay widget))
-              ^w/Widget raw-feedback (if (instance? w/Widget (.-feedback widget))
-                                       (.-feedback widget)
-                                       ((.-feedback widget) (.-child widget)))
+              ;; Feedback source: an explicit :feedback (widget or (fn [ctx stage over-target?]))
+              ;; or, by default, the child rendered at :dragging (builder or widget).
+              fb (.-feedback widget)
+              child (.-child widget)
+              ^w/Widget raw-feedback (cond
+                                       (fn? fb)    (fb (.-context this) :dragging false)
+                                       (some? fb)  fb
+                                       (fn? child) (child (.-context this) :dragging)
+                                       :else       child)
               ;; Feedback is mounted under the Overlay, so it loses the inherited
               ;; environment (themes + `with-inherited` bindings) living above the
               ;; draggable. Re-inject it between the draggable and overlay contexts.
@@ -271,7 +313,8 @@
                                   (a/AnimationController .vsync this)
                                   drop-options
                                   return-options
-                                  nil)]
+                                  nil
+                                  :dragging)]
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
@@ -282,6 +325,8 @@
                 ^w/Offset offset
                 ^w/Offset final-offset
                 ^bool was-accepted]
+    ;; Released: the feedback is now flying — to the target if accepted, home if not.
+    (.setStage this (if was-accepted :dropping :returning))
     (when (and (.-mounted this) (.-onDragWillEnd (.-widget this)))
       ((.-onDragWillEnd (.-widget this))
        {:was-accepted was-accepted
@@ -302,9 +347,12 @@
        {:was-accepted was-accepted
         :velocity velocity
         :offset offset}))
-    ;; The child now rests where it was dropped; :return-on-drop sends it home.
-    (when (and (.-mounted this) (.-returnOnDrop (.-widget this)))
-      (.returnHome this))))
+    ;; Landed. :return-on-drop sends a displaced child home (:returning → :idle);
+    ;; otherwise it just rests where it was dropped (:idle).
+    (when (.-mounted this)
+      (if (and (.-returnOnDrop (.-widget this)) (not (= offset w/Offset.zero)))
+        (.returnHome this)
+        (.setStage this :idle)))))
 
 (deftype DragAvatar [^w/OverlayState overlayState
                      data
@@ -338,7 +386,10 @@
                      ;; for `:on-end`.
                      dropOptions
                      returnOptions
-                     ^:mutable settleOptions]
+                     ^:mutable settleOptions
+                     ;; Stage of this drag as targets see it: :dragging while
+                     ;; hovering, :dropping/:returning once released.
+                     ^:mutable stage]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -471,6 +522,10 @@
           settle-options (if was-accepted (.-dropOptions this) (.-returnOptions this))
           ^core/Duration duration (:duration settle-options)]
       (.-settleOptions! this settle-options)
+      (.-stage! this (if was-accepted :dropping :returning))
+      ;; Targets still holding this avatar rebuild so their status seq reflects
+      ;; the new stage (a candidate now shows :dropping instead of :dragging).
+      (doseq [^DragTargetState t (.-enteredTargets this)] (.refreshStatus t))
       (if-not (= final-offset last-offset)
         (do
           (.-duration! (.-controller this) duration)
@@ -563,10 +618,11 @@
 
   (^w/Widget build [^DragTargetState this ^w/BuildContext context]
     (let [^DragTarget widget (.-widget this)
+          status (fn [^DragAvatar av] {:stage (.-stage av) :data (.-data av)})
           child ((.-builder widget)
                  context
-                 (map #(.-data ^DragAvatar %) (.-candidateAvatars this))
-                 (map #(.-data ^DragAvatar %) (.-rejectedAvatars this)))]
+                 (map status (.-candidateAvatars this))
+                 (map status (.-rejectedAvatars this)))]
       ;; When disabled, drop out of hit-testing entirely: no MetaData node, so
       ;; drag avatars can't discover this target and other gestures pass through.
       (if (.-enabled widget)
@@ -647,6 +703,11 @@
     (when (and (.-mounted this) (some? (.-data avatar)))
       (when-let [on-move (-> this .-widget .-onMove)]
         (on-move (.-data avatar) (.-lastOffset avatar))))
+    nil)
+
+  ;; Rebuild to re-read hovering avatars' stages (e.g. :dragging → :dropping).
+  (refreshStatus [^DragTargetState this]
+    (when (.-mounted this) (.setState this (fn [] nil)))
     nil))
 
 (defn ^w/Widget draggable* [{:keys [key
@@ -689,7 +750,7 @@
     (Draggable
      (t/widget-key key)
      delay
-     (or feedback child)
+     feedback
      data
      (some-> axis t/axis)
      placeholder

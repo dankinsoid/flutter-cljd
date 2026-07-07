@@ -644,6 +644,19 @@
               (str "key-values-args-and-children: option key " key " has no value"))
       (args-children args (vec (drop i values))))))
 
+(defn key-values-and-child
+  "Splits leading keyword/value pairs (or a single leading map) from one trailing
+   child, returning `[opts child]`. Unlike `key-values-args-and-children`, it does
+   not flatten or widget-validate the child — it may be a builder function."
+  [values]
+  (if (map? (first values))
+    [(first values) (last (rest values))]
+    (loop [m {} vs values]
+      (let [[a b] vs]
+        (if (and (keyword? a) (next vs))
+          (recur (assoc m a b) (nnext vs))
+          [m a])))))
+
 (defn key-values-map
   "Builds an options map from an optional leading map followed by keyword/value pairs.
    The leading map is the base; trailing pairs override it, so `(f style :color :red)`

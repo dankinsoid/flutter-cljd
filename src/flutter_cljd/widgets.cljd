@@ -2255,13 +2255,17 @@ To achieve this, listening can be inserted before any modifier call:
 (defn ^w/Widget draggable
   "Makes its child draggable via touch/pointer.
 
-The last positional arg is the child widget; all preceding kwargs configure behavior.
+The last positional arg is the child; all preceding kwargs configure behavior.
+The child is a widget, or a builder `(fn [ctx stage])` that receives the current
+lifecycle stage — one of `:idle` `:dragging` `:dropping` (released, flying to a
+target) `:returning` (flying home). A builder subsumes `:placeholder`: return the
+dragged-away look yourself when `stage` is not `:idle`.
 
 Options:
 
 - `:data` — payload delivered to `drag-target` on drop
-- `:feedback` — widget (or `(fn [child] widget)`) shown under the pointer while dragging; defaults to the child itself
-- `:placeholder` — widget shown in place of the child while dragging
+- `:feedback` — the widget under the pointer while dragging: a widget, or a builder `(fn [ctx stage over-target?])` where `over-target?` is true while hovering a target that will accept. Defaults to the child rendered at its dragging stage
+- `:placeholder` — widget shown in place of a plain-widget child while dragging (ignored when the child is a builder — handle it via `stage` there)
 - `:delay` — Duration or `:default` (long-press) before drag starts
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction
 - `:affinity` — gesture recognizer axis affinity (defaults to `:axis`)
@@ -2282,19 +2286,21 @@ Options:
 - `:return-animation` — animation options for going home: both the feedback flying back when a drag ends off-target (rejected or dropped on nothing) and the `:return-on-drop` child slide. A `{:duration :curve :on-end}` map (or a plain ms number, or `[dur curve on-end]`); `0` duration snaps instantly. Defaults to the inherited animation theme (see `with-animation`)
 - `:drop-animation` — same shape, for the feedback docking onto the target that accepted it. Defaults to the inherited animation theme"
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (drg/draggable* args (last children))))
+  (let [[opts child] (ut/key-values-and-child args)]
+    (drg/draggable* opts child)))
 
 (defn ^w/Widget drag-target
   "Drop zone that receives data from `draggable` widgets.
 
 The last positional arg is the builder; all preceding kwargs configure behavior
 (so it composes with `->>`, like `draggable`). The builder is
-`(fn [context candidate-data rejected-data])` — or a plain widget when the content
-doesn't depend on hover state.
-`candidate-data` is a seq of `:data` values from hovering draggables this target *will* accept
-(`:on-will-accept` returned truthy); `rejected-data` is those it *won't*. Use them to change
-appearance on hover — e.g. highlight when `candidate-data` is non-empty.
+`(fn [context accepted rejected])` — or a plain widget when the content doesn't
+depend on hover state.
+`accepted` is a seq of status maps `{:stage :data}` for hovering draggables this
+target *will* accept (`:on-will-accept` truthy); `rejected` is those it *won't*.
+`:stage` is `:dragging` (hovering) or `:dropping` (released, flying into this
+target); `:data` is the draggable's `:data`. Use them to change appearance on
+hover — e.g. highlight when `(seq accepted)`.
 
 Options:
 
@@ -2306,16 +2312,7 @@ Options:
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
 - `:enabled` — bool (default true); when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through"
   [& args]
-  ;; Parse leading kwargs, take the last positional as the builder. Can't reuse
-  ;; key-values-args-and-children: it runs flatten-children, which asserts on a
-  ;; non-widget child — and the builder is usually a function.
-  (let [[opts builder] (if (map? (first args))
-                         [(first args) (last (rest args))]
-                         (loop [m {} vs args]
-                           (let [[a b] vs]
-                             (if (and (keyword? a) (next vs))
-                               (recur (assoc m a b) (nnext vs))
-                               [m a]))))]
+  (let [[opts builder] (ut/key-values-and-child args)]
     (drg/drag-target* (assoc opts :builder builder))))
 
 (defn ^w/Widget drag-boundary
