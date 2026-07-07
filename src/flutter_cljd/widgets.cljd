@@ -2380,7 +2380,13 @@ Extra: `:item-extent`,
 (defn ^w/Widget grid-view
   "Scrollable grid of widgets.
 
-Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+Two grid engines, chosen by options:
+
+- Native (aspect-ratio): `:cross-axis-count` or `:max-cross-axis-extent`.
+- Flexible: `:max-columns` — up to N columns whose widths and the row height are
+  given explicitly by sizers (`number` / `:flex` / `{:min :max :flex}`), with
+  independent cross/main gaps, justify alignment, RTL and a fill mode.
+
 Trailing `fn` → lazy builder; collection/number before it sets data source.
 
 Examples:
@@ -2389,10 +2395,19 @@ Examples:
 (grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
 (grid-view :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
 (grid-view :max-cross-axis-extent 200 50 (fn [ctx i] (text (str i))))
+;; flexible: 3 flex columns 8px apart, 80px rows
+(grid-view :max-columns 3 :cross-gap 8 :main-sizer 80 items
+           (fn [ctx it] (tile it)))
 ```
 
-Grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
+Native grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
 `:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
+
+Flexible grid options (with `:max-columns`): `:cross-sizer` (default `:flex`),
+`:cross-gap`, `:cross-align` (`:start`/`:end`/`:center`/`:space-between`/`:space-around`/`:space-evenly`),
+`:cross-dir` (`:start`/`:end` for RTL), `:main-sizer` (row height), `:main-gap`,
+`:main-align`, `:main-fit` (`:content` shrink-wraps rows, `:fill` claims leftover
+viewport for `:main-align`/flex rows). Needs a finite item count.
 
 Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
@@ -2479,13 +2494,17 @@ Examples:
 (defn ^w/Widget sliver-grid
   "Sliver that displays children in a grid. Use inside `custom-scroll-view`.
 
-Requires `:cross-axis-count` or `:max-cross-axis-extent`.
+Same two engines as `grid-view`: native `:cross-axis-count`/`:max-cross-axis-extent`,
+or flexible `:max-columns` (explicit column/row sizers, gaps, alignment, RTL,
+`:main-fit`). See `grid-view` for the full flexible option list.
 
 Examples:
 
 ```clojure
 (sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
 (sliver-grid :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
+(sliver-grid :max-columns 4 :cross-gap 8 :main-sizer 96 items
+             (fn [ctx it] (tile it)))
 ```"
   [& args]
   (scrl/sliver-grid* args))

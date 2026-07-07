@@ -1,9 +1,24 @@
 (ns flutter-cljd.internal.scroll
   (:require
    ["package:flutter/material.dart" :as m]
+   ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.internal.grid.sliver :as grid]
    [flutter-cljd.types :as t]
    [flutter-cljd.utils :as ut]))
+
+(defn- ^r/SliverGridDelegate grid-delegate-for
+  "Pick a SliverGridDelegate for grid args. `:max-columns` selects the flexible grid
+   (flex/min-max tracks, gap sizers, justify alignment, :main-fit); anything else
+   falls back to the native aspect-ratio delegates. The flexible delegate needs the
+   item count up front (Flutter doesn't hand it to getLayout)."
+  [args item-count]
+  (if (:max-columns args)
+    (do
+      (when (nil? item-count)
+        (throw (Exception. "flexible grid (:max-columns) needs a finite item count — pass a data source, an :item-count, or static children")))
+      (grid/grid-delegate (assoc args :count (int item-count))))
+    (t/sliver-grid-delegate args)))
 
 (defn- parse-scroll-args
   [raw-args]
@@ -127,9 +142,9 @@
         padding (some-> (:padding args) t/insets)
         clip (t/clip (or (:clip args) :hard-edge))
         cache-extent (some-> (:cache-extent args) double)
-        delegate (t/sliver-grid-delegate args)
         item-builder (:item-builder args)
         item-count (:item-count args)
+        delegate (grid-delegate-for args (if item-builder item-count (count children)))
         add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
         add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
         add-semantic-indexes (boolean (:add-semantic-indexes args true))]
@@ -260,9 +275,9 @@
 (defn ^w/Widget sliver-grid* [raw-args]
   (let [[args children] (parse-scroll-args raw-args)
         key (t/widget-key (:key args))
-        delegate (t/sliver-grid-delegate args)
         item-builder (:item-builder args)
         item-count (:item-count args)
+        delegate (grid-delegate-for args (if item-builder item-count (count children)))
         add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
         add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
         add-semantic-indexes (boolean (:add-semantic-indexes args true))]
