@@ -225,6 +225,7 @@
         (.stopReturn this)
         (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
               drop-options (t/animation-options (.-dropAnimation widget) (.-context this))
+              return-options (t/animation-options (.-returnAnimation widget) (.-context this))
               _ (.setState this #(set! (.-activeCount this) (inc (.-activeCount this))))
               ^w/OverlayState overlay-state (w/Overlay.of
                                              (.-context this)
@@ -268,7 +269,9 @@
                                   nil
                                   (.-context this)
                                   (a/AnimationController .vsync this)
-                                  drop-options)]
+                                  drop-options
+                                  return-options
+                                  nil)]
           (.prepare avatar)
           (when-let [on-drag-started (.-onDragStarted widget)]
             (on-drag-started))
@@ -327,9 +330,15 @@
                      ^:mutable ^w/BuildContext? context
                      ^:mutable ^w/BuildContext originalContext
                      ^:mutable ^a/AnimationController controller
-                     ;; Resolved drop animation `{:duration :curve :on-end}` for the
-                     ;; feedback settling onto the target (or back to origin).
-                     dropOptions]
+                     ;; Resolved `{:duration :curve :on-end}` for the two settle
+                     ;; outcomes: dropOptions when the feedback lands on an accepted
+                     ;; target, returnOptions when it flies back home (rejected/no
+                     ;; target). settleOptions is whichever `finishDrag` picked, read
+                     ;; by `buildWidget` for the in-flight curve and by `dragCompletion`
+                     ;; for `:on-end`.
+                     dropOptions
+                     returnOptions
+                     ^:mutable settleOptions]
   :extends g/Drag
 
   (update [^DragAvatar this ^g/DragUpdateDetails details]
@@ -456,7 +465,12 @@
           velocity (or velocity w/Velocity.zero)
           final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
                            expected-offset)
-          ^core/Duration duration (:duration (.-dropOptions this))]
+          ;; Accepted → :drop-animation (docking onto the target); rejected/no
+          ;; target → :return-animation (flying back home, same motion as a
+          ;; :return-on-drop slide).
+          settle-options (if was-accepted (.-dropOptions this) (.-returnOptions this))
+          ^core/Duration duration (:duration settle-options)]
+      (.-settleOptions! this settle-options)
       (if-not (= final-offset last-offset)
         (do
           (.-duration! (.-controller this) duration)
@@ -481,7 +495,7 @@
     (.-entry! this nil)
 
     ((.-onDragEnd this) velocity offset was-accepted)
-    (when-let [on-end (:on-end (.-dropOptions this))] (on-end)))
+    (when-let [on-end (:on-end (.-settleOptions this))] (on-end)))
 
   (buildWidget [^DragAvatar this ^w/BuildContext context]
     (.-context! this context)
@@ -493,7 +507,7 @@
                      .ignoring (.-ignoringFeedbackPointer this)
                      .child (.-feedback this)))
      .builder (fn [_ child]
-                (let [^a/Curve curve (:curve (.-dropOptions this))
+                (let [^a/Curve curve (:curve (or (.-settleOptions this) (.-dropOptions this)))
                       offset (w/Offset.lerp (.-overlayOffset this)
                                             (.-finalOffset this)
                                             (.transform curve (.-value (.-controller this))))]
