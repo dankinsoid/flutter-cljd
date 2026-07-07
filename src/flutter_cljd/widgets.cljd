@@ -2259,11 +2259,14 @@ To achieve this, listening can be inserted before any modifier call:
   "Makes its child draggable via touch/pointer.
 
 The last positional arg is the child; all preceding kwargs configure behavior.
-The child is a widget, or a builder `(fn [ctx status])` where `status` is a map
-`{:stage <kw>}` — the lifecycle stage, one of `:idle` `:dragging` `:dropping`
-(released, flying to a target) `:returning` (flying home). A builder subsumes
-`:placeholder`: return the dragged-away look yourself when `:stage` is not `:idle`.
-(status is a map so new keys can be added without changing the arity.)
+The child is a widget, or a builder `(fn [ctx status])` where `status` is a map:
+- `:stage` — lifecycle stage, one of `:idle` `:dragging` `:dropping` (released,
+  flying to a target) `:returning` (flying home).
+- `:over-target?` — whether the drag is currently over an accepting target. Only
+  meaningful while `:dragging`; always false once released.
+A builder subsumes `:placeholder`: return the dragged-away look yourself when
+`:stage` is not `:idle`. The same `status` shape is passed to the `:feedback`
+builder. (status is a map so new keys can be added without changing the arity.)
 
 Options:
 

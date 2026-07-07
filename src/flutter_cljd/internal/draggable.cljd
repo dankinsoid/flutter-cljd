@@ -64,7 +64,7 @@
                     child]
   :extends (w/StatefulWidget .key k)
 
-  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil))
+  (createState [^Draggable _] (DraggableState nil 0 w/Offset.zero nil :idle w/Offset.zero nil false))
 
    ;; Creates a gesture recognizer that recognizes the start of the drag  
   Draggable
@@ -111,7 +111,11 @@
                          ;; and the curve to use — driven by an AnimatedBuilder so
                          ;; the child builder isn't re-run per frame.
                          ^:mutable ^w/Offset returnStart
-                         ^:mutable ^a/Curve? returnCurve]
+                         ^:mutable ^a/Curve? returnCurve
+                         ;; Whether the live drag is currently over an accepting target.
+                         ;; Pushed from the avatar so the in-place child builder sees the
+                         ;; same :over-target? the feedback does. False unless :dragging.
+                         ^:mutable ^bool overTarget]
   :extends (#/(w/State Draggable))
 
   ^:mixin #/(w/TickerProviderStateMixin Draggable)
@@ -166,7 +170,7 @@
           ;; In-place content: a builder handles every stage itself; a plain
           ;; widget falls back to :placeholder / a size-preserving box while dragging.
           ^w/Widget content (if (fn? child)
-                              (child context {:stage stage})
+                              (child context {:stage stage :over-target? (.-overTarget this)})
                               (if show-child
                                 child
                                 (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))]
@@ -206,6 +210,11 @@
   (setStage [^DraggableState this stage]
     (when (not= (.-stage this) stage)
       (.setState this #(set! (.-stage this) stage)))
+    nil)
+
+  (setOverTarget [^DraggableState this ^bool over?]
+    (when (not= (.-overTarget this) over?)
+      (.setState this #(set! (.-overTarget this) over?)))
     nil)
 
   (stopReturn [^DraggableState this]
@@ -300,6 +309,8 @@
                                     (.willEndDrag this velocity offset final-offset was-accepted))
                                   (fn [^w/Velocity velocity ^w/Offset offset ^bool was-accepted]
                                     (.didEndDrag this velocity offset was-accepted))
+                                  (fn [^bool over-target?]
+                                    (.setOverTarget this over-target?))
                                   (.-ignoringFeedbackSemantics widget)
                                   (.-ignoringFeedbackPointer widget)
                                   (-> this .-context w/View.of .-viewId)
@@ -328,7 +339,9 @@
                 ^w/Offset final-offset
                 ^bool was-accepted]
     ;; Released: the feedback is now flying — to the target if accepted, home if not.
+    ;; No longer a live hover, so the in-place child's :over-target? goes false.
     (.setStage this (if was-accepted :dropping :returning))
+    (.setOverTarget this false)
     (when (and (.-mounted this) (.-onDragWillEnd (.-widget this)))
       ((.-onDragWillEnd (.-widget this))
        {:was-accepted was-accepted
@@ -370,6 +383,10 @@
                      onDragUpdate
                      onDragWillEnd
                      onDragEnd
+                     ;; (fn [bool]) — pushed on each move as the drag crosses onto/off
+                     ;; an accepting target, so the source can rebuild its in-place
+                     ;; child with the current :over-target?.
+                     onOverTargetChanged
                      ^bool ignoringFeedbackSemantics
                      ^bool ignoringFeedbackPointer
                      ^int viewId
@@ -463,7 +480,9 @@
             (doseq [target (.-enteredTargets this)]
               (.didMove target this))
 
-            (.-activeTarget! this new-target))))))
+            (.-activeTarget! this new-target)))))
+    ;; Push over-target state to the source (guarded there against no-op rebuilds).
+    ((.-onOverTargetChanged this) (some? (.-activeTarget this))))
 
   ;; Current global bounds of the feedback, for custom catch-point functions.
   (^w/Rect feedbackRect [^DragAvatar this]
