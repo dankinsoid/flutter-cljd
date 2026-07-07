@@ -165,7 +165,7 @@
           ;; In-place content: a builder handles every stage itself; a plain
           ;; widget falls back to :placeholder / a size-preserving box while dragging.
           ^w/Widget content (if (fn? child)
-                              (child context stage)
+                              (child context {:stage stage})
                               (if show-child
                                 child
                                 (or (.-childWhenDragging widget) (w/SizedBox.fromSize .size size))))]
@@ -269,15 +269,15 @@
                                              (.-context this)
                                              .debugRequiredFor widget
                                              .rootOverlay (.-rootOverlay widget))
-              ;; Normalize feedback into (fn [ctx stage over-target?]): an explicit
-              ;; :feedback builder/widget, else the child rendered at its stage.
+              ;; Normalize feedback into (fn [ctx status]): an explicit :feedback
+              ;; builder/widget, else the child builder (it ignores :over-target?).
               fb (.-feedback widget)
               child (.-child widget)
               feedback-builder (cond
                                  (fn? fb)    fb
-                                 (some? fb)  (fn [_ _ _] fb)
-                                 (fn? child) (fn [ctx stage _] (child ctx stage))
-                                 :else       (fn [_ _ _] child))
+                                 (some? fb)  (fn [_ _] fb)
+                                 (fn? child) child
+                                 :else       (fn [_ _] child))
               ;; Feedback is mounted under the Overlay, so it loses the inherited
               ;; environment (themes + `with-inherited` bindings) above the draggable.
               ;; Capture it once here; buildWidget re-wraps each rebuild.
@@ -560,7 +560,7 @@
   (buildWidget [^DragAvatar this ^w/BuildContext context]
     (.-context! this context)
     (let [^bool over-target? (some? (.-activeTarget this))
-          raw ((.-feedbackBuilder this) context (.-stage this) over-target?)
+          raw ((.-feedbackBuilder this) context {:stage (.-stage this) :over-target? over-target?})
           ^w/Widget feedback ((.-wrapFeedback this) raw)]
     (w/AnimatedBuilder
      .animation (.-controller this)
@@ -629,8 +629,8 @@
           status (fn [^DragAvatar av] {:stage (.-stage av) :data (.-data av)})
           child ((.-builder widget)
                  context
-                 (map status (.-candidateAvatars this))
-                 (map status (.-rejectedAvatars this)))]
+                 {:accepted (map status (.-candidateAvatars this))
+                  :rejected (map status (.-rejectedAvatars this))})]
       ;; When disabled, drop out of hit-testing entirely: no MetaData node, so
       ;; drag avatars can't discover this target and other gestures pass through.
       (if (.-enabled widget)

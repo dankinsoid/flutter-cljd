@@ -2256,15 +2256,16 @@ To achieve this, listening can be inserted before any modifier call:
   "Makes its child draggable via touch/pointer.
 
 The last positional arg is the child; all preceding kwargs configure behavior.
-The child is a widget, or a builder `(fn [ctx stage])` that receives the current
-lifecycle stage — one of `:idle` `:dragging` `:dropping` (released, flying to a
-target) `:returning` (flying home). A builder subsumes `:placeholder`: return the
-dragged-away look yourself when `stage` is not `:idle`.
+The child is a widget, or a builder `(fn [ctx status])` where `status` is a map
+`{:stage <kw>}` — the lifecycle stage, one of `:idle` `:dragging` `:dropping`
+(released, flying to a target) `:returning` (flying home). A builder subsumes
+`:placeholder`: return the dragged-away look yourself when `:stage` is not `:idle`.
+(status is a map so new keys can be added without changing the arity.)
 
 Options:
 
 - `:data` — payload delivered to `drag-target` on drop
-- `:feedback` — the widget under the pointer while dragging: a widget, or a builder `(fn [ctx stage over-target?])` where `over-target?` is true while hovering a target that will accept. Defaults to the child rendered at its dragging stage
+- `:feedback` — the widget under the pointer while dragging: a widget, or a builder `(fn [ctx status])` where `status` is `{:stage <kw> :over-target? <bool>}` (`:over-target?` true while hovering a target that will accept). Defaults to the child builder
 - `:placeholder` — widget shown in place of a plain-widget child while dragging (ignored when the child is a builder — handle it via `stage` there)
 - `:delay` — Duration or `:default` (long-press) before drag starts
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction
@@ -2294,13 +2295,14 @@ Options:
 
 The last positional arg is the builder; all preceding kwargs configure behavior
 (so it composes with `->>`, like `draggable`). The builder is
-`(fn [context accepted rejected])` — or a plain widget when the content doesn't
-depend on hover state.
-`accepted` is a seq of status maps `{:stage :data}` for hovering draggables this
-target *will* accept (`:on-will-accept` truthy); `rejected` is those it *won't*.
+`(fn [context status])` — or a plain widget when the content doesn't depend on
+hover state. `status` is a map `{:accepted [...] :rejected [...]}` (a map so new
+keys can be added without changing the arity).
+`:accepted` is a seq of `{:stage :data}` for hovering draggables this target
+*will* accept (`:on-will-accept` truthy); `:rejected` is those it *won't*.
 `:stage` is `:dragging` (hovering) or `:dropping` (released, flying into this
 target); `:data` is the draggable's `:data`. Use them to change appearance on
-hover — e.g. highlight when `(seq accepted)`.
+hover — e.g. highlight when `(seq (:accepted status))`.
 
 Options:
 
