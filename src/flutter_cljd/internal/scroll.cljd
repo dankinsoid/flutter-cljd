@@ -134,7 +134,14 @@
   (let [[args children] (parse-scroll-args raw-args)
         key (t/widget-key (:key args))
         direction (t/axis (or (:axis args) :vertical))
-        reverse (boolean (:reverse args))
+        ;; Smart default: `:main-align :end` is inert in :content mode (no leftover
+        ;; space to distribute), so the only way to honor "align to the far end" is
+        ;; to anchor the scroll there — reverse. :fill makes :main-align real, so it
+        ;; is excluded. Explicit :reverse always wins.
+        reverse (if (contains? args :reverse)
+                  (boolean (:reverse args))
+                  (and (= (:main-align args) :end)
+                       (not= (:main-fit args :content) :fill)))
         controller (:controller args)
         primary (:primary args)
         physics (some-> (:physics args) t/scroll-physics)

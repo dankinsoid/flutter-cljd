@@ -2410,6 +2410,13 @@ Flexible grid options (with `:max-columns`): `:cross-sizer` (default `:flex`),
 `:main-align`, `:main-fit` (`:content` shrink-wraps rows, `:fill` claims leftover
 viewport for `:main-align`/flex rows). Needs a finite item count.
 
+Smart `:reverse` default (when `:reverse` is not given): `:main-align :end` in the
+default `:content` mode is otherwise a no-op, so it's read as \"anchor to the
+bottom\" and enables `:reverse` — a chat-style grid that starts at the bottom and
+grows up (note: this also flips item order, index 0 at the end — build newest-first).
+`:main-fit :fill` keeps `:main-align` literal, so it does not trigger reverse. Pass
+`:reverse` explicitly to override either way.
+
 Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
   [& args]
