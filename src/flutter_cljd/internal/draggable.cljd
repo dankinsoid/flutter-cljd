@@ -295,7 +295,7 @@
                 (< activeCount (.-maxSimultaneousDrags widget)))
         ;; Grabbing it again cancels any in-flight return; drag from where it is.
         (.stopReturn this)
-        (let [^w/Offset drag-start-point ((.-dragAnchorStrategy widget) widget (.-context this) position)
+        (let [^w/Offset drag-start-point (t/offset ((.-dragAnchorStrategy widget) widget (.-context this) position))
               drop-options (t/animation-options (.-dropAnimation widget) (.-context this))
               return-options (t/animation-options (.-returnAnimation widget) (.-context this))
               _ (.setState this #(do (set! (.-activeCount this) (inc (.-activeCount this)))
@@ -498,7 +498,7 @@
         (.markNeedsBuild (.-entry this))))
 
     (let [^w/Offset catch-point (if-let [catch-fn (.-catchPoint this)]
-                                  (catch-fn (.feedbackRect this) global-position)
+                                  (t/offset (catch-fn (.feedbackRect this) global-position))
                                   (.+ global-position (.-feedbackOffset this)))
           ^g/HitTestResult result (g/HitTestResult)
           _ (.hitTestInView (.-instance w/WidgetsBinding)
@@ -599,7 +599,8 @@
                             true))
             last-offset (.-lastOffset this)
             velocity (or velocity w/Velocity.zero)
-            final-offset (or ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
+            final-offset (or (some-> ((.-onDragWillEnd this) velocity last-offset expected-offset was-accepted)
+                                     t/offset)
                              expected-offset)
             ;; Accepted → :drop-animation (docking onto the target); rejected/no
             ;; target → :return-animation (flying back home, same motion as a
@@ -759,7 +760,7 @@
         :else
         (if-let [^r/RenderBox box (some-> this .-context .findRenderObject)]
           (let [^w/Size size (.-size box)
-                ^w/Rect region (region-fn (.& w/Offset.zero size))]
+                ^w/Rect region (t/rect (region-fn (.& w/Offset.zero size)))]
             (.contains region (.globalToLocal box global-point)))
           false))))
 

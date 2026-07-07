@@ -2291,12 +2291,12 @@ Options:
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction
 - `:affinity` — gesture recognizer axis affinity (defaults to `:axis`)
 - `:feedback-offset` — Offset added to the pointer position when probing for drag targets (default `Offset.zero`); does not move the feedback visually
-- `:catch-point` — `(fn [feedback-rect finger-point] -> Offset)` overriding the point used to hit-test targets; `feedback-rect` is the feedback's current global bounds, `finger-point` the global pointer position. Defaults to `finger-point + :feedback-offset`
-- `:drag-anchor-strategy` — `(fn [draggable context position])` returning anchor Offset
+- `:catch-point` — `(fn [feedback-rect finger-point] -> offset)` overriding the point used to hit-test targets; `feedback-rect` is the feedback's current global bounds, `finger-point` the global pointer position. May return any offset-like value (see `offset`). Defaults to `finger-point + :feedback-offset`
+- `:drag-anchor-strategy` — `(fn [draggable context position])` returning any offset-like anchor (see `offset`)
 - `:max-simultaneous-drags` — max concurrent drags (`nil` = unlimited)
 - `:on-drag-start` — `(fn [])` called when drag begins
 - `:on-drag-update` — `(fn [details])` called on each drag move
-- `:on-drag-will-end` — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back; return an Offset to override the final position
+- `:on-drag-will-end` — `(fn [{:keys [was-accepted velocity offset]}])` called before snap-back; return any offset-like value (see `offset`) to override the final position
 - `:on-drag-end` — `(fn [{:keys [was-accepted velocity offset]}])` called after drag completes
 - `:haptic-on` — which drag events fire haptic feedback (Taptic Engine): a keyword or collection of `:start` `:enter` `:leave` `:drop`; `true`/`:all` for all, `false` for none. Defaults to `[:start]` when `:delay` is set, otherwise none. `:enter`/`:leave` fire as the feedback moves onto/off an accepting target; `:drop` fires when a target accepts it
 - `:root-overlay` — bool, use root overlay (default false)
@@ -2330,7 +2330,7 @@ Options:
 - `:on-accept` — `(fn [data offset])` called when an accepted draggable is dropped
 - `:on-leave` — `(fn [data])` called when a draggable leaves the target
 - `:on-move` — `(fn [data offset])` called on each move while hovering
-- `:accept-region` — `(fn [rect] -> Rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
+- `:accept-region` — `(fn [rect] -> rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. May return any rect-like value (see `rect`). Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
 - `:enabled` — bool (default true); when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through"
   [& args]
