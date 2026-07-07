@@ -411,10 +411,10 @@ To access the inherited bindings, use `c/get-inherited` function."
   "Overrides the default implicit-animation options for the subtree.
 
    Descendant implicit animations that don't specify their own `:duration`/`:curve`
-   inherit them from here — currently `animated` (see `flutter-cljd.internal.animated`).
-   `opts` takes the same forms as `animated`'s options: a map (`{:duration :curve}`),
-   a number of milliseconds, or a `[duration curve]` vector. Nested `with-animation`
-   merge, with inner keys winning.
+   inherit them from here — `animated`, and `container`/`align`/`with-text-style`
+   with `:animation`. `opts` takes the same forms as `animated`'s options: a map
+   (`{:duration :curve}`), a number of milliseconds, or a `[duration curve]` vector.
+   Nested `with-animation` merge, with inner keys winning.
 
    ```clojure
    (->> (text \"Hi\")

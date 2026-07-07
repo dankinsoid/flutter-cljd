@@ -36,25 +36,29 @@
          clip-behavior (t/clip (args :clip m/Clip.none))
          container (if
                     (contains? args :animation)
-                     (let [animation (t/animation-options (:animation args {}))]
-                       (m/AnimatedContainer
-                        .key key
-                        .alignment alignment
-                        .padding padding
-                        .color nil
-                        .decoration decor
-                        .foregroundDecoration foreground-decoration
-                        .width nil
-                        .height nil
-                        .constraints constraints
-                        .margin margin
-                        .transform transform
-                        .transformAlignment transform-alignment
-                        .clipBehavior clip-behavior
-                        .child child
-                        .duration (animation :duration)
-                        .curve (animation :curve)
-                        .onEnd (animation :on-end)))
+                     ;; Builder gives a context to read the inherited animation theme.
+                     (m/Builder
+                      .builder
+                      (fn [ctx]
+                        (let [animation (t/animation-options (:animation args {}) ctx)]
+                          (m/AnimatedContainer
+                           .key key
+                           .alignment alignment
+                           .padding padding
+                           .color nil
+                           .decoration decor
+                           .foregroundDecoration foreground-decoration
+                           .width nil
+                           .height nil
+                           .constraints constraints
+                           .margin margin
+                           .transform transform
+                           .transformAlignment transform-alignment
+                           .clipBehavior clip-behavior
+                           .child child
+                           .duration (animation :duration)
+                           .curve (animation :curve)
+                           .onEnd (animation :on-end)))))
 
                      (m/Container
                       .key key

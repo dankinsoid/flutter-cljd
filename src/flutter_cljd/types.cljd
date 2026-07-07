@@ -15,6 +15,7 @@
    [cljd.flutter :as f]
    [cljd.core :as c]
    [flutter-cljd.keyboard-keys :as keys]
+   [flutter-cljd.inherited-keys :as inh]
    [flutter-cljd.color-filters :as clr-f]
    [flutter-cljd.smooth-corner :as sc]
    [flutter-cljd.types :as t]
@@ -1886,12 +1887,16 @@
    - The callback function to be called when the animation ends.
    The value can also be specified as a number, in which case it is used as the duration of the animation.
 
-   `defaults` supplies fallback `:duration`/`:curve` when `value` omits them — typically
-   resolved from the inherited animation theme (see `flutter-cljd.inherited-keys/animation`
-   and `with-animation`). When `defaults` is nil, falls back to the global `*anim-ctx*`."
+   The second argument supplies fallback `:duration`/`:curve` when `value` omits them:
+   - a `BuildContext` — reads the inherited animation theme (see `with-animation`);
+   - a map `{:duration :curve}` — used directly (e.g. an already-resolved theme);
+   - nil — falls back to the global `*anim-ctx*`."
   ([value] (animation-options value nil))
-  ([value defaults]
-   (let [def-duration (or (:duration defaults) (get-in *anim-ctx* [:animation :duration]))
+  ([value defaults-or-context]
+   (let [defaults (if (instance? w/BuildContext defaults-or-context)
+                    (f/get-of defaults-or-context (:key inh/animation))
+                    defaults-or-context)
+         def-duration (or (:duration defaults) (get-in *anim-ctx* [:animation :duration]))
          def-curve (curve (or (:curve defaults) (get-in *anim-ctx* [:animation :curve] a/Curves.linear)))]
      (cond
        (map? value)

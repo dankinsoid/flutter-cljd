@@ -17,16 +17,20 @@
        .child child)
   
       (contains? args :animation)
-      (let [animation (t/animation-options (args :animation))]
-        (m/AnimatedAlign
-         .key key
-         .alignment alignment
-         .child child
-         .heightFactor (args :height-factor)
-         .widthFactor (args :width-factor)
-         .duration (animation :duration)
-         .curve (animation :curve)
-         .onEnd (animation :on-end)))
+      ;; Builder gives a context to read the inherited animation theme.
+      (m/Builder
+       .builder
+       (fn [ctx]
+         (let [animation (t/animation-options (args :animation) ctx)]
+           (m/AnimatedAlign
+            .key key
+            .alignment alignment
+            .child child
+            .heightFactor (args :height-factor)
+            .widthFactor (args :width-factor)
+            .duration (animation :duration)
+            .curve (animation :curve)
+            .onEnd (animation :on-end)))))
   
       :else
       (m/Align

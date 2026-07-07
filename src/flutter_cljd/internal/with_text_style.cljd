@@ -21,7 +21,7 @@
            max-lines (:max-lines args (.-maxLines def-style))
            text-width-basis (:text-width-basis args (.-textWidthBasis def-style))
            text-height-behavior (:text-height-behavior args (.-textHeightBehavior def-style))
-           animation (some-> args :animation t/animation-options)]
+           animation (some-> args :animation (t/animation-options ctx))]
        (if (nil? animation)
          (m/DefaultTextStyle
           .key key
