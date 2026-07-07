@@ -1,0 +1,82 @@
+(ns flutter-cljd.internal.grid.solver-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.internal.grid.solver :as s]))
+
+(def ^:private inf ##Inf)
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- match?
+  "True when `result` from solve-tracks has the expected per-track [offset size]
+   pairs and total extent."
+  [result exp-tracks exp-extent]
+  (let [ts (:tracks result)]
+    (and (close? (:extent result) exp-extent)
+         (= (count ts) (count exp-tracks))
+         (every? identity
+                 (map (fn [t [o sz]] (and (close? (:offset t) o) (close? (:size t) sz)))
+                      ts exp-tracks)))))
+
+(deftest sizer-normalization
+  (is (= {:min 80.0 :max 80.0 :flex 0.0} (s/sizer 80)))
+  (is (= {:min 0.0 :max inf :flex 1.0} (s/sizer :flex)))
+  (is (= {:min 8.0 :max 24.0 :flex 1.0} (s/sizer {:min 8 :max 24 :flex 1})))
+  (is (= {:min 50.0 :max 50.0 :flex 0.0} (s/sizer {:fixed 50})))
+  (is (= {:min 0.0 :max inf :flex 0.0} (s/sizer {})))
+  (is (thrown? Exception (s/sizer "nope"))))
+
+(deftest fixed-tracks
+  (testing "exact fit"
+    (is (match? (s/solve-tracks 100.0 [50 50] 0 :start) [[0 50] [50 50]] 100)))
+  (testing "fixed gap consumes space"
+    (is (match? (s/solve-tracks 120.0 [40 40] 20 :start) [[0 40] [60 40]] 120))))
+
+(deftest content-alignment
+  (testing "leftover space distributed by justify mode"
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :start)         [[0 40] [40 40]] 100))
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :end)           [[20 40] [60 40]] 100))
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :center)        [[10 40] [50 40]] 100))
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :space-between) [[0 40] [60 40]] 100))
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :space-around)  [[5 40] [55 40]] 100))
+    (is (match? (s/solve-tracks 100.0 [40 40] 0 :space-evenly)
+                [[(/ 20.0 3) 40] [(+ (/ 20.0 3) 40 (/ 20.0 3)) 40]] 100)))
+  (testing "single track special-cases"
+    (is (match? (s/solve-tracks 100.0 [50] 0 :center)        [[25 50]] 100))
+    (is (match? (s/solve-tracks 100.0 [50] 0 :space-between) [[0 50]] 100))))
+
+(deftest flex-distribution
+  (testing "equal and proportional splits"
+    (is (match? (s/solve-tracks 100.0 [:flex :flex] 0 :start) [[0 50] [50 50]] 100))
+    (is (match? (s/solve-tracks 90.0 [{:flex 1} {:flex 2}] 0 :start) [[0 30] [30 60]] 90)))
+  (testing "fixed + flex: flex absorbs the remainder"
+    (is (match? (s/solve-tracks 100.0 [20 {:flex 1}] 0 :start) [[0 20] [20 80]] 100)))
+  (testing "flex grows above its :min floor"
+    (is (match? (s/solve-tracks 100.0 [{:min 30 :flex 1} {:flex 1}] 0 :start)
+                [[0 65] [65 35]] 100)))
+  (testing "flex gap grows"
+    (is (match? (s/solve-tracks 120.0 [40 40] {:flex 1} :start) [[0 40] [80 40]] 120))))
+
+(deftest flex-max-clamping
+  (testing "both hit :max — surplus stays as leftover for alignment"
+    (is (match? (s/solve-tracks 100.0 [{:flex 1 :max 30} {:flex 1 :max 30}] 0 :start)
+                [[0 30] [30 30]] 100)))
+  (testing "capped track spills its share to the uncapped one"
+    (is (match? (s/solve-tracks 100.0 [{:flex 1 :max 20} {:flex 1}] 0 :start)
+                [[0 20] [20 80]] 100))))
+
+(deftest overflow
+  (testing "content exceeds available: sizes pinned at :min, extent reports overflow"
+    (let [r (s/solve-tracks 100.0 [60 60] 0 :start)]
+      (is (match? r [[0 60] [60 60]] 120))
+      (is (> (:extent r) 100.0) "extent > available signals overflow to the host"))))
+
+(deftest shrink-wrap
+  (testing "unbounded available: flex collapses to :min, extent = content"
+    (is (match? (s/solve-tracks inf [{:min 40 :flex 1} {:min 40 :flex 1}] {:min 8 :flex 1} :start)
+                [[0 40] [48 40]] 88)))
+  (testing "flex gap with no floor collapses to 0"
+    (is (match? (s/solve-tracks inf [40 40] {:flex 1} :start) [[0 40] [40 40]] 80))))
+
+(deftest degenerate
+  (is (match? (s/solve-tracks 100.0 [] 0 :start) [] 100))
+  (is (match? (s/solve-tracks inf [] 0 :start) [] 0)))

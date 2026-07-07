@@ -1,0 +1,129 @@
+;; @ai-generated(paired)
+(ns flutter-cljd.internal.grid.solver
+  "Pure 1-D track solver for the flexible grid.
+
+   One axis at a time: given an extent to fill and a line of tracks separated by a
+   uniform gap, resolve each track's offset and size. Deliberately Flutter-free so
+   it is unit-testable in isolation and reused verbatim by both the box host (main
+   bound = parent constraint) and the sliver host (main bound = viewport extent).
+
+   Every track/gap sizer normalizes to `{:min :max :flex}` — the same min/max shape
+   as `(sized)`, plus a growth weight. This is the forward-compat seam for self-size:
+   an `:auto` track later just contributes a *measured* value into `:min`; the
+   distribution math below never changes.")
+
+(def ^:private inf ##Inf)
+(def ^:private eps 1e-9)
+
+(defn sizer
+  "Normalize a track/gap sizer spec to `{:min :max :flex}` (all doubles).
+
+   Accepts:
+     number n   -> fixed          {:min n   :max n   :flex 0}
+     :flex      -> unbounded flex  {:min 0   :max ∞   :flex 1}
+     map        -> {:min :max :flex} (defaults 0 / ∞ / 0), or {:fixed n}
+
+   `:flex` is the share of leftover space this entry grows into; 0 means rigid.
+   A finite `:max` caps growth; `:min` is the floor (and the shrink-wrap size)."
+  [s]
+  (cond
+    (number? s) {:min (double s) :max (double s) :flex 0.0}
+    (= :flex s) {:min 0.0 :max inf :flex 1.0}
+    (map? s) (if-let [f (:fixed s)]
+               {:min (double f) :max (double f) :flex 0.0}
+               {:min (double (:min s 0.0))
+                :max (double (:max s inf))
+                :flex (double (:flex s 0.0))})
+    :else (throw (Exception. (str "Invalid grid sizer: " s)))))
+
+(defn- sum ^double [xs] (reduce + 0.0 xs))
+
+(defn- grow
+  "Water-fill: grow entries from their `:min` by sharing `free` across positive-flex
+   entries proportional to `:flex`, clamping at `:max`. When an entry hits its cap its
+   surplus share redistributes among the rest, so total `free` is honored exactly
+   (up to remaining flex capacity). Returns the vector of final sizes.
+
+   `entries` are normalized sizer maps; `free` must be > 0."
+  [entries ^double free]
+  (let [n (count entries)
+        maxs (mapv :max entries)
+        flexes (mapv :flex entries)]
+    (loop [sizes (mapv :min entries)
+           frozen #{}
+           remaining free]
+      (let [active (filter (fn [i] (and (not (frozen i)) (pos? (double (nth flexes i)))))
+                           (range n))
+            total-flex (sum (map #(nth flexes %) active))]
+        (if (or (<= remaining eps) (empty? active) (<= total-flex eps))
+          sizes
+          (let [share (fn [i] (* remaining (/ (double (nth flexes i)) total-flex)))
+                over (filter (fn [i] (> (+ (double (nth sizes i)) (share i)) (double (nth maxs i))))
+                            active)]
+            (if (seq over)
+              ;; some entries would exceed their cap — pin them at :max and redistribute
+              (let [used (sum (map (fn [i] (- (double (nth maxs i)) (double (nth sizes i)))) over))]
+                (recur (reduce (fn [s i] (assoc s i (nth maxs i))) sizes over)
+                       (into frozen over)
+                       (- remaining used)))
+              ;; nobody caps out — apply the proportional shares and finish
+              (reduce (fn [s i] (assoc s i (+ (double (nth s i)) (share i)))) sizes active))))))))
+
+(defn- align-offsets
+  "Leading offset and extra between-track spacing for distributing `residual`
+   (leftover space when nothing flexes) per a justify-content-style `align`.
+   Matches Flutter's MainAxisAlignment. Returns `[lead between]`."
+  [align ^double residual n]
+  (if (<= residual eps)
+    [0.0 0.0]
+    (case align
+      :start [0.0 0.0]
+      :end [residual 0.0]
+      :center [(/ residual 2.0) 0.0]
+      :space-between (if (<= n 1) [0.0 0.0] [0.0 (/ residual (double (dec n)))])
+      :space-around (let [u (/ residual (double n))] [(/ u 2.0) u])
+      :space-evenly (let [u (/ residual (double (inc n)))] [u u])
+      [0.0 0.0])))
+
+(defn solve-tracks
+  "Resolve one axis: `n` tracks separated by a uniform gap, packed into `available`.
+
+   Args:
+     available    extent to fill; `##Inf` requests shrink-wrap (size to content).
+     track-sizers vector of `n` sizer specs (raw or normalized), one per track.
+     gap-sizer    sizer spec for each of the `n-1` inter-track gaps.
+     align        content distribution when leftover space remains and nothing
+                  flexes: :start :end :center :space-between :space-around :space-evenly.
+
+   Returns `{:tracks [{:offset :size} ...] :extent e}` where `:extent` is the span
+   the line occupies on this axis: content size under shrink-wrap, otherwise
+   `available` (or the content size if it overflows — `:extent > available` signals
+   overflow to the host, which clips (box) or scrolls (sliver))."
+  [^double available track-sizers gap-sizer align]
+  (let [n (count track-sizers)]
+    (if (zero? n)
+      {:tracks [] :extent (if (= available inf) 0.0 (max available 0.0))}
+      (let [tracks (mapv sizer track-sizers)
+            gap (sizer gap-sizer)
+            ;; interleave: [t0 g t1 g ... t(n-1)] — track i at 2i, gap i at 2i+1
+            entries (into [] (interpose gap tracks))
+            content-min (sum (map :min entries))
+            shrink? (= available inf)
+            free (- available content-min)
+            sizes (if (or shrink? (<= free eps))
+                    (mapv :min entries)
+                    (grow entries free))
+            content (sum sizes)
+            extent (if shrink? content (max available content))
+            residual (if shrink? 0.0 (- available content))
+            [lead between] (align-offsets align residual n)]
+        (loop [i 0
+               off (double lead)
+               out (transient [])]
+          (if (>= i n)
+            {:tracks (persistent! out) :extent extent}
+            (let [ts (double (nth sizes (* 2 i)))
+                  gs (if (< i (dec n)) (+ (double (nth sizes (inc (* 2 i)))) (double between)) 0.0)]
+              (recur (inc i)
+                     (+ off ts gs)
+                     (conj! out {:offset off :size ts})))))))))
