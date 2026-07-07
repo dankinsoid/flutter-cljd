@@ -1301,23 +1301,34 @@ Children: The widgets below this widget in the tree. Can contain nested lists of
 
 A Positioned widget must be a descendant of a `stack`, and the path from the Positioned widget to its enclosing Stack must contain only StatelessWidgets or StatefulWidgets (not other kinds of widgets, like RenderObjectWidgets).
 
-Args:
+The edges are parsed like `insets`, except an unspecified edge stays `nil` (the child keeps its own size on that axis) instead of defaulting to `0`.
 
-- `args` — A map of arguments or inline key-value pairs.
-  - `:key` — An identifier for the positioned widget.
-  - `:left` / `:l` — number, default: `nil`. The distance of the child's left edge from the left of the stack.
-  - `:top` / `:t` — number, default: `nil`. The distance of the child's top edge from the top of the stack.
-  - `:right` / `:r` — number, default: `nil`. The distance of the child's right edge from the right of the stack.
-  - `:bottom` / `:b` — number, default: `nil`. The distance of the child's bottom edge from the bottom of the stack.
-  - `:width` / `:w` — number, default: `nil`. The child's width. Only two of `:left`, `:right`, `:width` may be set.
-  - `:height` / `:h` — number, default: `nil`. The child's height. Only two of `:top`, `:bottom`, `:height` may be set.
-- `child` — The widget below this widget in the tree.
+Args (a map, inline key-value pairs, or a shorthand value):
+
+- `:key` — An identifier for the positioned widget.
+- `:left` / `:l`, `:top` / `:t`, `:right` / `:r`, `:bottom` / `:b` — number, default: `nil`. The distance of the child's edge from the corresponding edge of the stack.
+- `:horizontal` — number. Sets both `:left` and `:right`.
+- `:vertical` — number. Sets both `:top` and `:bottom`.
+- `:all` — number. Default for any edge not otherwise specified.
+- `:width` / `:w` — number, default: `nil`. The child's width. Only two of `:left`, `:right`, `:width` may be set.
+- `:height` / `:h` — number, default: `nil`. The child's height. Only two of `:top`, `:bottom`, `:height` may be set.
+
+Shorthand values (in place of the args map):
+
+- a number — all four edges (fill the stack, inset by that amount).
+- `:fill` — fill the stack (all edges `0`); equivalent to passing `0`.
+- a `[left top right bottom]` vector.
 
 Examples:
 
 ```clojure
-(positioned {:left 10 :top 20} (text \"Hello, World!\"))
-(positioned :left 10 :top 20 (text \"Hello, World!\"))
+(positioned {:left 10 :top 20} (text \"Hi\"))
+(positioned :left 10 :top 20 (text \"Hi\"))
+(positioned {:l 10 :w 100} (text \"Hi\"))      ;; pin left, fixed width
+(positioned :fill (text \"Hi\"))               ;; fill the stack
+(positioned 8 (text \"Hi\"))                   ;; fill, inset by 8
+(positioned {:all 0 :top 20} (text \"Hi\"))    ;; fill, but 20 from the top
+(positioned [10 20 30 40] (text \"Hi\"))       ;; left top right bottom
 ```
 
 [Flutter docs](https://api.flutter.dev/flutter/widgets/Positioned-class.html)"

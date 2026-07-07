@@ -358,7 +358,43 @@
       (is (= (.-left widget) 10.0))
       (is (= (.-top widget) 20.0))
       (is (= (.-width widget) 100.0))
-      (is (= (.-height widget) 50.0)))))
+      (is (= (.-height widget) 50.0))))
+
+  (testing "Positioned :fill fills the stack"
+    (let [widget (f/positioned :fill (m/Text "Child"))]
+      (is (= (.-left widget) 0.0))
+      (is (= (.-top widget) 0.0))
+      (is (= (.-right widget) 0.0))
+      (is (= (.-bottom widget) 0.0))))
+
+  (testing "Positioned number fills with an inset on every edge"
+    (let [widget (f/positioned 8 (m/Text "Child"))]
+      (is (= (.-left widget) 8.0))
+      (is (= (.-top widget) 8.0))
+      (is (= (.-right widget) 8.0))
+      (is (= (.-bottom widget) 8.0))
+      (is (nil? (.-width widget)))))
+
+  (testing "Positioned :all default with an edge override"
+    (let [widget (f/positioned {:all 0 :top 20} (m/Text "Child"))]
+      (is (= (.-left widget) 0.0))
+      (is (= (.-right widget) 0.0))
+      (is (= (.-bottom widget) 0.0))
+      (is (= (.-top widget) 20.0))))
+
+  (testing "Positioned :horizontal / :vertical span two edges"
+    (let [widget (f/positioned {:horizontal 5 :vertical 10} (m/Text "Child"))]
+      (is (= (.-left widget) 5.0))
+      (is (= (.-right widget) 5.0))
+      (is (= (.-top widget) 10.0))
+      (is (= (.-bottom widget) 10.0))))
+
+  (testing "Positioned vector is [left top right bottom]"
+    (let [widget (f/positioned [10 20 30 40] (m/Text "Child"))]
+      (is (= (.-left widget) 10.0))
+      (is (= (.-top widget) 20.0))
+      (is (= (.-right widget) 30.0))
+      (is (= (.-bottom widget) 40.0)))))
 
 (deftest test-popup-menu-button
   (testing "PopupMenuButton with default properties"

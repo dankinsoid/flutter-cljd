@@ -3,15 +3,34 @@
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]))
 
-;; @ai-generated(solo)
+;; @ai-generated(guided)
+(defn- edge [m ks]
+  (some-> (some m ks) double))
+
+;; Unlike `insets`, an unspecified edge stays nil (child keeps its own size on
+;; that axis) rather than defaulting to 0. `:h`/`:v` are NOT horizontal/vertical
+;; aliases here — `:w`/`:h` mean width/height (as in box-constraints), so edges
+;; only take the long `:horizontal`/`:vertical` forms.
+(defn- positioned-args [value]
+  (cond
+    (map? value)    value
+    (number? value) {:all value}
+    (= :fill value) {:all 0}
+    (vector? value) (if (= 4 (count value))
+                      (zipmap [:left :top :right :bottom] value)
+                      (throw (ex-info (str "positioned vector must be [left top right bottom], got: " value)
+                                      {:value value})))
+    :else (throw (ex-info (str "Invalid positioned args: " value) {:value value}))))
+
 (defn ^w/Widget positioned*
-  [args child]
-  (w/Positioned
-   .key (t/widget-key (:key args))
-   .left (some-> (some args [:left :l]) double)
-   .top (some-> (some args [:top :t]) double)
-   .right (some-> (some args [:right :r]) double)
-   .bottom (some-> (some args [:bottom :b]) double)
-   .width (some-> (some args [:width :w]) double)
-   .height (some-> (some args [:height :h]) double)
-   .child child))
+  [value child]
+  (let [m (positioned-args value)]
+    (w/Positioned
+     .key (t/widget-key (:key m))
+     .left   (edge m [:left :l :horizontal :all])
+     .top    (edge m [:top :t :vertical :all])
+     .right  (edge m [:right :r :horizontal :all])
+     .bottom (edge m [:bottom :b :vertical :all])
+     .width  (edge m [:width :w])
+     .height (edge m [:height :h])
+     .child child)))
