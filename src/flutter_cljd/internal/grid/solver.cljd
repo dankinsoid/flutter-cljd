@@ -69,10 +69,13 @@
               ;; nobody caps out — apply the proportional shares and finish
               (reduce (fn [s i] (assoc s i (+ (double (nth s i)) (share i)))) sizes active))))))))
 
-(defn- align-offsets
-  "Leading offset and extra between-track spacing for distributing `residual`
-   (leftover space when nothing flexes) per a justify-content-style `align`.
-   Matches Flutter's MainAxisAlignment. Returns `[lead between]`."
+(defn align-offsets
+  "Leading offset and extra between-item spacing for distributing `residual`
+   free space across `n` items per a justify-content-style `align`. Matches
+   Flutter's MainAxisAlignment. Returns `[lead between]`.
+
+   Used both for track distribution inside `solve-tracks`/`solve-uniform` and, by
+   the grid hosts, for per-line item justification (`:line-align`) of a partial row."
   [align ^double residual n]
   (if (<= residual eps)
     [0.0 0.0]

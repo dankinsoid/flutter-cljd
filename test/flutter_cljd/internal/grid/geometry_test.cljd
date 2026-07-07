@@ -58,6 +58,22 @@
     (is (= 2 (:rows gr)))
     (is (at? (g/cell gr 4) 100 50))))
 
+(deftest line-align-justifies-partial-row
+  (testing "default :start leaves the partial row at the block start"
+    (let [gr (g/resolve-grid (assoc base :count 5))]
+      (is (at? (g/cell gr 3) 0 50))
+      (is (at? (g/cell gr 4) 100 50))))
+  (testing ":center centers the partial row within the block; full rows unchanged"
+    (let [gr (g/resolve-grid (assoc base :count 5 :line-align :center))]
+      (is (at? (g/cell gr 0) 0 0))          ; full row keeps its track positions
+      (is (at? (g/cell gr 2) 200 0))
+      (is (at? (g/cell gr 3) 50 50))        ; partial row (2 items) centered
+      (is (at? (g/cell gr 4) 150 50))))
+  (testing ":line-align has no effect when every row is full"
+    (let [gr (g/resolve-grid (assoc base :line-align :center))]
+      (is (at? (g/cell gr 3) 0 50))
+      (is (at? (g/cell gr 5) 200 50)))))
+
 (deftest composes-solver-features
   (testing "flex cells split the cross extent"
     (let [gr (g/resolve-grid (assoc base :cross-sizer :flex))]

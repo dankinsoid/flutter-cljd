@@ -132,11 +132,19 @@
 
 (defn ^m/Widget grid-view* [raw-args]
   (let [[args children] (parse-scroll-args raw-args)
+        vertical (not= :horizontal (:axis args))
+        ;; concrete direction words → axis-relative :start/:end, resolved here where
+        ;; the axis is known; :main-align runs along the scroll axis, :cross-/:line-
+        ;; align along the perpendicular one
+        args (cond-> args
+               (:main-align args)  (update :main-align  t/grid-align vertical)
+               (:cross-align args) (update :cross-align t/grid-align (not vertical))
+               (:line-align args)  (update :line-align  t/grid-align (not vertical)))
         key (t/widget-key (:key args))
         direction (t/axis (or (:axis args) :vertical))
         reverse (if (contains? args :reverse)
                   (boolean (:reverse args))
-                  (contains? #{:end :bottom} (:main-align args)))
+                  (= :end (:main-align args)))
         controller (:controller args)
         primary (:primary args)
         physics (some-> (:physics args) t/scroll-physics)

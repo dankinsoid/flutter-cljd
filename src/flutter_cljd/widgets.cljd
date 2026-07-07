@@ -2406,8 +2406,14 @@ Native grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspe
 
 Flexible grid options (with `:max-columns`): `:cross-sizer` (default `:flex`),
 `:cross-gap`, `:cross-align` (`:start`/`:end`/`:center`/`:space-between`/`:space-around`/`:space-evenly`),
+`:line-align` (justify the partial last row within the column block, same values),
 `:cross-dir` (`:start`/`:end` for RTL), `:main-sizer` (row height), `:main-gap`,
 `:main-align`. Needs a finite item count.
+
+Alignments also accept concrete direction words resolved per `:axis`: `:top`/`:bottom`
+for the vertical axis, `:left`/`:right` for the horizontal one (so `:main-align :bottom`
+in a vertical grid = `:end`). `:main-align :end` with no explicit `:reverse` anchors to
+the far end by reversing the scroll.
 
 Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
@@ -2440,12 +2446,18 @@ Examples:
 Options: `:max-columns` (required); `:cross-sizer` (default `:flex`), `:main-sizer`
 (row size, required); `:cross-gap`, `:main-gap`; `:cross-align`, `:main-align`
 (`:start`/`:end`/`:center`/`:space-between`/`:space-around`/`:space-evenly`);
-`:cross-fit` (`:fill` default — span the width / `:content` — hug columns),
+`:line-align` (justify the partial last row's items within the column block, same
+values — `:cross-align` positions the whole block, `:line-align` justifies the short
+row inside it; full rows unaffected); `:cross-fit` (`:fill` default — span the width /
+`:content` — hug columns),
 `:main-fit` (`:content` default — hug rows / `:fill` — span the height, enabling
 `:main-align` and flex rows); `:cross-dir`/`:main-dir` (`:start`/`:end`,
 `:forward`/`:reverse`); `:primary` (`:row`/`:column`); `:axis`
 (`:vertical`/`:horizontal`); `:item-align` (how a child sits in its cell when
-smaller — `:stretch` default, or an alignment like `:center`); `:key`."
+smaller — `:stretch` default, or an alignment like `:center`); `:key`.
+
+Alignments also accept concrete direction words resolved per `:axis`: `:top`/`:bottom`
+on the vertical axis, `:left`/`:right` on the horizontal one."
   [& args]
   (let [[opts children] (ut/key-values-args-and-children args)
         children (if (and (= 1 (count children)) (sequential? (first children)))

@@ -40,6 +40,7 @@
     :primary (:primary opts :row)
     :cross-dir (:cross-dir opts :start)
     :main-dir (:main-dir opts :forward)
+    :line-align (:line-align opts :start)
     :cross-available cross-avail
     :main-available main-avail
     :cross-sizer (:cross-sizer opts :flex)
@@ -103,8 +104,14 @@
   "Bounded, non-scrolling flexible grid over `children` (already-built widgets).
    See `flutter-cljd.widgets/grid` for the option list."
   [opts children]
-  (let [item-align (:item-align opts :stretch)
-        vertical (not= :horizontal (:axis opts))
+  (let [vertical (not= :horizontal (:axis opts))
+        ;; concrete direction words → axis-relative :start/:end (geometry is
+        ;; axis-agnostic); :main-align on the main axis, :cross-/:line- on the cross
+        opts (cond-> opts
+               (:main-align opts)  (update :main-align  t/grid-align vertical)
+               (:cross-align opts) (update :cross-align t/grid-align (not vertical))
+               (:line-align opts)  (update :line-align  t/grid-align (not vertical)))
+        item-align (:item-align opts :stretch)
         children (vec children)
         delegate (FlexGridDelegate
                   opts (int (count children)) vertical

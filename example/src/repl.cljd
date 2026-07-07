@@ -564,14 +564,17 @@
                                              (ui/center) (ui/sized {:w 28 :h 28})
                                              (ui/clip-corners :all 6) (ui/colored :cyan)))
                                 (range 10))))
+          (fg-sec ":cross-sizer :flex — cells stretch to fill the full width"
+                  (ui/grid :max-columns 4 :cross-sizer :flex :main-sizer 52 :cross-gap 8 :main-gap 8
+                           (map fg-tile (range 7))))
           (fg-sec ":cross-align :space-between — fixed 48px cols"
                   (ui/grid :max-columns 4 :cross-sizer 48 :main-sizer 48 :main-gap 8
                            :cross-align :space-between
                            (map fg-tile (range 8))))
-          (fg-sec ":cross-align :center — 3 fixed 56px cols, centered block"
-                  (ui/grid :max-columns 3 :cross-sizer 56 :main-sizer 48 :cross-gap 8 :main-gap 8
-                           :cross-align :center
-                           (map fg-tile (range 6))))
+          (fg-sec ":line-align :center — partial last row centered under the block"
+                  (ui/grid :max-columns 3 :cross-sizer 80 :main-sizer 48 :cross-gap 8 :main-gap 8
+                           :cross-align :center :line-align :center
+                           (map fg-tile (range 5))))
           (fg-sec ":primary :column — numbers run DOWN first"
                   (ui/grid :max-columns 4 :primary :column :cross-sizer 56 :main-sizer 40
                            :cross-gap 6 :main-gap 6

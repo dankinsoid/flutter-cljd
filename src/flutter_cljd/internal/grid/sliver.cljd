@@ -47,7 +47,9 @@
    ^double mainLead
    ^double mainSize
    ^double mainStride
-   ^double maxScroll]
+   ^double maxScroll
+   lineAlign               ;; per-line justify of the partial last row within the block
+   ^int lastRowCols]       ;; item count in the last row (< cols when partial)
   :extends r/SliverGridLayout
 
   (^int getMinChildIndexForScrollOffset [_this ^double scroll-offset]
@@ -66,11 +68,18 @@
         (dec (* cols (inc clamped))))))
 
   (^r/SliverGridGeometry getGeometryForChildIndex [_this ^int index]
-    (let [^int col (rem index cols)
-          ^int track (if flip (- cols 1 col) col)]
+    (let [^int row (quot index cols)
+          ^int col (rem index cols)
+          ;; :cross-align already placed the track block; :line-align justifies the
+          ;; partial last row's items within it (full rows: residual 0 → no shift)
+          ^int k (if (= row (dec rows)) lastRowCols cols)
+          off (solver/align-offsets lineAlign (* (double (- cols k)) crossStride) k)
+          ^double lo (+ (double (nth off 0)) (* (double col) (+ crossStride (double (nth off 1)))))
+          ^double block (+ (* (double (dec cols)) crossStride) crossSize)
+          ^double cross-off (+ crossLead (if flip (- block lo crossSize) lo))]
       (r/SliverGridGeometry
-       .scrollOffset (+ mainLead (* (double (quot index cols)) mainStride))
-       .crossAxisOffset (+ crossLead (* (double track) crossStride))
+       .scrollOffset (+ mainLead (* (double row) mainStride))
+       .crossAxisOffset cross-off
        .mainAxisExtent mainSize
        .crossAxisExtent crossSize)))
 
@@ -83,6 +92,7 @@
    crossSizer
    crossGap
    crossAlign
+   crossLineAlign
    ^bool flip
    mainSizer
    mainGap
@@ -109,7 +119,9 @@
        (double (:lead main)) (double (:size main))
        (+ (double (:size main)) (double (:gap main)))
        ;; an empty :fill grid must not claim the leftover viewport
-       (if (zero? rows) 0.0 (double (:extent main))))))
+       (if (zero? rows) 0.0 (double (:extent main)))
+       crossLineAlign
+       (if (pos? rows) (- itemCount (* (dec rows) cols)) 0))))
 
   (^bool shouldRelayout [_this ^r/SliverGridDelegate _old]
     ;; geometry is re-derived from constraints on every layout; a delegate swap
@@ -118,19 +130,17 @@
 
 (defn ^r/SliverGridDelegate grid-delegate
   "Build the flexible-grid SliverGridDelegate from opts (see `sliver-grid`)."
-  [{:keys [max-columns cross-sizer cross-gap cross-align cross-dir
+  [{:keys [max-columns cross-sizer cross-gap cross-align line-align cross-dir
            main-sizer main-gap main-align main-fit]
-    :or {cross-sizer :flex cross-gap 0 cross-align :start cross-dir :start
-         main-gap 0 main-align :start main-fit :content}
+    :or {cross-sizer :flex cross-gap 0 cross-align :start line-align :start
+         cross-dir :start main-gap 0 main-align :start main-fit :content}
     n :count}]
   (FlexSliverGridDelegate
    (int max-columns)
    (int n)
-   cross-sizer cross-gap cross-align
+   cross-sizer cross-gap cross-align line-align
    (= cross-dir :end)
-   main-sizer main-gap
-   ;; vertical-flavored aliases for the common (vertical) grid
-   (case main-align :top :start :bottom :end main-align)
+   main-sizer main-gap main-align
    (= main-fit :fill)))
 
 (defn ^w/Widget sliver-grid
@@ -143,6 +153,8 @@
      :cross-gap    inter-column gap sizer (default 0)
      :cross-align  column distribution when leftover cross space remains and nothing
                    flexes: :start :end :center :space-between :space-around :space-evenly
+     :line-align   justify the partial last row's items within the column block (same
+                   values; :cross-align moves the block, :line-align the short row)
      :cross-dir    :start | :end — mirror the column order, e.g. RTL (default :start)
      :main-sizer   per-cell main size (row height) — same sizer format; required.
                    Flex only has effect under :main-fit :fill.
@@ -152,6 +164,10 @@
                    :fill — sliver claims the viewport space remaining after preceding
                    slivers, so :main-align and flex rows/gaps get room to distribute;
                    overflowing content degrades to plain scrolling
+
+   Alignments are axis-relative (:start/:end/…) only — a sliver's axis is the
+   enclosing scroll view's, so the :top/:bottom/:left/:right sugar that grid-view
+   resolves per :axis isn't available here.
 
    item-builder: (fn [ctx index] widget), item-count: total number of items."
   [opts item-builder ^int item-count]

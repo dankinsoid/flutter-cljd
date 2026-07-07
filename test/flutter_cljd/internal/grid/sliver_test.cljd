@@ -91,6 +91,17 @@
       ;; 100 items / 3 cols → 34 rows
       (is (close? (+ (* 34 50) (* 33 10)) (.computeMaxScrollOffset l 100))))))
 
+(deftest line-align
+  (testing ":line-align :center centers the partial last row within the block"
+    (let [l (layout (assoc base :line-align :center) {:cross 300 :main 500})]
+      (is (close? 0 (.-crossAxisOffset (.getGeometryForChildIndex l 0))))   ; full row
+      (is (close? 100 (.-crossAxisOffset (.getGeometryForChildIndex l 1))))
+      ;; last row is 1 item (7 = 2 full rows of 3 + 1) → centered in the 300 block
+      (is (close? 100 (.-crossAxisOffset (.getGeometryForChildIndex l 6))))))
+  (testing "default :start leaves the partial row at the left"
+    (let [l (layout base {:cross 300 :main 500})]
+      (is (close? 0 (.-crossAxisOffset (.getGeometryForChildIndex l 6)))))))
+
 (deftest empty-grid
   (let [l (layout (assoc base :count 0) {:cross 300 :main 500})]
     (is (close? 0 (.computeMaxScrollOffset l 0)))

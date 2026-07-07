@@ -11,47 +11,78 @@
      :main-dir  :forward | :reverse (e.g. top→bottom | bottom→top)
 
    Both traversal orders share the SAME grid shape (cols×rows); only the index→(row,col)
-   formula differs, so column-major works even under an unbounded main axis because
-   `rows` is derived from the known item count, not measured."
+   formula differs, so column-major works under an unbounded main axis because `rows`
+   is derived from the known item count, not measured.
+
+   Two cross-axis alignments compose:
+     :cross-align distributes the column TRACK BLOCK in the cross extent (grid
+                  justify-content; tracks are shared by all rows).
+     :line-align  justifies a row's items WITHIN that block. Full rows fill the block
+                  exactly, so they are unaffected; only a partial last row shifts —
+                  e.g. :line-align :center centers the leftover items under the block.
+
+   Sizers are uniform per axis in v1, so both axes resolve through the closed-form
+   `solve-uniform` and every cell is a stride formula — O(1) per index."
   (:require [flutter-cljd.internal.grid.solver :as solver]))
 
 (defn- ceil-div [a b] (quot (+ a (dec b)) b))
 
+(defn- items-in-row
+  "How many items land in row `r` — `cols` for full rows, fewer for the last row."
+  [primary cols rows cnt r]
+  (if (= primary :column)
+    ;; column-major: item i sits in row (i mod rows); count c in [0,cols) with c*rows+r < cnt
+    (min cols (ceil-div (- cnt r) rows))
+    ;; row-major: only the last row is short
+    (if (= r (dec rows)) (- cnt (* (dec rows) cols)) cols)))
+
 (defn resolve-grid
-  "Resolve track geometry once — O(cols+rows), no per-item work. The sliver host calls
-   this once, then `cell` per visible index; the box host calls `cell` for every item.
+  "Resolve track geometry once — O(cols+rows). The sliver host calls this then `cell`
+   per visible index; the box host calls `cell` for every item.
 
    opts (extents are `##Inf` for shrink-wrap; sizer/gap specs are as in `solver/sizer`):
      :count :max-columns
-     :primary :cross-dir :main-dir
+     :primary :cross-dir :main-dir :line-align
      :cross-available :main-available
-     :cross-sizer :main-sizer          per-cell size on each axis (uniform in v1)
-     :cross-gap :main-gap :cross-align :main-align
+     :cross-sizer :main-sizer  :cross-gap :main-gap  :cross-align :main-align
 
-   Returns {:cols :rows :primary :cross-dir :main-dir
-            :cross [{:offset :size}...] :main [{:offset :size}...]
-            :cross-extent :main-extent}."
-  [{:keys [max-columns primary cross-dir main-dir
+   Returns a stride-form map consumed by `cell`."
+  [{:keys [max-columns primary cross-dir main-dir line-align
            cross-available main-available cross-sizer main-sizer
            cross-gap main-gap cross-align main-align]
-    :or {primary :row cross-dir :start main-dir :forward
+    :or {primary :row cross-dir :start main-dir :forward line-align :start
          cross-gap 0 main-gap 0 cross-align :start main-align :start}
     n :count}]
   (let [cols (if (zero? n) 0 (min max-columns n))
         rows (if (zero? cols) 0 (ceil-div n cols))
-        cross (solver/solve-tracks cross-available (vec (repeat cols cross-sizer)) cross-gap cross-align)
-        main (solver/solve-tracks main-available (vec (repeat rows main-sizer)) main-gap main-align)]
-    {:cols cols :rows rows :primary primary :cross-dir cross-dir :main-dir main-dir
-     :cross (:tracks cross) :main (:tracks main)
-     :cross-extent (:extent cross) :main-extent (:extent main)}))
+        cross (solver/solve-uniform cross-available cols cross-sizer cross-gap cross-align)
+        main (solver/solve-uniform main-available rows main-sizer main-gap main-align)]
+    {:cols cols :rows rows :count n
+     :primary primary :cross-dir cross-dir :main-dir main-dir :line-align line-align
+     :cross-lead (double (:lead cross)) :cross-size (double (:size cross))
+     :cross-stride (+ (double (:size cross)) (double (:gap cross)))
+     :cross-extent (:extent cross)
+     :main-lead (double (:lead main)) :main-size (double (:size main))
+     :main-stride (+ (double (:size main)) (double (:gap main)))
+     :main-extent (:extent main)}))
 
 (defn cell
   "Cross/main rect of item `i` in a resolved grid: `{:cross {:offset :size} :main {..}}`.
-   Maps `i` to (row, col) per :primary, then flips each axis per :cross-dir / :main-dir."
-  [{:keys [cols rows primary cross-dir main-dir cross main]} i]
-  (let [[r c] (if (= primary :column)
+   Maps `i` to (row, col) per :primary, flips each axis per :cross-dir / :main-dir, and
+   justifies a partial row within the track block per :line-align."
+  [{:keys [cols rows count primary cross-dir main-dir line-align
+           cross-lead cross-size cross-stride main-lead main-size main-stride]} i]
+  (let [flip (= cross-dir :end)
+        [r c] (if (= primary :column)
                 [(rem i rows) (quot i rows)]
                 [(quot i cols) (rem i cols)])
-        c (if (= cross-dir :end) (- cols 1 c) c)
-        r (if (= main-dir :reverse) (- rows 1 r) r)]
-    {:cross (nth cross c) :main (nth main r)}))
+        k (items-in-row primary cols rows count r)
+        ;; justify the row's k items within the (cols-wide) track block
+        [lead between] (solver/align-offsets line-align (* (double (- cols k)) cross-stride) k)
+        ;; logical (LTR) offset from the block's start
+        lo (+ (double lead) (* (double c) (+ cross-stride (double between))))
+        block (+ (* (double (dec cols)) cross-stride) cross-size)
+        cross-off (+ cross-lead (if flip (- block lo cross-size) lo))
+        r* (if (= main-dir :reverse) (- rows 1 r) r)]
+    {:cross {:offset cross-off :size cross-size}
+     :main {:offset (+ main-lead (* (double r*) main-stride)) :size main-size}}))
