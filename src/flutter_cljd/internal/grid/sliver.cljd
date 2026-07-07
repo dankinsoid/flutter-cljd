@@ -7,7 +7,13 @@
    Virtualization, the child manager, garbage collection and paint geometry are all
    the native `RenderSliverGrid`'s job; this file only answers per-index geometry.
 
-   Cross axis: the full solver — flex tracks, min/max, gaps, justify alignment —
+   v1 sizers are uniform per axis, so both axes resolve through the solver's
+   closed-form `solve-uniform` and every answer here is a stride formula — O(1)
+   per layout and per index, regardless of item count. When heterogeneous or
+   self-sized tracks arrive they get a separate table-based layout branch (built
+   on the generic `solve-tracks`); this fast path stays as is.
+
+   Cross axis: flex tracks, min/max, gaps, justify alignment, :cross-dir mirror —
    resolved against the viewport's crossAxisExtent.
 
    Main axis: the delegate knows the item count (Flutter doesn't pass it to
@@ -22,9 +28,6 @@
                          content fits, the leftover space feeds :main-align and
                          flex row/gap sizers; when it doesn't, sizers collapse to
                          :min and it scrolls like a plain grid.
-   Row geometry stays an index formula (or an O(rows) table only when leftover
-   space is actually distributed, i.e. when everything is on screen anyway), so
-   virtualization is never defeated.
 
    Not here by design: column-major fill (would make the visible index range
    non-contiguous) and main-axis reversal (use the scroll view's `reverse`) — both
@@ -38,57 +41,38 @@
   [^int cols
    ^int rows
    ^bool flip              ;; cross-dir :end — column c maps to track (cols-1-c)
-   crossOffsets            ;; vector<double> per track
-   crossExtents            ;; vector<double> per track
-   mainOffsets             ;; vector<double> per row, or nil for stride mode
-   mainExtents             ;; vector<double> per row, or nil for stride mode
-   ^double mainStride      ;; stride mode: row extent + gap
-   ^double mainSize        ;; stride mode: row extent
+   ^double crossLead
+   ^double crossSize
+   ^double crossStride
+   ^double mainLead
+   ^double mainSize
+   ^double mainStride
    ^double maxScroll]
   :extends r/SliverGridLayout
 
   (^int getMinChildIndexForScrollOffset [_this ^double scroll-offset]
-    (cond
-      (zero? rows) 0
-      (some? mainOffsets)
-      ;; table mode: first row whose trailing edge is past the offset
-      (loop [^int r 0]
-        (if (or (>= r (dec rows))
-                (> (+ (double (nth mainOffsets r)) (double (nth mainExtents r))) scroll-offset))
-          (* cols r)
-          (recur (inc r))))
-      :else (let [^int row (.floor (/ scroll-offset (max mainStride 1e-9)))
-                  ^int clamped (int (min (dec rows) (max 0 row)))]
-              (* cols clamped))))
+    (if (or (zero? rows) (<= mainStride 0.0))
+      0
+      (let [^int row (.floor (/ (- scroll-offset mainLead) mainStride))]
+        (* cols (int (min (dec rows) (max 0 row)))))))
 
   (^int getMaxChildIndexForScrollOffset [_this ^double scroll-offset]
     (cond
       (zero? rows) 0
-      (some? mainOffsets)
-      ;; table mode: last row whose leading edge is at or before the offset
-      (loop [^int r (dec rows)]
-        (if (or (zero? r) (<= (double (nth mainOffsets r)) scroll-offset))
-          (dec (* cols (inc r)))
-          (recur (dec r))))
-      :else (let [^int row (.floor (/ scroll-offset (max mainStride 1e-9)))
-                  ^int clamped (int (min (dec rows) (max 0 row)))]
-              (dec (* cols (inc clamped))))))
+      (<= mainStride 0.0) (dec (* cols rows))
+      :else
+      (let [^int row (.ceil (/ (- scroll-offset mainLead) mainStride))
+            ^int clamped (int (min (dec rows) (max 0 row)))]
+        (dec (* cols (inc clamped))))))
 
   (^r/SliverGridGeometry getGeometryForChildIndex [_this ^int index]
-    (let [col (rem index cols)
-          track (if flip (- cols 1 col) col)
-          ;; RenderSliverGrid probes geometry one index past the last child before
-          ;; discovering it doesn't exist — clamp table lookups instead of throwing
-          row (min (quot index cols) (max 0 (dec rows)))]
+    (let [^int col (rem index cols)
+          ^int track (if flip (- cols 1 col) col)]
       (r/SliverGridGeometry
-       .scrollOffset (if (some? mainOffsets)
-                       (double (nth mainOffsets row))
-                       (* (double row) mainStride))
-       .crossAxisOffset (double (nth crossOffsets track))
-       .mainAxisExtent (if (some? mainExtents)
-                         (double (nth mainExtents row))
-                         mainSize)
-       .crossAxisExtent (double (nth crossExtents track)))))
+       .scrollOffset (+ mainLead (* (double (quot index cols)) mainStride))
+       .crossAxisOffset (+ crossLead (* (double track) crossStride))
+       .mainAxisExtent mainSize
+       .crossAxisExtent crossSize)))
 
   (^double computeMaxScrollOffset [_this ^int _child-count]
     maxScroll))
@@ -109,34 +93,23 @@
   (^r/SliverGridLayout getLayout [_this ^r/SliverConstraints constraints]
     (let [cols (max 1 (min maxColumns (max itemCount 1)))
           rows (if (pos? itemCount) (quot (+ itemCount (dec cols)) cols) 0)
-          cross (:tracks (solver/solve-tracks (.-crossAxisExtent constraints)
-                                              (vec (repeat cols crossSizer))
-                                              crossGap crossAlign))
-          row-min (double (:min (solver/sizer mainSizer)))
-          gap-min (double (:min (solver/sizer mainGap)))
-          content-min (if (pos? rows)
-                        (+ (* row-min rows) (* gap-min (dec rows)))
-                        0.0)
-          remaining (max 0.0 (- (.-viewportMainAxisExtent constraints)
-                                (.-precedingScrollExtent constraints)))]
-      (if (and fillMain (pos? rows) (< content-min remaining))
-        ;; leftover space to distribute — rows all fit on screen, so an O(rows)
-        ;; table (and solving the main axis for real) is cheap by construction
-        (let [res (solver/solve-tracks remaining (vec (repeat rows mainSizer)) mainGap mainAlign)]
-          (FlexSliverGridLayout
-           cols rows flip
-           (mapv :offset cross) (mapv :size cross)
-           (mapv :offset (:tracks res)) (mapv :size (:tracks res))
-           0.0 0.0
-           (double (:extent res))))
-        ;; no leftover (content mode, overflow, or empty): flex collapses to :min,
-        ;; geometry is a pure stride formula — O(1) regardless of item count
-        (FlexSliverGridLayout
-         cols rows flip
-         (mapv :offset cross) (mapv :size cross)
-         nil nil
-         (+ row-min gap-min) row-min
-         content-min))))
+          cross (solver/solve-uniform (.-crossAxisExtent constraints)
+                                      cols crossSizer crossGap crossAlign)
+          ;; :fill distributes the viewport space left after preceding slivers;
+          ;; :content shrink-wraps (##Inf collapses flex to :min in the solver)
+          main-available (if fillMain
+                           (max 0.0 (- (.-viewportMainAxisExtent constraints)
+                                       (.-precedingScrollExtent constraints)))
+                           ##Inf)
+          main (solver/solve-uniform main-available rows mainSizer mainGap mainAlign)]
+      (FlexSliverGridLayout
+       cols rows flip
+       (double (:lead cross)) (double (:size cross))
+       (+ (double (:size cross)) (double (:gap cross)))
+       (double (:lead main)) (double (:size main))
+       (+ (double (:size main)) (double (:gap main)))
+       ;; an empty :fill grid must not claim the leftover viewport
+       (if (zero? rows) 0.0 (double (:extent main))))))
 
   (^bool shouldRelayout [_this ^r/SliverGridDelegate _old]
     ;; geometry is re-derived from constraints on every layout; a delegate swap

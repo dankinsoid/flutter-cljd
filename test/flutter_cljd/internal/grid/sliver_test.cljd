@@ -78,7 +78,7 @@
       (is (close? 150 (.-mainAxisExtent (.getGeometryForChildIndex l 0))))
       (is (close? 150 (.-scrollOffset (.getGeometryForChildIndex l 3))))
       (is (close? 300 (.computeMaxScrollOffset l 6)))))
-  (testing "table-mode index range"
+  (testing "index range accounts for the alignment lead"
     (let [l (layout (assoc base :main-fit :fill :main-align :end) {:cross 300 :main 500})]
       (is (= 0 (.getMinChildIndexForScrollOffset l 0.0)))
       ;; contract: last index that could intersect — may exceed childCount-1,

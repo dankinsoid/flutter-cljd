@@ -80,3 +80,32 @@
 (deftest degenerate
   (is (match? (s/solve-tracks 100.0 [] 0 :start) [] 100))
   (is (match? (s/solve-tracks inf [] 0 :start) [] 0)))
+
+(deftest uniform-fast-path-matches-generic
+  ;; solve-uniform is the O(1) closed form of solve-tracks on uniform inputs —
+  ;; the two must agree exactly across every feature combination
+  (doseq [[available n t g align :as case]
+          [[100.0 2 50 0 :start]
+           [100.0 2 40 0 :end]
+           [100.0 2 40 0 :center]
+           [100.0 2 40 0 :space-between]
+           [100.0 3 20 0 :space-around]
+           [100.0 3 20 0 :space-evenly]
+           [100.0 3 :flex 0 :start]
+           [90.0 3 {:flex 2} 0 :start]
+           [100.0 2 20 {:flex 1} :start]
+           [100.0 3 {:min 10 :flex 1} {:min 5} :start]
+           [100.0 2 {:flex 1 :max 30} {:min 8 :flex 1 :max 24} :center]
+           [100.0 2 {:flex 1 :max 20} {:flex 1} :start]
+           [100.0 3 60 10 :start]                              ;; overflow
+           [inf 3 {:min 40 :flex 1} {:min 8 :flex 1} :start]   ;; shrink-wrap
+           [100.0 1 30 10 :center]
+           [100.0 0 30 10 :start]
+           [inf 0 30 10 :start]]]
+    (let [u (s/solve-uniform available n t g align)
+          gen (s/solve-tracks available (vec (repeat n t)) g align)
+          stride (+ (double (:size u)) (double (:gap u)))]
+      (is (close? (:extent u) (:extent gen)) (str case))
+      (doseq [[i tr] (map-indexed vector (:tracks gen))]
+        (is (close? (+ (double (:lead u)) (* i stride)) (:offset tr)) (str case " track " i))
+        (is (close? (:size u) (:size tr)) (str case " track " i))))))

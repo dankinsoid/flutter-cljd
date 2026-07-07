@@ -85,6 +85,47 @@
       :space-evenly (let [u (/ residual (double (inc n)))] [u u])
       [0.0 0.0])))
 
+(defn solve-uniform
+  "Closed-form counterpart of `solve-tracks` for a line of `n` IDENTICAL tracks —
+   the guaranteed-O(1) path hosts take while an axis' sizers are uniform (v1 always
+   is). Heterogeneous / self-sized tracks are the generic `solve-tracks` branch.
+
+   Aggregating each class (all tracks, all gaps) into a single entry turns the
+   water-fill into a two-entry problem, so cost and memory are constant in `n`,
+   and the whole line is representable as a formula instead of a table:
+     offset(i) = :lead + i * (:size + :gap)
+   `:gap` already includes any spacing a space-* `align` mode adds; `:extent` has
+   the same overflow/shrink-wrap semantics as `solve-tracks`."
+  [available n track-sizer gap-sizer align]
+  (if (zero? n)
+    {:lead 0.0 :size 0.0 :gap 0.0
+     :extent (if (= available inf) 0.0 (max (double available) 0.0))}
+    (let [available (double available)
+          gaps (dec n)
+          scale (fn [s k]
+                  (if (zero? k)
+                    {:min 0.0 :max 0.0 :flex 0.0}
+                    (let [e (sizer s)]
+                      ;; k * ##Inf is safe here: k > 0
+                      {:min (* (double k) (double (:min e)))
+                       :max (* (double k) (double (:max e)))
+                       :flex (* (double k) (double (:flex e)))})))
+          entries [(scale track-sizer n) (scale gap-sizer gaps)]
+          content-min (+ (double (:min (nth entries 0))) (double (:min (nth entries 1))))
+          shrink? (= available inf)
+          free (- available content-min)
+          [tt gg] (if (or shrink? (<= free eps))
+                    [(:min (nth entries 0)) (:min (nth entries 1))]
+                    (grow entries free))
+          content (+ (double tt) (double gg))
+          extent (if shrink? content (max available content))
+          residual (if shrink? 0.0 (- available content))
+          [lead between] (align-offsets align residual n)]
+      {:lead lead
+       :size (/ (double tt) (double n))
+       :gap (if (pos? gaps) (+ (/ (double gg) (double gaps)) (double between)) 0.0)
+       :extent extent})))
+
 (defn solve-tracks
   "Resolve one axis: `n` tracks separated by a uniform gap, packed into `available`.
 
