@@ -2283,8 +2283,17 @@ Options:
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
 - `:enabled` — bool (default true); when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through"
   [& args]
-  (let [[args children] (ut/key-values-args-and-children args)]
-    (drg/drag-target* (assoc args :builder (last children)))))
+  ;; Parse leading kwargs, take the last positional as the builder. Can't reuse
+  ;; key-values-args-and-children: it runs flatten-children, which asserts on a
+  ;; non-widget child — and the builder is usually a function.
+  (let [[opts builder] (if (map? (first args))
+                         [(first args) (last (rest args))]
+                         (loop [m {} vs args]
+                           (let [[a b] vs]
+                             (if (and (keyword? a) (next vs))
+                               (recur (assoc m a b) (nnext vs))
+                               [m a]))))]
+    (drg/drag-target* (assoc opts :builder builder))))
 
 (defn ^w/Widget drag-boundary
   "Constrains draggable movement to stay within this widget's bounds."
