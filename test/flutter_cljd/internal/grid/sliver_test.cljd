@@ -1,0 +1,98 @@
+(ns flutter-cljd.internal.grid.sliver-test
+  (:require [clojure.test :refer [deftest is testing]]
+            ["package:flutter/rendering.dart" :as r]
+            [flutter-cljd.internal.grid.sliver :as sl]))
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- ^r/SliverConstraints constraints
+  [{:keys [cross main preceding] :or {preceding 0}}]
+  (r/SliverConstraints
+   .axisDirection r/AxisDirection.down
+   .growthDirection r/GrowthDirection.forward
+   .userScrollDirection r/ScrollDirection.idle
+   .scrollOffset 0.0
+   .precedingScrollExtent (double preceding)
+   .overlap 0.0
+   .remainingPaintExtent (double main)
+   .crossAxisExtent (double cross)
+   .crossAxisDirection r/AxisDirection.right
+   .viewportMainAxisExtent (double main)
+   .remainingCacheExtent (double main)
+   .cacheOrigin 0.0))
+
+(defn- ^r/SliverGridLayout layout [opts cnstr]
+  (.getLayout (sl/grid-delegate opts) (constraints cnstr)))
+
+;; 7 items in 3 fixed-100 columns; 50-high rows with a 10 gap → 3 rows, content 170.
+(def ^:private base
+  {:count 7 :max-columns 3 :cross-sizer 100 :main-sizer 50 :main-gap 10})
+
+(deftest cross-tracks
+  (testing "fixed columns"
+    (let [l (layout base {:cross 300 :main 500})]
+      (is (close? 0 (.-crossAxisOffset (.getGeometryForChildIndex l 0))))
+      (is (close? 100 (.-crossAxisOffset (.getGeometryForChildIndex l 1))))
+      (is (close? 200 (.-crossAxisOffset (.getGeometryForChildIndex l 2))))
+      (is (close? 100 (.-crossAxisExtent (.getGeometryForChildIndex l 1))))))
+  (testing "flex columns share the cross extent"
+    (let [l (layout (assoc base :cross-sizer :flex) {:cross 360 :main 500})]
+      (is (close? 120 (.-crossAxisExtent (.getGeometryForChildIndex l 0))))
+      (is (close? 240 (.-crossAxisOffset (.getGeometryForChildIndex l 2))))))
+  (testing ":cross-dir :end mirrors the track order"
+    (let [l (layout (assoc base :cross-dir :end) {:cross 300 :main 500})]
+      (is (close? 200 (.-crossAxisOffset (.getGeometryForChildIndex l 0))))
+      (is (close? 0 (.-crossAxisOffset (.getGeometryForChildIndex l 2)))))))
+
+(deftest content-mode
+  (let [l (layout base {:cross 300 :main 500})]
+    (testing "sliver extent is exactly the content"
+      (is (close? 170 (.computeMaxScrollOffset l 7))))
+    (testing "rows stack by stride"
+      (is (close? 0 (.-scrollOffset (.getGeometryForChildIndex l 2))))
+      (is (close? 60 (.-scrollOffset (.getGeometryForChildIndex l 4))))
+      (is (close? 120 (.-scrollOffset (.getGeometryForChildIndex l 6))))
+      (is (close? 50 (.-mainAxisExtent (.getGeometryForChildIndex l 4)))))
+    (testing "visible index range"
+      (is (= 0 (.getMinChildIndexForScrollOffset l 0.0)))
+      (is (= 3 (.getMinChildIndexForScrollOffset l 60.0)))
+      (is (= 5 (.getMaxChildIndexForScrollOffset l 60.0))))
+    (testing "probing one index past the last child is safe (RenderSliverGrid does)"
+      (is (close? 120 (.-scrollOffset (.getGeometryForChildIndex l 7)))))))
+
+(deftest fill-mode
+  (testing ":main-align :end pins rows to the bottom of the leftover space"
+    (let [l (layout (assoc base :main-fit :fill :main-align :end) {:cross 300 :main 500})]
+      (is (close? 500 (.computeMaxScrollOffset l 7)))
+      (is (close? 330 (.-scrollOffset (.getGeometryForChildIndex l 0))))
+      (is (close? 450 (.-scrollOffset (.getGeometryForChildIndex l 6))))))
+  (testing "preceding slivers shrink the leftover (SliverFillRemaining semantics)"
+    (let [l (layout (assoc base :main-fit :fill :main-align :end)
+                    {:cross 300 :main 500 :preceding 200})]
+      (is (close? 300 (.computeMaxScrollOffset l 7)))
+      (is (close? 130 (.-scrollOffset (.getGeometryForChildIndex l 0))))))
+  (testing "flex rows split the leftover"
+    (let [l (layout {:count 6 :max-columns 3 :cross-sizer 100
+                     :main-sizer :flex :main-fit :fill}
+                    {:cross 300 :main 300})]
+      (is (close? 150 (.-mainAxisExtent (.getGeometryForChildIndex l 0))))
+      (is (close? 150 (.-scrollOffset (.getGeometryForChildIndex l 3))))
+      (is (close? 300 (.computeMaxScrollOffset l 6)))))
+  (testing "table-mode index range"
+    (let [l (layout (assoc base :main-fit :fill :main-align :end) {:cross 300 :main 500})]
+      (is (= 0 (.getMinChildIndexForScrollOffset l 0.0)))
+      ;; contract: last index that could intersect — may exceed childCount-1,
+      ;; the render object clamps by actual child creation
+      (is (= 8 (.getMaxChildIndexForScrollOffset l 460.0)))))
+  (testing "overflowing content degrades to a plain scrolling grid"
+    (let [l (layout (assoc base :count 100 :main-fit :fill :main-align :end)
+                    {:cross 300 :main 500})]
+      (is (close? 0 (.-scrollOffset (.getGeometryForChildIndex l 0))))
+      ;; 100 items / 3 cols → 34 rows
+      (is (close? (+ (* 34 50) (* 33 10)) (.computeMaxScrollOffset l 100))))))
+
+(deftest empty-grid
+  (let [l (layout (assoc base :count 0) {:cross 300 :main 500})]
+    (is (close? 0 (.computeMaxScrollOffset l 0)))
+    (is (= 0 (.getMinChildIndexForScrollOffset l 0.0)))
+    (is (= 0 (.getMaxChildIndexForScrollOffset l 100.0)))))
