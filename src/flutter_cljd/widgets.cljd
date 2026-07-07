@@ -63,7 +63,8 @@
    [flutter-cljd.internal.hero :as hr]
    [flutter-cljd.internal.draggable :as drg]
    [flutter-cljd.internal.scroll :as scrl]
-   [flutter-cljd.internal.sliver-collection :as scol]))
+   [flutter-cljd.internal.sliver-collection :as scol]
+   [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
   "A widget that absorbs pointers during hit testing.
@@ -404,6 +405,27 @@ To access the inherited bindings, use `c/get-inherited` function."
   ([key child] (wi/with-inherited* key child))
   ([key value child] (wi/with-inherited* key value child))
   ([key0 value0 key1 value1 & kvs&child] (apply wi/with-inherited* key0 value0 key1 value1 kvs&child)))
+
+;; @ai-generated(guided)
+(defn ^w/Widget with-animation
+  "Overrides the default implicit-animation options for the subtree.
+
+   Descendant implicit animations that don't specify their own `:duration`/`:curve`
+   inherit them from here — currently `animated` (see `flutter-cljd.internal.animated`).
+   `opts` takes the same forms as `animated`'s options: a map (`{:duration :curve}`),
+   a number of milliseconds, or a `[duration curve]` vector. Nested `with-animation`
+   merge, with inner keys winning.
+
+   ```clojure
+   (->> (text \"Hi\")
+     (animated padding pd)   ; no opts → picks up 100ms below
+     (with-animation {:duration 100}))
+   ```"
+  [opts child]
+  (wi/with-transformed-inherited*
+   inh/animation
+   (fn [prev] (dissoc (t/animation-options opts prev) :on-end))
+   child))
 
 (defn ^w/Widget enabled
   "A widget that sets the `flutter-cljd.inherited-keys/enabled` inherited value"

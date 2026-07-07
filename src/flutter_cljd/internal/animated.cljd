@@ -1,9 +1,10 @@
 (ns flutter-cljd.internal.animated
   (:require
    [cljd.core :as c]
+   [flutter-cljd.core :as fc]
+   [flutter-cljd.inherited-keys :as inh]
    [flutter-cljd.types :as t]
    [flutter-cljd.ListenableAtom :as la]
-   ["dart:core" :as dc]
    ["package:flutter/animation.dart" :as a]
    ["package:flutter/foundation.dart" :as fd]
    ["package:flutter/widgets.dart" :as w]))
@@ -12,42 +13,54 @@
 
 (deftype ValueAnimationBuilder [^w/Key? k
                                 value
-                                ^dc/Duration duration
-                                ^a/Curve curve
+                                ;; Raw options map (`:duration`/`:curve`/`:on-end`/`:when`).
+                                ;; `:duration`/`:curve` defaults are resolved against the
+                                ;; inherited animation theme in `didChangeDependencies`.
+                                opts
                                 lerp
-                                onEnd
                                 updateStrategy
                                 builder
                                 ^w/Widget? child]
   :extends (w/StatefulWidget .key k)
 
   (createState [^ValueAnimationBuilder this]
-    (ValueAnimationBuilderState (t/tween (.-lerp this) (.-value this) (.-value this)) nil (a/AlwaysStoppedAnimation 0.0) [])))
+    (ValueAnimationBuilderState (t/tween (.-lerp this) (.-value this) (.-value this)) nil (a/AlwaysStoppedAnimation 0.0) [] nil nil)))
 
 (deftype ValueAnimationBuilderState [^#/(a/Tween dynamic) ^:mutable currentTween
                                      ^a/AnimationController? ^:mutable controller
                                      ^#/(a/Animation double) ^:mutable animation
-                                     ^:mutable queue]
+                                     ^:mutable queue
+                                     ;; Inherited animation theme (`{:duration :curve}` or nil),
+                                     ;; read from context in `didChangeDependencies` only.
+                                     ^:mutable defaults
+                                     ;; Last resolved `{:duration :curve :on-end}` — read by the
+                                     ;; status listener and used to detect curve changes.
+                                     ^:mutable resolvedOpts]
   :extends (#/(w/State ValueAnimationBuilder))
 
   (initState [^ValueAnimationBuilderState this]
     (.-currentTween! this (t/tween (-> this .-widget .-lerp) (-> this .-currentTween .-end) (-> this .-widget .-value)))
     (.initState ^super this)
+    ;; duration/curve are unknown until the inherited theme is read in
+    ;; didChangeDependencies, so the controller starts bare and the initial
+    ;; CurvedAnimation is created there before the first build.
     (.-controller! this (a/AnimationController
-                         .duration (-> this .-widget .-duration)
                          .debugLabel (when fd/kDebugMode (-> this .-widget .toStringShort))
                          .vsync this))
-    (.updateAnimation this (.-widget this))
     (-> this .-controller (.addStatusListener (fn [^a/AnimationStatus status]
                                                 (when (.-isCompleted status)
-                                                  (when-let [onEnd (-> this .-widget .-onEnd)]
+                                                  (when-let [onEnd (:on-end (.-resolvedOpts this))]
                                                     (onEnd))
                                                   (when-let [queue (seq (.-queue this))]
                                                     (.-queue! this (rest queue))
                                                     (.updateState this (first queue) (or (second queue) (.-widget this))))))))
     (-> this .-controller (.addListener (fn [] (.setState this (fn [])))))
-    (when (not= (-> this .-currentTween .-begin) (-> this .-currentTween .-end))
-      (-> this .-controller .forward))
+    nil)
+
+  (didChangeDependencies [^ValueAnimationBuilderState this]
+    (.didChangeDependencies ^super this)
+    (.-defaults! this (fc/get-inherited (.-context this) inh/animation))
+    (.applyOptions this (.-widget this))
     nil)
 
   (didUpdateWidget [^ValueAnimationBuilderState this ^ValueAnimationBuilder oldWidget]
@@ -79,10 +92,7 @@
 
   ValueAnimationBuilderState
   (updateState [^ValueAnimationBuilderState this ^ValueAnimationBuilder oldWidget ^ValueAnimationBuilder newWidget]
-    (when (not= (.-curve oldWidget) (.-curve newWidget)) 
-      (.dispose (.-animation this))
-      (.updateAnimation this newWidget))
-    (.-duration! (.-controller this) (.-duration newWidget))
+    (.applyOptions this newWidget)
     (when (not= (.-value oldWidget) (.-value newWidget))
       (.-currentTween! this (t/tween
                              (-> newWidget .-lerp)
@@ -91,9 +101,20 @@
       (.forward (.-controller this) .from 0.0))
     nil)
 
-  (updateAnimation [^ValueAnimationBuilderState this ^ValueAnimationBuilder widget]
-    (.-animation! this
-                  (a/CurvedAnimation .parent (.-controller this) .curve (.-curve widget)))
+  ;; Resolves the effective duration/curve for `widget` against the stored
+  ;; inherited `defaults`, applies them to the controller, and recreates the
+  ;; CurvedAnimation when the curve changes. Reads no context (safe off-build).
+  (applyOptions [^ValueAnimationBuilderState this ^ValueAnimationBuilder widget]
+    (let [opts (.-opts widget)
+          resolved (t/animation-options opts (.-defaults this))
+          enabled (if-some [w (:when opts)] w true)
+          duration (if enabled (:duration resolved) (t/duration 0))
+          prev (.-resolvedOpts this)]
+      (.-resolvedOpts! this (assoc resolved :duration duration))
+      (when (or (nil? prev) (not= (:curve prev) (:curve resolved)))
+        (when (some? prev) (.dispose (.-animation this)))
+        (.-animation! this (a/CurvedAnimation .parent (.-controller this) .curve (:curve resolved))))
+      (.-duration! (.-controller this) duration))
     nil)
   ^:mixin #/(w/SingleTickerProviderStateMixin ValueAnimationBuilder))
 
@@ -112,19 +133,14 @@
         animation (if (instance? c/Atom animation) (la/atom-listenable animation) animation)]
     (cond
       (map? animation)
-      (let [options (t/animation-options animation)
-            lerp (:lerp animation)
-            condition (if-some [when (animation :when)] when true)]
-        (ValueAnimationBuilder
-         (t/widget-key (animation :key))
-         values
-         (if condition (options :duration) (t/duration 0))
-         (options :curve)
-         lerp
-         (options :on-end)
-         (or (animation :update-strategy) :immediate)
-         (fn [_ value child] (apply builder (if has-child? (conj value child) value)))
-         child))
+      (ValueAnimationBuilder
+       (t/widget-key (animation :key))
+       values
+       animation
+       (:lerp animation)
+       (or (animation :update-strategy) :immediate)
+       (fn [_ value child] (apply builder (if has-child? (conj value child) value)))
+       child)
 
       (instance? fd/Listenable animation)
       (w/AnimatedBuilder

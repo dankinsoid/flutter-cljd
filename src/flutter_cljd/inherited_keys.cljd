@@ -5,4 +5,7 @@
 (def enable-feedback {:key :enable-feedback :default-value false})
 (def exclude-from-semantics {:key :exclude-from-semantics :default-value false})
 (def can-request-focus {:key :can-request-focus :default-value true})
+;; Default implicit-animation options `{:duration :curve}` for the subtree.
+;; nil means "no override" — consumers fall back to `flutter-cljd.types/*anim-ctx*`.
+(def animation {:key :animation :default-value nil})
 (def autofocus {:key :autofocus :default-value false})

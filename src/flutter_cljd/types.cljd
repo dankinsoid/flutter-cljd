@@ -1875,37 +1875,40 @@
                            :is-animated? false})
 
 (defn animation-options
-  "Creates an animation options object from the specified value.
+  "Creates an animation options map `{:duration :curve :on-end}` from `value`.
    The value can be specified as a map with the following keys:
    - `:duration` or `:dur` (number, map or Duration, default: 250): The duration of the animation in milliseconds.
-   - `:curve` (keyword, fn or Curve, default: :linear): The curve of the animation.
+   - `:curve` (keyword, fn or Curve, default: easeInOut): The curve of the animation.
    - `:on-end` (function, default: nil): The callback function to be called when the animation ends.
    The value can also be specified as a vector with the following elements:
    - The duration of the animation.
    - The curve of the animation.
    - The callback function to be called when the animation ends.
-   The value can also be specified as a number, in which case it is used as the duration of the animation."
-  [arg0 & args]
-  (let [value (if (empty? args) arg0 (apply hash-map (cons arg0 args)))
-        def-curve (get-in *anim-ctx* [:animation :curve] a/Curves.linear)]
-    (cond
-      (map? value)
-      (let [duration (duration (:duration value (:dur value (get-in *anim-ctx* [:animation :duration]))))
-            curve (curve (:curve value def-curve))
-            on-end (value :on-end)]
-        {:duration duration :curve curve :on-end on-end})
+   The value can also be specified as a number, in which case it is used as the duration of the animation.
 
-      (number? value)
-      {:duration (duration value) :curve def-curve}
+   `defaults` supplies fallback `:duration`/`:curve` when `value` omits them — typically
+   resolved from the inherited animation theme (see `flutter-cljd.inherited-keys/animation`
+   and `with-animation`). When `defaults` is nil, falls back to the global `*anim-ctx*`."
+  ([value] (animation-options value nil))
+  ([value defaults]
+   (let [def-duration (or (:duration defaults) (get-in *anim-ctx* [:animation :duration]))
+         def-curve (curve (or (:curve defaults) (get-in *anim-ctx* [:animation :curve] a/Curves.linear)))]
+     (cond
+       (map? value)
+       {:duration (duration (:duration value (:dur value def-duration)))
+        :curve (curve (:curve value def-curve))
+        :on-end (value :on-end)}
 
-      (or (vector? value) (seq? value))
-      (let [duration (duration (get value 0))
-            curve (curve (get value 1 def-curve))
-            on-end (get value 2)]
-        {:duration duration :curve curve :on-end on-end})
+       (number? value)
+       {:duration (duration value) :curve def-curve}
 
-      :else
-      (throw (Exception. (str "Invalid animation options: " value))))))
+       (or (vector? value) (seq? value))
+       {:duration (duration (get value 0))
+        :curve (curve (get value 1 def-curve))
+        :on-end (get value 2)}
+
+       :else
+       (throw (Exception. (str "Invalid animation options: " value)))))))
 
 (defn ^m/Key? widget-key
   "Creates a `WidgetKey` object from the specified key.
