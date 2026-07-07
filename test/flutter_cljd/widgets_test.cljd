@@ -60,8 +60,12 @@
 
   (testing "Align with animated alignment options"
     (let [child (m/Text "Child widget")
-          widget (f/align {:alignment :top-right
-                           :animation {:dur 500 :curve :ease-in}} child)]
+          ;; The :animation branch returns a Builder that builds the
+          ;; AnimatedAlign lazily from a context; invoke it to inspect the result.
+          builder (f/align {:alignment :top-right
+                            :animation {:dur 500 :curve :ease-in}} child)
+          widget ((.-builder builder) nil)]
+      (is (instance? m/AnimatedAlign widget))
       (is (= (.-alignment widget) m/Alignment.topRight))
       (is (= (.-inMilliseconds (.-duration widget)) 500))
       (is (= (.-curve widget) m/Curves.easeIn))
