@@ -1,0 +1,52 @@
+(ns flutter-cljd.internal.grid.box-test
+  (:require [clojure.test :refer [deftest is testing]]
+            ["package:flutter/material.dart" :as m]
+            [flutter-cljd.internal.grid.box :as box]))
+
+;; performLayout can't be exercised without the render pipeline (it drives the
+;; framework's child map), but getSize is pure geometry over constraints — that's
+;; where the shrink-wrap / fill / overflow sizing decisions live.
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- size-of [opts item-count max-w max-h]
+  (.getSize (box/FlexGridDelegate opts (int item-count) true nil)
+            (m/BoxConstraints .maxWidth (double max-w) .maxHeight (double max-h))))
+
+(defn- wh? [^m/Size s w h]
+  (and (close? (.-width s) w) (close? (.-height s) h)))
+
+;; 6 items, 3 columns, 50-high rows with a 10 gap → 2 rows, content height 110.
+(def ^:private base {:max-columns 3 :main-sizer 50 :main-gap 10})
+
+(deftest default-fit
+  (testing "cross fills the width, main hugs the rows"
+    ;; flex columns span 300; height shrink-wraps to 2*50 + 10
+    (is (wh? (size-of base 6 300 200) 300 110))))
+
+(deftest cross-fit
+  (testing ":content hugs the columns"
+    (is (wh? (size-of (assoc base :cross-sizer 64 :cross-fit :content) 6 300 200)
+             192 110)))                              ;; 3*64
+  (testing ":fill keeps the full width even with fixed, centered columns"
+    (is (wh? (size-of (assoc base :cross-sizer 64 :cross-align :center) 6 300 200)
+             300 110))))
+
+(deftest main-fit
+  (testing ":fill spans the given height"
+    (is (wh? (size-of (assoc base :main-fit :fill) 6 300 200) 300 200)))
+  (testing ":fill with flex rows still spans the height"
+    (is (wh? (size-of (assoc base :main-sizer :flex :main-fit :fill) 6 300 300)
+             300 300))))
+
+(deftest unbounded-constraints-shrink-wrap
+  (testing "unbounded width hugs fixed columns regardless of :cross-fit"
+    (is (wh? (size-of (assoc base :cross-sizer 64) 6 ##Inf ##Inf) 192 110))))
+
+(deftest overflow-is-clamped-to-constraints
+  (testing "content wider than the constraint reports the constraint width"
+    ;; 3*64 = 192 > 100 → getSize must satisfy constraints
+    (is (wh? (size-of (assoc base :cross-sizer 64) 6 100 500) 100 110))))
+
+(deftest empty-grid
+  (is (wh? (size-of base 0 300 200) 300 0)))

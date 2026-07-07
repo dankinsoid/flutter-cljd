@@ -1,0 +1,115 @@
+;; @ai-generated(paired)
+(ns flutter-cljd.internal.grid.box
+  "Box host for the flexible grid — bounded, non-scrolling, both axes flexible.
+
+   Built on Flutter's CustomMultiChildLayout rather than a bespoke RenderBox: the
+   delegate answers only getSize/performLayout, and the framework handles child
+   management, painting and hit-testing.
+
+   Cell rects come from the pure `geometry` layer, so this host gets everything the
+   sliver host can't: main-axis flex/alignment, column-major fill, main-axis
+   reversal, and shrink-wrap on either axis. Per-axis :fit chooses fill vs
+   shrink-wrap (an unbounded incoming constraint always shrink-wraps regardless):
+     :cross-fit :fill (default)  span the given cross extent
+     :cross-fit :content         hug the columns
+     :main-fit  :content (default) hug the rows
+     :main-fit  :fill            span the given main extent, giving :main-align and
+                                 flex rows/gaps room to distribute
+   Same coercion as elsewhere: flex on a shrink-wrapped axis collapses to :min.
+   v1 cells are analytic, so the grid's own size is known in getSize without
+   measuring children.
+
+   Axis mapping: :vertical (default) puts the cross axis on x (columns across) and
+   the main axis on y (rows down); :horizontal swaps them."
+  (:require
+   ["package:flutter/material.dart" :as m]
+   [flutter-cljd.types :as t]
+   [flutter-cljd.internal.grid.geometry :as geo]))
+
+(defn- ^double axis-max
+  "Constraint edge as available extent: the value, or ##Inf when unbounded."
+  [^double v]
+  (if (.-isFinite v) v ##Inf))
+
+(defn- resolve-am
+  "Resolve grid geometry for the given cross/main available extents."
+  [opts ^int item-count ^double cross-avail ^double main-avail]
+  (geo/resolve-grid
+   {:count item-count
+    :max-columns (:max-columns opts)
+    :primary (:primary opts :row)
+    :cross-dir (:cross-dir opts :start)
+    :main-dir (:main-dir opts :forward)
+    :cross-available cross-avail
+    :main-available main-avail
+    :cross-sizer (:cross-sizer opts :flex)
+    :main-sizer (:main-sizer opts)
+    :cross-gap (:cross-gap opts 0)
+    :main-gap (:main-gap opts 0)
+    :cross-align (:cross-align opts :start)
+    :main-align (:main-align opts :start)}))
+
+(deftype FlexGridDelegate
+  [opts
+   ^int itemCount
+   ^bool vertical
+   ^m/Alignment? itemAlign]   ;; loose-fit + position, or nil = stretch (tight)
+  :extends m/MultiChildLayoutDelegate
+
+  (^m/Size getSize [_this ^m/BoxConstraints c]
+    (let [cross-c (axis-max (if vertical (.-maxWidth c) (.-maxHeight c)))
+          main-c (axis-max (if vertical (.-maxHeight c) (.-maxWidth c)))
+          ;; :fit picks fill (use the constraint) vs shrink-wrap (##Inf)
+          cross-avail (if (= :content (:cross-fit opts :fill)) ##Inf cross-c)
+          main-avail (if (= :fill (:main-fit opts :content)) main-c ##Inf)
+          g (resolve-am opts itemCount cross-avail main-avail)
+          cross (double (:cross-extent g))
+          main (double (:main-extent g))]
+      (.constrain c (if vertical (m/Size cross main) (m/Size main cross)))))
+
+  (performLayout [this ^m/Size size]
+    ;; `size` is final and finite; feeding its extents back reproduces getSize's
+    ;; distribution — a shrink-wrapped axis equals its content (zero free space, so
+    ;; flex stays at :min), a filled axis keeps its span for flex/align
+    (let [g (resolve-am opts itemCount
+                        (double (if vertical (.-width size) (.-height size)))
+                        (double (if vertical (.-height size) (.-width size))))]
+      (dotimes [i itemCount]
+        (when (.hasChild this i)
+          (let [cell (geo/cell g i)
+                cr (:cross cell)
+                mn (:main cell)
+                cell-x (double (if vertical (:offset cr) (:offset mn)))
+                cell-y (double (if vertical (:offset mn) (:offset cr)))
+                cell-w (double (if vertical (:size cr) (:size mn)))
+                cell-h (double (if vertical (:size mn) (:size cr)))]
+            (if (nil? itemAlign)
+              (do
+                (.layoutChild this i (m/BoxConstraints.tight (m/Size cell-w cell-h)))
+                (.positionChild this i (m/Offset cell-x cell-y)))
+              (let [^m/Size s (.layoutChild this i (m/BoxConstraints.loose (m/Size cell-w cell-h)))
+                    ^m/Offset o (.alongOffset itemAlign
+                                              (m/Offset (- cell-w (.-width s)) (- cell-h (.-height s))))]
+                (.positionChild this i (m/Offset (+ cell-x (.-dx o)) (+ cell-y (.-dy o)))))))))))
+
+  (^bool shouldRelayout [_this ^m/MultiChildLayoutDelegate old]
+    (let [^FlexGridDelegate o old]
+      (or (not= itemCount (.-itemCount o))
+          (not= vertical (.-vertical o))
+          (not= itemAlign (.-itemAlign o))
+          (not= opts (.-opts o))))))
+
+(defn ^m/Widget box-grid
+  "Bounded, non-scrolling flexible grid over `children` (already-built widgets).
+   See `flutter-cljd.widgets/grid` for the option list."
+  [opts children]
+  (let [item-align (:item-align opts :stretch)
+        vertical (not= :horizontal (:axis opts))
+        children (vec children)
+        delegate (FlexGridDelegate
+                  opts (int (count children)) vertical
+                  (when (not= :stretch item-align) (t/alignment item-align)))]
+    (m/CustomMultiChildLayout
+     .key (t/widget-key (:key opts))
+     .delegate delegate
+     .children (into [] (map-indexed (fn [i c] (m/LayoutId .id i .child c)) children)))))
