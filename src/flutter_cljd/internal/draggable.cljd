@@ -356,16 +356,19 @@
                                     (.willEndDrag this velocity offset final-offset was-accepted))
                                   (fn [^w/Velocity velocity ^w/Offset offset ^bool was-accepted]
                                     (.didEndDrag this velocity offset was-accepted))
-                                  (fn [^bool over-target?]
-                                    ;; Only real hover transitions reach here (the avatar
-                                    ;; pushes every updateDrag; dedup against current state).
-                                    ;; Release-time clears go through setOverTarget directly,
-                                    ;; so they don't fire a spurious :leave — :drop covers that.
-                                    (when (not= over-target? (.-overTarget this))
+                                  (fn [prev-target curr-target]
+                                    ;; Haptic keys on the active-target *identity*, not on an
+                                    ;; over/not-over boolean: sliding straight from one target
+                                    ;; onto an adjacent one (no empty gap between) changes the
+                                    ;; target but never drops the boolean, so a boolean gate
+                                    ;; would miss every target-to-target hop. Release-time clears
+                                    ;; go through setOverTarget directly, so they don't fire a
+                                    ;; spurious :leave — :drop covers that.
+                                    (when-not (identical? prev-target curr-target)
                                       (when (contains? (.-haptics widget)
-                                                       (if over-target? :enter :leave))
+                                                       (if (some? curr-target) :enter :leave))
                                         (s/HapticFeedback.selectionClick)))
-                                    (.setOverTarget this over-target?))
+                                    (.setOverTarget this (some? curr-target)))
                                   (.-ignoringFeedbackSemantics widget)
                                   (.-ignoringFeedbackPointer widget)
                                   (-> this .-context w/View.of .-viewId)
@@ -448,9 +451,10 @@
                      onDragUpdate
                      onDragWillEnd
                      onDragEnd
-                     ;; (fn [bool]) — pushed on each move as the drag crosses onto/off
-                     ;; an accepting target, so the source can rebuild its in-place
-                     ;; child with the current :over-target?.
+                     ;; (fn [prev-target curr-target]) — pushed on each move with the
+                     ;; active DragTargetState before and after it, so the source can
+                     ;; rebuild its in-place child with the current :over-target? and
+                     ;; fire an :enter/:leave haptic on any target-identity change.
                      onOverTargetChanged
                      ^bool ignoringFeedbackSemantics
                      ^bool ignoringFeedbackPointer
@@ -509,6 +513,11 @@
     nil)
 
   (updateDrag [^DragAvatar this ^w/Offset global-position ^g/DragUpdateDetails details]
+    ;; The active target as of the previous move. The source keys its :enter/:leave
+    ;; haptic on this identity changing — not on a bare over/not-over boolean — so a
+    ;; straight slide from one target onto an adjacent one (no empty gap between)
+    ;; still registers as an :enter.
+    (let [prev-target (.-activeTarget this)]
     (.-position! this global-position)
     (.-lastOffset! this (.- global-position (.-dragStartPoint this)))
 
@@ -556,8 +565,10 @@
               (.didMove target this))
 
             (.-activeTarget! this new-target)))))
-    ;; Push over-target state to the source (guarded there against no-op rebuilds).
-    ((.-onOverTargetChanged this) (some? (.-activeTarget this))))
+    ;; Hand the source both the previous and current target: it keys the
+    ;; :enter/:leave haptic on the identity change and derives :over-target?
+    ;; from whether we're over anything now.
+    ((.-onOverTargetChanged this) prev-target (.-activeTarget this))))
 
   ;; Current global bounds of the feedback, for custom catch-point functions.
   (^w/Rect feedbackRect [^DragAvatar this]
