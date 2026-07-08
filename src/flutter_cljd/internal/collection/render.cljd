@@ -1,21 +1,55 @@
+;; @ai-generated(solo)
 (ns flutter-cljd.internal.collection.render
-  "Custom RenderSliver + Widget for sliver-collection.
-   Delegates performLayout to the ISliverLayout protocol."
+  "Virtualization engine for sliver-collection.
+
+   One RenderSliver drives any layout map (see collection.layout): it creates
+   and disposes children lazily, garbage-collects outside the cache window,
+   and computes sliver geometry and scroll corrections. Layouts only answer
+   geometry questions.
+
+   Flow layouts get a persistent per-index geometry cache:
+   - entries are validated by re-measuring attached children, so any data
+     change self-heals at the first index whose size differs — no explicit
+     invalidation protocol is needed;
+   - when the viewport's first visible child changes its offset after a
+     re-place (content above it grew or shrank), the engine emits a
+     scrollOffsetCorrection so the visible content stays put;
+   - after a cache loss the engine dead-reckons from the first attached
+     child (layout's :anchor) instead of measuring everything from index 0.
+
+   Indexed layouts (:geometry present) need no cache — geometry is exact math."
   (:require
+   ["dart:core" :as dc]
+   ["dart:math" :as math]
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.internal.collection.layout :as lay]))
 
-;; --- CollectionRenderSliver ---
+;; --- parent data helpers ---
 
-(declare CollectionSliverWidget)
+(defn- set-layout-offset! [^r/RenderBox child ^double offset]
+  (let [^r/SliverMultiBoxAdaptorParentData pd (.-parentData child)]
+    (.-layoutOffset! pd offset)))
+
+(defn- set-cross-axis-offset! [^r/RenderBox child ^double offset]
+  (let [^r/SliverGridParentData pd (.-parentData child)]
+    (.-crossAxisOffset! pd offset)))
+
+(declare flow-layout! indexed-layout!)
+
+;; --- Render object ---
 
 (deftype CollectionRenderSliver
   [^r/RenderSliverBoxChildManager childMgr
-   ^:mutable layoutImpl]  ;; ISliverLayout
+   ^:mutable layoutModel  ;; layout map (see collection.layout)
+   ^:mutable itemCount    ;; int? — nil means infinite/unknown
+   ^:mutable ^double crossCached  ;; cross extent the cache was built for
+   ^:mutable cache        ;; vec of {:offset :cross :extent :end :max-end :state}
+   ^:mutable ^int cacheFirst      ;; absolute index of cache[0]
+   ^:mutable baseState]   ;; flow state before cache[0]
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
-  ;; Use SliverGridParentData for all layouts (grid/wrap need crossAxisOffset)
+  ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
   (setupParentData [_this ^r/RenderObject child]
     (when-not (instance? r/SliverGridParentData (.-parentData child))
       (.-parentData! child (r/SliverGridParentData)))
@@ -26,44 +60,523 @@
       (or (.-crossAxisOffset pd) 0.0)))
 
   (performLayout [this]
-    (lay/perform-layout (.-layoutImpl this) this (.-constraints this))))
+    (let [^r/SliverConstraints c (.-constraints this)]
+      (when (not= (.-crossAxisExtent c) (.-crossCached this))
+        (.-crossCached! this (.-crossAxisExtent c))
+        (.-cache! this [])
+        (.-baseState! this nil))
+      (if (:geometry (.-layoutModel this))
+        (indexed-layout! this (.-layoutModel this) c)
+        (flow-layout! this (.-layoutModel this) c)))))
 
-;; --- CollectionSliverWidget ---
+(defn update-render!
+  "Applies a new layout / item count from updateRenderObject. A changed
+   layout :id invalidates the flow geometry cache."
+  [^CollectionRenderSliver rs new-layout item-count]
+  (let [old (.-layoutModel rs)
+        layout-changed (or (nil? (:id new-layout))
+                           (not= (:id old) (:id new-layout)))
+        count-changed (not= item-count (.-itemCount rs))]
+    (when layout-changed
+      (.-cache! rs [])
+      (.-baseState! rs nil))
+    ;; always swap the fns — same :id means same behavior, fresher closures
+    (.-layoutModel! rs new-layout)
+    (.-itemCount! rs item-count)
+    (when (or layout-changed count-changed)
+      (.markNeedsLayout rs))))
+
+;; --- shared helpers ---
+
+(defn- ^int count-attached [^CollectionRenderSliver rs]
+  (loop [c (.-firstChild rs) n 0]
+    (if c (recur (.childAfter rs ^r/RenderBox c) (inc n)) n)))
+
+(defn- bsearch-max-end
+  "Index of the first cache entry whose :max-end exceeds `off` (count when none)."
+  ^int [cache ^double off]
+  (loop [^int lo 0 ^int hi (count cache)]
+    (if (< lo hi)
+      (let [^int mid (bit-shift-right (+ lo hi) 1)]
+        (if (> ^double (:max-end (nth cache mid)) off)
+          (recur lo mid)
+          (recur (inc mid) hi)))
+      lo)))
+
+;; ============================================================
+;; Flow driver
+;; ============================================================
+
+(defn- pre-gc!
+  "Collects attached children clearly outside [ws, we) using last-frame
+   offsets and cached extents (child sizes may not be read before this
+   frame's layout). Children never laid out (no offset) count as leading."
+  [^CollectionRenderSliver rs ^double ws ^double we]
+  (when (.-firstChild rs)
+    (let [^int total (count-attached rs)
+          cache (.-cache rs)
+          ^int cf (.-cacheFirst rs)
+          ^int leading
+          (loop [c (.-firstChild rs) ^int n 0]
+            (if (and c
+                     (let [off (.childScrollOffset rs ^r/RenderBox c)
+                           rel (- (.indexOf rs ^r/RenderBox c) cf)
+                           e (when (and (>= rel 0) (< rel (count cache)))
+                               (nth cache rel))]
+                       (or (nil? off)
+                           (and e (<= ^double (:end e) ws)))))
+              (recur (.childAfter rs ^r/RenderBox c) (inc n))
+              n))
+          ^int trailing
+          (loop [c (.-lastChild rs) ^int n 0]
+            (if (and c
+                     (let [off (.childScrollOffset rs ^r/RenderBox c)]
+                       (and (some? off) (>= ^double off we))))
+              (recur (.childBefore rs ^r/RenderBox c) (inc n))
+              n))
+          ^int trailing (math/max 0 (math/min trailing (- total leading)))]
+      (.collectGarbage rs leading trailing))))
+
+(defn- seed-cache!
+  "When the geometry cache is empty, re-anchors it: at the first attached
+   child's last-frame offset (dead reckoning via :anchor) or at index 0."
+  [^CollectionRenderSliver rs layout env]
+  (when (empty? (.-cache rs))
+    (let [init-fn (:init layout)
+          anchor-fn (:anchor layout)
+          fc (.-firstChild rs)
+          idx (if fc (.indexOf rs ^r/RenderBox fc) 0)]
+      (cond
+        (or (nil? fc) (zero? ^int idx))
+        (do (.-cacheFirst! rs 0)
+            (.-baseState! rs (init-fn env)))
+
+        (some? anchor-fn)
+        (let [off (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)]
+          (.-cacheFirst! rs idx)
+          (.-baseState! rs (anchor-fn env idx (double off))))
+
+        ;; no :anchor — can't dead-reckon; drop children and re-flow from 0
+        :else
+        (do (.collectGarbage rs (count-attached rs) 0)
+            (.-cacheFirst! rs 0)
+            (.-baseState! rs (init-fn env)))))))
+
+(defn- normalize-cache!
+  "Keyed reconciliation may remap attached child indices arbitrarily between
+   frames; when firstChild no longer falls inside the cached prefix, drop the
+   cache and re-anchor at its stale offset. Keeps the walk invariant
+   0 <= firstChild-rel <= (count cache)."
+  [^CollectionRenderSliver rs layout env]
+  (when-let [fc (.-firstChild rs)]
+    (let [rel (- (.indexOf rs ^r/RenderBox fc) (.-cacheFirst rs))]
+      (when (or (neg? rel) (> rel (count (.-cache rs))))
+        (.-cache! rs [])
+        (seed-cache! rs layout env)))))
+
+(defn- state-before
+  "Flow state after children 0..i-1."
+  [^CollectionRenderSliver rs layout env ^int i]
+  (let [rel (- i (.-cacheFirst rs))
+        cache (.-cache rs)]
+    (cond
+      (<= rel 0) (.-baseState rs)
+      (<= rel (count cache)) (:state (nth cache (dec rel)))
+      ;; unforeseen gap — dead-reckon rather than crash
+      :else
+      (let [off (or (some->> (.-firstChild rs) (.childScrollOffset rs)) 0.0)]
+        (if-let [anchor-fn (:anchor layout)]
+          (anchor-fn env i (double off))
+          ((:init layout) env))))))
+
+(defn- align-start!
+  "Ensures firstChild exists and starts at (or before) the first index whose
+   cached max-end reaches into the window. Returns false when the collection
+   is empty."
+  [^CollectionRenderSliver rs layout env ^double ws]
+  (let [cache (.-cache rs)
+        ^int cf (.-cacheFirst rs)
+        ^int start-rel (bsearch-max-end cache ws)
+        ^int attach-idx (+ cf (math/min start-rel (count cache)))
+        measure-fn (:measure layout)]
+    (if (nil? (.-firstChild rs))
+      (let [^double attach-off (cond
+                                 (< start-rel (count cache)) (double (:offset (nth cache start-rel)))
+                                 (pos? (count cache)) (double (:end (peek cache)))
+                                 :else 0.0)]
+        (if (.addInitialChild rs .index attach-idx .layoutOffset attach-off)
+          true
+          ;; nothing at attach-idx — the collection shrank; restart at 0
+          (if (pos? attach-idx)
+            (do (.-cache! rs [])
+                (.-cacheFirst! rs 0)
+                (.-baseState! rs ((:init layout) env))
+                (.addInitialChild rs .index 0 .layoutOffset 0.0))
+            false)))
+      (loop []
+        (let [^int fidx (.indexOf rs (.-firstChild rs))]
+          (if (> fidx attach-idx)
+            (if-let [c (.insertAndLayoutLeadingChild rs
+                        ^r/BoxConstraints (measure-fn env (dec fidx))
+                        .parentUsesSize true)]
+              ;; placeholder offsets; the walk overwrites them from the cache
+              (do (set-layout-offset! c 0.0)
+                  (set-cross-axis-offset! c 0.0)
+                  (recur))
+              true)
+            true))))))
+
+(defn- walk!
+  "Lays out children forward from firstChild until the window is filled or
+   children run out. Cache entries whose measured extent matches are reused;
+   the first mismatch truncates the cache and re-places from there.
+   Returns {:last-i int :end double :reached bool}."
+  [^CollectionRenderSliver rs layout env ^double we]
+  (let [measure-fn (:measure layout)
+        place-fn (:place layout)
+        flow-end-fn (:flow-end layout)]
+    (loop [^r/RenderBox child (.-firstChild rs)
+           ^int i (.indexOf rs (.-firstChild rs))
+           state (state-before rs layout env i)]
+      (let [^r/BoxConstraints cs (measure-fn env i)]
+        (.layout child cs .parentUsesSize true)
+        (let [^double ext (.paintExtentOf rs child)
+              ^int rel (- i (.-cacheFirst rs))
+              cache (.-cache rs)
+              entry (when (and (>= rel 0) (< rel (count cache))) (nth cache rel))
+              reuse (boolean (and entry
+                                  (< (.abs (- ^double (:extent entry) ext)) 0.01)))
+              [^double off ^double cross next-state ^double max-end]
+              (if reuse
+                [(double (:offset entry)) (double (:cross entry))
+                 (:state entry) (double (:max-end entry))]
+                (do
+                  (when entry
+                    (.-cache! rs (into [] (subvec cache 0 rel))))
+                  (let [[gm st] (place-fn env i (.-size child) state)
+                        ^double off (double (:offset gm))
+                        ^double cross (double (or (:cross gm) 0.0))
+                        ^double end (+ off ext)
+                        cache' (.-cache rs)
+                        ^double mx (if (pos? rel)
+                                     (math/max ^double (:max-end (nth cache' (dec rel))) end)
+                                     end)]
+                    (.-cache! rs (conj cache'
+                                       {:offset off :cross cross :extent ext
+                                        :end end :max-end mx :state st}))
+                    [off cross st mx])))]
+          (set-layout-offset! child off)
+          (set-cross-axis-offset! child cross)
+          (let [^double fe (if flow-end-fn
+                             (double (flow-end-fn env next-state))
+                             max-end)]
+            (if (>= fe we)
+              {:last-i i :end max-end :reached false}
+              (let [after (.childAfter rs child)
+                    nxt (if (and after (= (.indexOf rs ^r/RenderBox after) (inc i)))
+                          after
+                          (.insertAndLayoutChild rs
+                           ^r/BoxConstraints (measure-fn env (inc i))
+                           .after child .parentUsesSize true))]
+                (if (nil? nxt)
+                  {:last-i i :end max-end :reached true}
+                  (recur ^r/RenderBox nxt (inc i) next-state))))))))))
+
+(defn- post-gc!
+  "Collects walked children that ended before the window and any attached
+   children beyond the last walked index, keeping at least one child."
+  [^CollectionRenderSliver rs ^int last-i ^double ws]
+  (let [^int total (count-attached rs)
+        ^int trailing
+        (loop [c (.-lastChild rs) ^int n 0]
+          (if (and c (> (.indexOf rs ^r/RenderBox c) last-i))
+            (recur (.childBefore rs ^r/RenderBox c) (inc n))
+            n))
+        cache (.-cache rs)
+        ^int cf (.-cacheFirst rs)
+        ^int leading
+        (loop [c (.-firstChild rs) ^int n 0]
+          (if (and c (<= (.indexOf rs ^r/RenderBox c) last-i))
+            (let [rel (- (.indexOf rs ^r/RenderBox c) cf)
+                  e (when (and (>= rel 0) (< rel (count cache))) (nth cache rel))]
+              (if (and e (<= ^double (:end e) ws))
+                (recur (.childAfter rs ^r/RenderBox c) (inc n))
+                n))
+            n))
+        ^int leading (math/max 0 (math/min leading (- total trailing 1)))]
+    (.collectGarbage rs leading trailing)))
+
+(defn- backfill-leading!
+  "Materializes children above the cached region by backward estimation:
+   each leading child is assumed to end where the region starts. When the
+   backfill reaches index 0 away from offset 0, drops the cache and returns
+   a scroll correction; the next pass re-flows exactly from the top."
+  [^CollectionRenderSliver rs layout env ^double ws]
+  (let [measure-fn (:measure layout)
+        anchor-fn (:anchor layout)
+        init-fn (:init layout)]
+    (loop [did false]
+      (let [cache (.-cache rs)
+            ^int cf (.-cacheFirst rs)]
+        (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
+          (if-let [c (.insertAndLayoutLeadingChild rs
+                      ^r/BoxConstraints (measure-fn env (dec cf))
+                      .parentUsesSize true)]
+            (let [^double ext (.paintExtentOf rs ^r/RenderBox c)
+                  ^double head (double (:offset (nth cache 0)))
+                  ^double noff (- head ext)
+                  st (if anchor-fn (anchor-fn env cf head) (init-fn env))
+                  entry {:offset noff :cross 0.0 :extent ext
+                         :end head
+                         :max-end (math/min head ^double (:max-end (nth cache 0)))
+                         :state st}]
+              (set-layout-offset! c noff)
+              (set-cross-axis-offset! c 0.0)
+              (.-cache! rs (into [entry] cache))
+              (.-cacheFirst! rs (dec cf))
+              (.-baseState! rs (if anchor-fn
+                                 (anchor-fn env (dec cf) noff)
+                                 (init-fn env)))
+              (recur true))
+            nil)
+          (when (and did (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
+            (let [^double z (double (:offset (nth (.-cache rs) 0)))]
+              (when (> (.abs z) 1e-3)
+                (.-cache! rs [])
+                (.-baseState! rs (init-fn env))
+                (- z)))))))))
+
+(defn- anchor-before
+  "Snapshot of the first cached entry overlapping the paint window —
+   the child the user is visually anchored to."
+  [^CollectionRenderSliver rs ^double so]
+  (let [cache (.-cache rs)
+        ^int rel (bsearch-max-end cache so)]
+    (when (< rel (count cache))
+      {:idx (+ (.-cacheFirst rs) rel)
+       :off (double (:offset (nth cache rel)))})))
+
+(defn- anchor-delta
+  "How far the anchored child moved during this pass; non-nil requests a
+   scroll correction so the viewport follows it."
+  [^CollectionRenderSliver rs anchor]
+  (when anchor
+    (let [^int rel (- ^int (:idx anchor) (.-cacheFirst rs))
+          cache (.-cache rs)]
+      (when (and (>= rel 0) (< rel (count cache)))
+        (let [^double delta (- ^double (:offset (nth cache rel)) ^double (:off anchor))]
+          (when (> (.abs delta) 1e-3)
+            delta))))))
+
+(defn- finish-flow-geometry!
+  [^CollectionRenderSliver rs layout env ^r/SliverConstraints c walked]
+  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)
+        ^double end (double (:end walked))
+        ^int last-i (int (:last-i walked))
+        reached (boolean (:reached walked))
+        item-count (:item-count env)
+        ^double total
+        (cond
+          reached end
+          (nil? item-count) dc/double.infinity
+          :else (math/max end
+                          (if-let [est (:estimate layout)]
+                            (double (est env last-i end (int item-count)))
+                            (* end (/ (double item-count) (double (inc last-i)))))))
+        ^double first-off (if-let [fc (.-firstChild rs)]
+                            (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)
+                            (let [cache (.-cache rs)]
+                              (if (seq cache) (double (:offset (nth cache 0))) 0.0)))
+        ^double paint-extent (.calculatePaintOffset rs c .from first-off .to end)
+        ^double cache-extent (.calculateCacheOffset rs c .from first-off .to end)]
+    (.-geometry! rs
+      (r/SliverGeometry
+       .scrollExtent total
+       .paintExtent paint-extent
+       .cacheExtent cache-extent
+       .maxPaintExtent total
+       .hasVisualOverflow (or (> end (+ (.-scrollOffset c) (.-remainingPaintExtent c)))
+                              (pos? (.-scrollOffset c)))))
+    (when reached
+      (.setDidUnderflow mgr true))
+    (.didFinishLayout mgr)))
+
+(defn- flow-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
+    (.didStartLayout mgr)
+    (.setDidUnderflow mgr false)
+    (let [env (lay/make-env c (.-itemCount rs))
+          env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+          ^double so (.-scrollOffset c)
+          ^double ws (+ so (.-cacheOrigin c))
+          ^double we (+ ws (.-remainingCacheExtent c))]
+      (pre-gc! rs ws we)
+      (seed-cache! rs layout env)
+      (normalize-cache! rs layout env)
+      (let [anchor (anchor-before rs so)]
+        (if-not (align-start! rs layout env ws)
+          (do (.-geometry! rs r/SliverGeometry.zero)
+              (.didFinishLayout mgr))
+          (let [walked (walk! rs layout env we)]
+            (post-gc! rs (int (:last-i walked)) ws)
+            (if-let [corr (backfill-leading! rs layout env ws)]
+              (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
+                  (.didFinishLayout mgr))
+              (if-let [delta (anchor-delta rs anchor)]
+                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
+                    (.didFinishLayout mgr))
+                (finish-flow-geometry! rs layout env c walked)))))))))
+
+;; ============================================================
+;; Indexed driver
+;; ============================================================
+
+(defn- ^r/BoxConstraints geo-constraints [env gm]
+  (let [^double me (double (:main-extent gm))
+        ^double ce (double (:cross-extent gm))]
+    (if (= :vertical (:axis env))
+      (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
+      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
+
+(defn- indexed-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
+    (.didStartLayout mgr)
+    (.setDidUnderflow mgr false)
+    (let [env (lay/make-env c (.-itemCount rs))
+          env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+          geo-fn (:geometry layout)
+          ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+          ^double we (+ ws (.-remainingCacheExtent c))
+          item-count (:item-count env)
+          ^int first-index (let [^int fi (int ((:first-index layout) env ws))]
+                             (if (and item-count (pos? ^int item-count))
+                               (math/max 0 (math/min fi (dec ^int item-count)))
+                               (math/max 0 fi)))
+          target-last (when (.-isFinite we)
+                        (int ((:last-index layout) env we)))]
+      ;; GC by index range
+      (if (.-firstChild rs)
+        (let [^int leading (.calculateLeadingGarbage rs .firstIndex first-index)
+              ^int trailing (if target-last
+                              (.calculateTrailingGarbage rs .lastIndex ^int target-last)
+                              0)]
+          (.collectGarbage rs leading trailing))
+        (.collectGarbage rs 0 0))
+
+      (let [gm-first (geo-fn env first-index)]
+        (if (and (nil? (.-firstChild rs))
+                 (not (.addInitialChild rs .index first-index
+                                        .layoutOffset (double (:offset gm-first)))))
+          ;; empty collection (or nothing at first-index)
+          (let [^double max-ext (if item-count
+                                  (double ((:max-extent layout) env (int item-count)))
+                                  0.0)]
+            (.-geometry! rs (r/SliverGeometry .scrollExtent max-ext .maxPaintExtent max-ext))
+            (.didFinishLayout mgr))
+
+          (let [^double leading-off (double (:offset gm-first))
+                ;; children before the current firstChild, down to first-index
+                last-leading
+                (loop [^int idx (dec (.indexOf rs (.-firstChild rs)))
+                       created nil]
+                  (if (>= idx first-index)
+                    (let [gm (geo-fn env idx)
+                          ch (.insertAndLayoutLeadingChild rs (geo-constraints env gm))]
+                      (if (nil? ch)
+                        created
+                        (do (set-layout-offset! ch (double (:offset gm)))
+                            (set-cross-axis-offset! ch (double (:cross gm)))
+                            (recur (dec idx) (or created ch)))))
+                    created))
+                ;; if no leading children were created, lay out the first child
+                ^r/RenderBox start-child
+                (or last-leading
+                    (let [^r/RenderBox fc (.-firstChild rs)
+                          ^int fidx (.indexOf rs fc)
+                          gm (geo-fn env fidx)]
+                      (.layout fc (geo-constraints env gm))
+                      (set-layout-offset! fc (double (:offset gm)))
+                      (set-cross-axis-offset! fc (double (:cross gm)))
+                      fc))
+                ^double start-end (let [^int sidx (.indexOf rs start-child)
+                                        gm (geo-fn env sidx)]
+                                    (+ ^double (:offset gm) ^double (:main-extent gm)))
+                ;; forward
+                [^double trail-end ^bool reached]
+                (loop [^int idx (inc (.indexOf rs start-child))
+                       ^r/RenderBox prev start-child
+                       ^double trail-end start-end]
+                  (if (or (nil? target-last) (<= idx ^int target-last))
+                    (let [gm (geo-fn env idx)
+                          ^r/BoxConstraints bc (geo-constraints env gm)
+                          existing (.childAfter rs prev)
+                          child (if (and existing (= (.indexOf rs ^r/RenderBox existing) idx))
+                                  (do (.layout ^r/RenderBox existing bc)
+                                      existing)
+                                  (.insertAndLayoutChild rs bc .after prev))]
+                      (if (nil? child)
+                        [trail-end true]
+                        (do (set-layout-offset! ^r/RenderBox child (double (:offset gm)))
+                            (set-cross-axis-offset! ^r/RenderBox child (double (:cross gm)))
+                            (recur (inc idx) ^r/RenderBox child
+                                   (double (math/max trail-end
+                                                     (+ ^double (:offset gm)
+                                                        ^double (:main-extent gm))))))))
+                    [trail-end false]))
+                ^double total (cond
+                                item-count (double ((:max-extent layout) env (int item-count)))
+                                reached trail-end
+                                :else dc/double.infinity)
+                ^double paint-extent
+                (.calculatePaintOffset rs c
+                  .from (math/min (.-scrollOffset c) leading-off)
+                  .to trail-end)
+                ^double cache-extent
+                (.calculateCacheOffset rs c .from leading-off .to trail-end)]
+            (.-geometry! rs
+              (r/SliverGeometry
+               .scrollExtent total
+               .paintExtent paint-extent
+               .maxPaintExtent total
+               .cacheExtent cache-extent
+               .hasVisualOverflow (or (> total paint-extent)
+                                      (pos? (.-scrollOffset c))
+                                      (not (zero? (.-overlap c))))))
+            (when (or reached (= total trail-end))
+              (.setDidUnderflow mgr true))
+            (.didFinishLayout mgr)))))))
+
+;; ============================================================
+;; Widget
+;; ============================================================
 
 (deftype CollectionSliverWidget
   [^w/SliverChildDelegate del
    ^w/Key? k
-   layoutImpl]  ;; ISliverLayout
+   layoutImpl   ;; layout map
+   itemCount]   ;; int? — nil = infinite
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context]
-      (CollectionRenderSliver element layoutImpl)))
+      (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil)))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (let [^CollectionRenderSliver rs render-object]
-      (.-layoutImpl! rs layoutImpl))))
-
-;; --- Public Constructor ---
+    (update-render! render-object layoutImpl itemCount)))
 
 (defn ^w/Widget collection-sliver-widget
-  "Creates a CollectionSliverWidget with the given builder, count, and layout."
-  [item-builder
-   ^int item-count
+  "Creates the collection sliver from a builder, item count (nil = infinite),
+   a layout map and options {:key :find-child-index :auto-keep-alive
+   :repaint-boundaries :semantic-indexes}."
+  [item-builder item-count layout-impl opts]
+  (CollectionSliverWidget
+   (w/SliverChildBuilderDelegate
+    item-builder
+    .childCount item-count
+    .findChildIndexCallback (:find-child-index opts)
+    .addAutomaticKeepAlives (boolean (:auto-keep-alive opts true))
+    .addRepaintBoundaries (boolean (:repaint-boundaries opts true))
+    .addSemanticIndexes (boolean (:semantic-indexes opts true)))
+   (:key opts)
    layout-impl
-   opts]
-  (let [^w/Key? key (:key opts)
-        ^bool auto-keep-alive (:auto-keep-alive opts true)
-        ^bool repaint-boundaries (:repaint-boundaries opts true)
-        ^bool semantic-indexes (:semantic-indexes opts true)
-        find-child-index (:find-child-index opts)]
-    (CollectionSliverWidget
-     (w/SliverChildBuilderDelegate
-      item-builder
-      .childCount item-count
-      .findChildIndexCallback find-child-index
-      .addAutomaticKeepAlives auto-keep-alive
-      .addRepaintBoundaries repaint-boundaries
-      .addSemanticIndexes semantic-indexes)
-     key
-     layout-impl)))
+   item-count))

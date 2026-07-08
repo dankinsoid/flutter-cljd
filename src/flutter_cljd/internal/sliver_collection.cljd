@@ -1,7 +1,10 @@
+;; @ai-generated(solo)
 (ns flutter-cljd.internal.sliver-collection
+  "sliver-collection widget: data-driven sliver with pluggable layouts,
+   diffable insert/remove animations, position-based move animations,
+   drag-to-reorder and prefetch. See collection.layout for the layout model
+   and collection.render for the virtualization engine."
   (:require
-   ["package:flutter/animation.dart" :as a]
-   ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]
    [flutter-cljd.utils :as ut]
@@ -26,89 +29,73 @@
         l (last raw-args)]
     (when-not (fn? l)
       (throw (Exception. "sliver-collection requires a builder function as the last argument")))
-    (let [kv-rest (butlast raw-args)
-          args (ut/key-values-map kv-rest)
+    (let [args (ut/key-values-map (butlast raw-args))
           args (if (map? args) args {})
+          data (when (and source (not (int? source))) (vec source))
           user-builder l
-          item-builder (if (and source (not (int? source)))
+          item-builder (if data
                          (fn [^w/BuildContext ctx ^int i]
-                           (user-builder ctx (nth source i)))
+                           (user-builder ctx (nth data i)))
                          user-builder)
+          ;; nil item-count = infinite builder
           item-count (cond
                        (int? source) (int source)
-                       (and (some? source) (not (int? source))) (count source)
+                       data (count data)
                        (:item-count args) (int (:item-count args))
                        :else nil)]
-      (cond-> (assoc args
-                     :data (when (and source (not (int? source))) (vec source))
-                     :item-builder item-builder
-                     :user-builder user-builder)
-        item-count (assoc :item-count item-count)))))
+      (assoc args
+             :data data
+             :item-builder item-builder
+             :user-builder user-builder
+             :item-count item-count))))
 
-(declare ^:private SliverCollectionState)
+(declare SliverCollectionState)
 (declare ^:private apply-diff*)
-(declare ^:private apply-moves*)
-(declare ^:private find-child-at-index)
 (declare ^:private rebuild-shadow!)
+(declare ^:private run-prefetch!)
 
 ;; --- SliverCollection Widget ---
 
 (deftype SliverCollection
   [^w/Key? k
-   ;; Data
-   data                ;; vec of items or nil (index-based)
-   ^int itemCount
-   keyFn               ;; (fn [item] -> identity key) or nil
-   itemBuilder         ;; (fn [BuildContext int] -> Widget) — index-based
-   userBuilder         ;; (fn [BuildContext item] -> Widget) — for dying items
-   ;; Layout
-   layoutImpl          ;; ISliverLayout instance
-   ^double? itemExtent
-   ;; Animation
-   animConfig          ;; parsed config map or nil
-   ;; Reorder
+   data              ;; vec of items or nil (index-based)
+   itemCount         ;; int? — nil = infinite
+   keyFn             ;; (fn [item] -> identity key) or nil
+   itemBuilder       ;; (fn [BuildContext int] -> Widget) — index-based
+   userBuilder       ;; (fn [BuildContext item] -> Widget) — for dying items
+   layoutImpl        ;; layout map (collection.layout)
+   animConfig        ;; parsed config map or nil
    ^bool reorderable
-   reorderCallback     ;; (fn [old new])
-   ;; Prefetch
-   prefetchCallback    ;; (fn [item-or-index])
+   reorderCallback   ;; (fn [old new])
+   prefetchCallback  ;; (fn [item-or-index])
    ^int prefetchDistance
-   ;; Keep-alive
    ^bool autoKeepAlive
-   ;; Grid passthrough
-   gridOpts]           ;; map of grid-specific options
+   extraOpts]        ;; reorder passthrough opts
   :extends (w/StatefulWidget .key k)
 
   (createState [^SliverCollection this]
     (SliverCollectionState
-     ;; previousUserData
-     (.-data this)
-     ;; activeAnims
-     {}
-     ;; dyingItems
-     []
-     ;; shadowData
-     nil
-     ;; reorderInProgress
-     false
-     ;; prefetchedKeys
-     #{}
-     ;; sliverGlobalKey
-     nil)))
+     (.-data this)  ;; previousUserData
+     {}             ;; activeInserts
+     []             ;; dyingItems
+     nil            ;; shadowData
+     false          ;; reorderInProgress
+     #{}            ;; prefetched
+     (atom {}))))   ;; moveRegistry
 
 (deftype SliverCollectionState
-  [^:mutable previousUserData   ;; user's data from last update (for diffing)
-   ^:mutable activeAnims        ;; {key -> {:type :insert/:move, :controller, :animation}}
-   ^:mutable dyingItems         ;; [{:key :item :old-index :controller :animation} ...]
-   ^:mutable shadowData         ;; vec of {:type :live/:dying, :key, ...} or nil
+  [^:mutable previousUserData    ;; user's data from last update (for diffing)
+   ^:mutable activeInserts       ;; {key -> insert anim-state}
+   ^:mutable dyingItems          ;; [{:key :item :old-index :controller :animation} ...]
+   ^:mutable shadowData          ;; vec of {:type :live/:dying, :key, ...} or nil
    ^:mutable ^bool reorderInProgress
-   ^:mutable prefetchedKeys
-   ^:mutable ^w/GlobalKey? sliverGlobalKey]
+   ^:mutable prefetched          ;; set of identity keys (indices without key-fn)
+   moveRegistry]                 ;; atom {key -> MoveRender}
   :extends (#/(w/State SliverCollection))
   ^:mixin #/(w/TickerProviderStateMixin SliverCollection)
 
   (initState [^SliverCollectionState this]
     (.initState ^super this)
-    (.-sliverGlobalKey! this (w/GlobalKey))
     (rebuild-shadow! this))
 
   (didUpdateWidget [^SliverCollectionState this ^SliverCollection oldWidget]
@@ -118,23 +105,21 @@
           old-data (.-previousUserData this)
           key-fn (.-keyFn widget)
           anim-config (.-animConfig widget)]
-      ;; Run diff when data changed, key-fn provided, animations enabled
+      ;; diff on data change when keyed animations are on; a reorder-driven
+      ;; change is skipped once — SliverReorderableList animates it itself
       (when (and key-fn anim-config new-data old-data
-                 (not (identical? new-data old-data)))
-        (if (.-reorderInProgress this)
-          (.-reorderInProgress! this false)
-          (apply-diff* this old-data new-data key-fn anim-config)))
-      ;; Update user-data snapshot and rebuild shadow
+                 (not (identical? new-data old-data))
+                 (not (.-reorderInProgress this)))
+        (when (and (:move anim-config) (not (.-reorderable widget)))
+          (an/capture-positions! (.-moveRegistry this)))
+        (apply-diff* this old-data new-data key-fn anim-config))
+      (.-reorderInProgress! this false)
       (.-previousUserData! this new-data)
       (rebuild-shadow! this))
     nil)
 
   (dispose [^SliverCollectionState this]
-    ;; Remove overlay entries for move animations
-    (doseq [[_ anim-state] (.-activeAnims this)]
-      (when (and (= :move (:type anim-state)) (:overlay-entry anim-state))
-        (.remove ^w/OverlayEntry (:overlay-entry anim-state))))
-    (an/dispose-all-anims (.-activeAnims this))
+    (an/dispose-all-anims (.-activeInserts this))
     (doseq [dying (.-dyingItems this)]
       (an/dispose-anim dying))
     (.dispose ^super this))
@@ -146,255 +131,145 @@
           anim-config (.-animConfig widget)
           item-builder (.-itemBuilder widget)
           user-builder (.-userBuilder widget)
-          base-count (.-itemCount widget)
           shadow (.-shadowData this)
-          active (.-activeAnims this)
+          inserts (.-activeInserts this)
+          reorderable (boolean (and (.-reorderable widget) (.-reorderCallback widget)))
+          move-enabled (boolean (and anim-config (:move anim-config) (not reorderable)))
+          registry (.-moveRegistry this)
 
-          ;; Use shadow-data when available (animated mode with key-fn)
+          ;; shadow-data (live + dying) is the index space while removals animate
           use-shadow (boolean (and shadow key-fn (seq shadow)))
+          item-count (if use-shadow (count shadow) (.-itemCount widget))
 
-          ^int item-count (if use-shadow (count shadow) base-count)
-
-          ;; Builder function
-          final-builder
+          base-builder
           (if use-shadow
-            ;; Shadow-data based builder: single source of truth for indices
             (fn [^w/BuildContext ctx ^int index]
               (let [entry (nth shadow index)
                     k (:key entry)]
                 (if (= :dying (:type entry))
-                  ;; Dying item — SizeTransition + Fade, shrinks to zero
-                  (let [child (user-builder ctx (:item entry))]
-                    (w/KeyedSubtree
-                     .key (w/ValueKey k)
-                     .child (an/wrap-with-remove-transition
-                             anim-config entry child)))
-                  ;; Live item — possibly with insert or move animation
-                  (let [anim-state (get active k)]
-                    (if (and anim-state (= :move (:type anim-state)))
-                      ;; Move: render actual content but invisible (overlay shows the flying copy)
-                      (let [child (item-builder ctx (:data-index entry))]
-                        (w/KeyedSubtree
-                         .key (w/ValueKey k)
-                         .child (w/Opacity .opacity 0.0 .child child)))
-                      ;; Normal or insert
-                      (let [child (item-builder ctx (:data-index entry))]
-                        (w/KeyedSubtree
-                         .key (w/ValueKey k)
-                         .child (if (and anim-state (= :insert (:type anim-state)))
-                                  (an/wrap-with-insert-transition anim-config anim-state child)
-                                  child))))))))
-            ;; Non-animated / no shadow — simple builder with optional keys
+                  (w/KeyedSubtree
+                   .key (w/ValueKey k)
+                   .child (an/wrap-with-remove-transition
+                           anim-config entry ctx
+                           (user-builder ctx (:item entry))))
+                  (let [child (item-builder ctx (int (:data-index entry)))
+                        child (if-let [ins (get inserts k)]
+                                (an/wrap-with-insert-transition anim-config ins ctx child)
+                                child)
+                        child (if move-enabled
+                                (an/move-layer registry k (:move anim-config) child)
+                                child)]
+                    (w/KeyedSubtree .key (w/ValueKey k) .child child)))))
+            ;; no shadow — plain builder, keyed when possible
             (if (and key-fn data)
               (fn [^w/BuildContext ctx ^int index]
-                (let [child (item-builder ctx index)
-                      k (key-fn (nth data index))]
-                  (w/KeyedSubtree .key (w/ValueKey k) .child child)))
+                (w/KeyedSubtree
+                 .key (w/ValueKey (key-fn (nth data index)))
+                 .child (item-builder ctx index)))
               item-builder))
 
-          ;; findChildIndexCallback — consistent with builder's index space
+          ;; findChildIndexCallback — same index space as the builder
           find-child-index
           (if use-shadow
-            ;; Shadow mode — both live and dying keys map to shadow indices
             (let [key->idx (an/shadow-key->index shadow)]
               (fn [^w/Key child-key]
                 (when (instance? w/ValueKey child-key)
                   (get key->idx (.-value ^w/ValueKey child-key)))))
-            ;; Non-shadow mode — data keys only
             (when (and key-fn data)
               (let [key->index (into {} (map-indexed
-                                          (fn [i item] [(key-fn item) i])
-                                          data))]
+                                         (fn [i item] [(key-fn item) i])
+                                         data))]
                 (fn [^w/Key child-key]
                   (when (instance? w/ValueKey child-key)
                     (get key->index (.-value ^w/ValueKey child-key)))))))
 
-          ;; Prefetch wrapping
-          final-builder (if-let [prefetch-cb (.-prefetchCallback widget)]
-                          (let [dist (.-prefetchDistance widget)
-                                prefetched (.-prefetchedKeys this)]
-                            (fn [^w/BuildContext ctx ^int index]
-                              (let [end (min item-count (+ index dist))]
-                                (loop [i (inc index)]
-                                  (when (< i end)
-                                    (when-not (contains? prefetched i)
-                                      (.-prefetchedKeys! this (conj prefetched i))
-                                      (prefetch-cb (if data (nth data (min i (dec (count data)))) i)))
-                                    (recur (inc i)))))
-                              (final-builder ctx index)))
-                          final-builder)
+          ;; prefetch runs in data space; dying entries don't prefetch
+          final-builder
+          (if (.-prefetchCallback widget)
+            (fn [^w/BuildContext ctx ^int index]
+              (let [di (if use-shadow
+                         (let [entry (nth shadow index)]
+                           (when (= :live (:type entry)) (:data-index entry)))
+                         index)]
+                (when di (run-prefetch! this (int di))))
+              (base-builder ctx index))
+            base-builder)
 
-          ;; Layout opts
-          layout-opts (cond-> {:auto-keep-alive (.-autoKeepAlive widget)
-                               :repaint-boundaries true
-                               :semantic-indexes true}
-                        (t/widget-key (.-k widget)) (assoc :key (t/widget-key (.-k widget)))
-                        (.-itemExtent widget) (assoc :item-extent (.-itemExtent widget))
-                        find-child-index (assoc :find-child-index find-child-index)
-                        (.-gridOpts widget) (merge (.-gridOpts widget)))]
+          opts (cond-> {:auto-keep-alive (.-autoKeepAlive widget)
+                        :repaint-boundaries true
+                        :semantic-indexes true}
+                 find-child-index (assoc :find-child-index find-child-index))]
 
-      (if (and (.-reorderable widget) (.-reorderCallback widget))
-        ;; Reorderable mode — use SliverReorderableList
+      (if reorderable
         (reord/build-reorderable-sliver
          final-builder
-         item-count
+         (int (or item-count 0))
+         (cond
+           use-shadow (fn [^int index] (:key (nth shadow index)))
+           (and key-fn data) (fn [^int index] (key-fn (nth data index)))
+           :else (fn [^int index] index))
          (fn [^int old-index ^int new-index]
            (.-reorderInProgress! this true)
            ((.-reorderCallback widget) old-index new-index))
-         (cond-> layout-opts
-           (:on-reorder-start (.-gridOpts widget))
-           (assoc :on-reorder-start (:on-reorder-start (.-gridOpts widget)))
-           (:on-reorder-end (.-gridOpts widget))
-           (assoc :on-reorder-end (:on-reorder-end (.-gridOpts widget)))
-           (:proxy-decorator (.-gridOpts widget))
-           (assoc :proxy-decorator (:proxy-decorator (.-gridOpts widget)))))
-        ;; Standard mode — use custom render sliver
+         (merge opts (.-extraOpts widget)))
         (render/collection-sliver-widget
          final-builder
          item-count
          (.-layoutImpl widget)
-         (if-let [gk (.-sliverGlobalKey this)]
-           (assoc layout-opts :key gk)
-           layout-opts))))))
+         opts)))))
 
-;; --- Shadow-data helpers ---
+;; --- helpers ---
 
 (defn- rebuild-shadow!
   "Rebuilds shadowData from current user-data + dying items."
   [^SliverCollectionState state]
   (let [^SliverCollection widget (.-widget state)
         data (.-data widget)
-        key-fn (.-keyFn widget)
-        dying (.-dyingItems state)]
+        key-fn (.-keyFn widget)]
     (if (and key-fn data)
-      (.-shadowData! state (an/build-shadow-data data key-fn dying))
+      (.-shadowData! state (an/build-shadow-data data key-fn (.-dyingItems state)))
       (.-shadowData! state nil))))
 
-(defn- find-child-at-index
-  "Finds a child RenderBox in the render sliver at the given index."
-  ^r/RenderBox [^r/RenderSliverMultiBoxAdaptor sliver ^int index]
-  (loop [child (.-firstChild sliver)]
-    (when child
-      (if (= (.indexOf sliver child) index)
-        child
-        (recur (.childAfter sliver child))))))
-
-(defn- apply-moves*
-  "Creates overlay flying animations for moved items.
-   Live item at new position rendered invisible; overlay flies from old to new."
-  [^SliverCollectionState this old-data diff-result anim-config old-key->shadow-idx]
-  (when-let [move-config (:move anim-config)]
-    (when (and old-key->shadow-idx (seq (:moves diff-result)))
-      (when-let [^w/GlobalKey gk (.-sliverGlobalKey this)]
-        (when-let [^r/RenderSliverMultiBoxAdaptor sliver
-                   (some-> gk .-currentContext .findRenderObject)]
-          (let [^SliverCollection widget (.-widget this)
-                user-builder-fn (.-userBuilder widget)]
-            (doseq [{:keys [key old-index new-index]} (:moves diff-result)]
-              (let [old-shadow-idx (get old-key->shadow-idx key)]
-                (when old-shadow-idx
-                  (when-let [^r/RenderBox old-child
-                             (find-child-at-index sliver (int old-shadow-idx))]
-                    (let [^w/Offset global-pos (.localToGlobal old-child w/Offset.zero)
-                          ^double height (.-height (.-size old-child))
-                          ^double width (.-width (.-size old-child))
-                          ^double old-x (.-dx global-pos)
-                          ^double old-y (.-dy global-pos)
-                          ^double new-y (+ old-y (* (double (- ^int new-index ^int old-index)) height))
-                          item-data (nth old-data old-index)
-
-                          ;; Move controller (0→1: overlay position interpolation)
-                          ^a/AnimationController move-ctrl
-                          (an/create-controller this (:duration move-config))
-                          ^a/CurvedAnimation move-anim
-                          (an/create-curved-animation move-ctrl (:curve move-config))
-
-                          ;; Overlay entry — actual content flying from old to new position
-                          ^w/OverlayEntry overlay-entry
-                          (w/OverlayEntry
-                            .builder
-                            (fn [^w/BuildContext ctx]
-                              (w/AnimatedBuilder
-                                .animation move-anim
-                                .child (user-builder-fn ctx item-data)
-                                .builder
-                                (fn [^w/BuildContext _ ^w/Widget? child]
-                                  (let [^double t (.-value move-anim)
-                                        ^double y (+ old-y (* t (- new-y old-y)))]
-                                    (w/IgnorePointer
-                                      .child
-                                      (w/Align
-                                        .alignment w/Alignment.topLeft
-                                        .child
-                                        (w/Transform.translate
-                                          .offset (w/Offset old-x y)
-                                          .child (w/SizedBox .width width .height height
-                                                             .child child)))))))))]
-
-                      ;; Dispose existing animation for this key
-                      (when-let [existing (get (.-activeAnims this) key)]
-                        (when (and (= :move (:type existing)) (:overlay-entry existing))
-                          (.remove ^w/OverlayEntry (:overlay-entry existing)))
-                        (an/dispose-anim existing))
-
-                      ;; Move → activeAnims (no ghost, just overlay + controller)
-                      (.-activeAnims! this
-                        (assoc (.-activeAnims this) key
-                               {:type :move :controller move-ctrl :animation move-anim
-                                :overlay-entry overlay-entry}))
-
-                      ;; On completion: remove overlay, dispose, make live item visible
-                      (.addStatusListener move-ctrl
-                        (fn [^a/AnimationStatus status]
-                          (when (.-isCompleted status)
-                            (when (.-mounted this)
-                              (.setState this
-                                (fn []
-                                  (.remove overlay-entry)
-                                  (an/dispose-anim (get (.-activeAnims this) key))
-                                  (.-activeAnims! this (dissoc (.-activeAnims this) key))))))))
-
-                      ;; Insert overlay and start animation after layout
-                      (.addPostFrameCallback w/WidgetsBinding.instance
-                        (fn [_]
-                          (when (.-mounted this)
-                            (.insert (w/Overlay.of (.-context this)) overlay-entry)
-                            (.forward move-ctrl))
-                          nil)))))))))))))
+(defn- remove-dying!
+  [^SliverCollectionState this key]
+  (when-let [entry (first (filter #(= key (:key %)) (.-dyingItems this)))]
+    (an/dispose-anim entry))
+  (.-dyingItems! this
+    (vec (remove #(= key (:key %)) (.-dyingItems this)))))
 
 (defn- apply-diff*
-  "Applies diff: dying items for removes, insert anims, move anims with overlay."
+  "Applies a key diff: removes become dying items (size collapse), inserts
+   get grow-in animations. Position shifts are handled by captured-position
+   move animations, so no move classification is needed."
   [^SliverCollectionState this old-data new-data key-fn anim-config]
-  (let [old-shadow (.-shadowData this)
-        old-key->shadow-idx (when old-shadow (an/shadow-key->index old-shadow))
-        diff-result (diff/compute-diff old-data new-data key-fn)]
-    ;; --- Removes → create dying items ---
+  (let [diff-result (diff/compute-diff old-data new-data key-fn)]
+    ;; --- Removes → dying items ---
     (doseq [{:keys [key old-index item]} (:removes diff-result)]
-      ;; Dispose existing animation for this key if any
-      (when-let [existing (get (.-activeAnims this) key)]
+      (when-let [existing (get (.-activeInserts this) key)]
         (an/dispose-anim existing)
-        (.-activeAnims! this (dissoc (.-activeAnims this) key)))
-      ;; Start dying animation (1.0 → 0.0, SizeTransition shrinks)
+        (.-activeInserts! this (dissoc (.-activeInserts this) key)))
       (when-let [dying-entry
                  (an/start-remove-anim
                   this anim-config item old-index
                   (fn []
-                    ;; Dying animation complete — dispose controller, remove from list, rebuild shadow
                     (when (.-mounted this)
+                      ;; the vanishing slot shifts everything below it
+                      (when (:move anim-config)
+                        (an/capture-positions! (.-moveRegistry this)))
                       (.setState this
                         (fn []
-                          (let [entry (first (filter #(= key (:key %)) (.-dyingItems this)))]
-                            (when entry (an/dispose-anim entry)))
-                          (.-dyingItems! this
-                            (vec (remove #(= key (:key %)) (.-dyingItems this))))
+                          (remove-dying! this key)
                           (rebuild-shadow! this))))))]
         (.-dyingItems! this
           (conj (.-dyingItems this)
                 (assoc dying-entry :key key :old-index old-index :item item)))))
 
-    ;; --- Inserts → create insert anims ---
+    ;; --- Inserts ---
     (doseq [{:keys [key]} (:inserts diff-result)]
-      (when-let [existing (get (.-activeAnims this) key)]
+      ;; re-inserted while its removal still animates: the dying entry must
+      ;; go, or the shadow would contain the key twice (duplicate ValueKeys)
+      (remove-dying! this key)
+      (when-let [existing (get (.-activeInserts this) key)]
         (an/dispose-anim existing))
       (when-let [insert-entry
                  (an/start-insert-anim
@@ -403,11 +278,28 @@
                     (when (.-mounted this)
                       (.setState this
                         (fn []
-                          (.-activeAnims! this (dissoc (.-activeAnims this) key)))))))]
-        (.-activeAnims! this (assoc (.-activeAnims this) key insert-entry))))
+                          (.-activeInserts! this (dissoc (.-activeInserts this) key)))))))]
+        (.-activeInserts! this (assoc (.-activeInserts this) key insert-entry))))))
 
-    ;; --- Moves → ghost + overlay ---
-    (apply-moves* this old-data diff-result anim-config old-key->shadow-idx)))
+(defn- run-prefetch!
+  "Prefetches up to prefetchDistance items ahead of `data-index`, at most
+   once per identity (per index without a key-fn)."
+  [^SliverCollectionState this ^int data-index]
+  (let [^SliverCollection widget (.-widget this)
+        prefetch-cb (.-prefetchCallback widget)
+        ^int dist (.-prefetchDistance widget)
+        data (.-data widget)
+        key-fn (.-keyFn widget)
+        end (if-let [total (if data (count data) (.-itemCount widget))]
+              (min (int total) (+ data-index dist 1))
+              (+ data-index dist 1))]
+    (loop [i (inc data-index)]
+      (when (< i end)
+        (let [k (if (and key-fn data) (key-fn (nth data i)) i)]
+          (when-not (contains? (.-prefetched this) k)
+            (.-prefetched! this (conj (.-prefetched this) k))
+            (prefetch-cb (if data (nth data i) i))))
+        (recur (inc i))))))
 
 ;; --- Public API ---
 
@@ -415,49 +307,32 @@
   "Creates a sliver-collection widget from raw variadic args."
   [raw-args]
   (let [args (parse-collection-args raw-args)
-        ;; Data
-        data (:data args)
-        item-count (or (:item-count args) 0)
         key-fn (:key-fn args)
-        item-builder (:item-builder args)
-        user-builder (:user-builder args)
-        ;; Layout
-        layout-key (or (:layout args) :list)
-        item-extent (some-> (:item-extent args) double)
-        layout-impl (lay/resolve-layout layout-key
-                       (cond-> args
-                         item-extent (assoc :item-extent item-extent)))
-        ;; Animation
         animate (:animate args)
         anim-config (when (and key-fn animate)
                       (an/parse-anim-config animate))
-        ;; Reorder
         reorderable (boolean (:reorderable args))
-        on-reorder (:on-reorder args)
-        ;; Prefetch
-        on-prefetch (:on-prefetch args)
-        prefetch-distance (int (or (:prefetch-distance args) 5))
-        ;; Keep-alive
-        auto-keep-alive (boolean (:auto-keep-alive args true))
-        ;; Grid + reorder opts
-        grid-opts (select-keys args [:cross-axis-count :max-cross-axis-extent
-                                     :child-aspect-ratio :cross-axis-spacing
-                                     :main-axis-spacing :main-axis-extent
-                                     :on-reorder-start :on-reorder-end
-                                     :proxy-decorator])]
+        layout-key (or (:layout args) :list)
+        ;; a fixed item-extent measures children tightly; size-collapse
+        ;; animations need self-sizing children, so drop it when animating
+        layout-opts (cond-> args
+                      (and anim-config (:item-extent args)) (dissoc :item-extent))
+        layout-impl (lay/resolve-layout layout-key layout-opts)]
+    (when (and reorderable (not= :list layout-key))
+      (throw (Exception. "sliver-collection: :reorderable supports only the :list layout (SliverReorderableList is list-only)")))
     (SliverCollection
      (t/widget-key (:key args))
-     data
-     (int item-count)
+     (:data args)
+     (:item-count args)
      key-fn
-     item-builder
-     user-builder
+     (:item-builder args)
+     (:user-builder args)
      layout-impl
-     item-extent
      anim-config
      reorderable
-     on-reorder
-     on-prefetch
-     prefetch-distance
-     auto-keep-alive
-     (when (seq grid-opts) grid-opts))))
+     (:on-reorder args)
+     (:on-prefetch args)
+     (int (or (:prefetch-distance args) 5))
+     (boolean (:auto-keep-alive args true))
+     (select-keys args [:item-extent :on-reorder-start :on-reorder-end
+                        :proxy-decorator]))))

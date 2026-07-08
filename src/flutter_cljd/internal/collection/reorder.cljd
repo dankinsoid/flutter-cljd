@@ -1,40 +1,27 @@
+;; @ai-generated(solo)
 (ns flutter-cljd.internal.collection.reorder
   "Drag-to-reorder integration for sliver-collection.
-   Wraps Flutter's SliverReorderableList."
+   Wraps Flutter's SliverReorderableList — list layout only."
   (:require
-   ["package:flutter/widgets.dart" :as w]
-   [flutter-cljd.types :as t]))
+   ["package:flutter/widgets.dart" :as w]))
 
 (defn ^w/Widget build-reorderable-sliver
   "Builds a SliverReorderableList wrapping each child with a drag listener.
-   `item-builder` should return the child widget (will be wrapped).
-   `on-reorder` is (fn [old-index new-index])."
-  [item-builder ^int item-count on-reorder opts]
-  (let [^w/Key? key (:key opts)
-        ^double? item-extent (:item-extent opts)
-        find-child-index (:find-child-index opts)
-        proxy-decorator (:proxy-decorator opts)
-        on-reorder-start (:on-reorder-start opts)
-        on-reorder-end (:on-reorder-end opts)]
-    (w/SliverReorderableList
-     .key key
-     .itemCount item-count
-     .itemExtent item-extent
-     .findChildIndexCallback find-child-index
-     .onReorder (fn [^int old-index ^int new-index]
-                  (on-reorder old-index new-index))
-     .onReorderStart on-reorder-start
-     .onReorderEnd on-reorder-end
-     .proxyDecorator proxy-decorator
-     .itemBuilder (fn [^w/BuildContext ctx ^int index]
-                    (w/ReorderableDragStartListener
-                     .key (w/ValueKey index)
-                     .index index
-                     .child (item-builder ctx index))))))
-
-(defn wrap-child-with-drag-handle
-  "Wraps a child widget with ReorderableDragStartListener at the given index."
-  [^int index ^w/Widget child]
-  (w/ReorderableDragStartListener
-   .index index
-   .child child))
+   `item-key-fn` maps index → stable identity key: SliverReorderableList
+   tracks items by key during the drag, so index-based keys would break its
+   animations and state retention."
+  [item-builder ^int item-count item-key-fn on-reorder opts]
+  (w/SliverReorderableList
+   .itemCount item-count
+   .itemExtent (:item-extent opts)
+   .findChildIndexCallback (:find-child-index opts)
+   .onReorder (fn [^int old-index ^int new-index]
+                (on-reorder old-index new-index))
+   .onReorderStart (:on-reorder-start opts)
+   .onReorderEnd (:on-reorder-end opts)
+   .proxyDecorator (:proxy-decorator opts)
+   .itemBuilder (fn [^w/BuildContext ctx ^int index]
+                  (w/ReorderableDragStartListener
+                   .key (w/ValueKey (item-key-fn index))
+                   .index index
+                   .child (item-builder ctx index)))))

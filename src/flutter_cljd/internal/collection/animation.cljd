@@ -1,9 +1,18 @@
+;; @ai-generated(solo)
 (ns flutter-cljd.internal.collection.animation
-  "Per-item animation state machine for sliver-collection.
-   Handles insert/remove/move animations with interruption support."
+  "Item animations for sliver-collection.
+
+   Insert/remove are widget-level transitions driven by controllers owned by
+   the collection state. Move animations are position-based: before a data
+   change the collection captures every attached item's on-screen position
+   (`capture-positions!`); on the first paint after relayout each item's
+   MoveRender proxy computes the delta from its captured position and glides
+   from there to its new place. This works for any layout and scroll axis and
+   needs no diffing — items animate whenever relayout actually moved them."
   (:require
    ["dart:core" :as dc]
    ["package:flutter/animation.dart" :as a]
+   ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]))
 
@@ -13,16 +22,15 @@
 (def default-curve a/Curves.easeInOut)
 
 (defn parse-anim-config
-  "Parses :animate option into a normalized config map.
+  "Parses the :animate option into a normalized config map.
    Input: true | {:duration :curve :insert :remove :move}
-   Output: {:duration Duration :curve Curve :insert {...} :remove {...} :move {...}}"
+   Output: {:duration Duration :curve Curve :insert {...}? :remove {...}? :move {...}?}
+   Each section may be disabled with false."
   [animate]
   (if (true? animate)
-    {:duration default-duration
-     :curve default-curve
-     :insert {:duration default-duration :curve default-curve}
-     :remove {:duration default-duration :curve default-curve}
-     :move {:duration default-duration :curve default-curve}}
+    (let [sub {:duration default-duration :curve default-curve}]
+      {:duration default-duration :curve default-curve
+       :insert sub :remove sub :move sub})
     (let [dur (t/duration (or (:duration animate) (:dur animate) 300))
           crv (t/curve (or (:curve animate) :ease-in-out))
           parse-sub (fn [sub]
@@ -39,35 +47,18 @@
        :remove (parse-sub (:remove animate))
        :move (parse-sub (:move animate))})))
 
-;; --- Animation State ---
-;;
-;; Each animating item is tracked in `active-anims` map:
-;; {item-key -> {:type      :insert | :remove | :move
-;;               :controller AnimationController
-;;               :animation  CurvedAnimation
-;;               ;; Move-specific:
-;;               :from-offset Offset (delta to animate from)
-;;               ;; Remove-specific:
-;;               :item       original item data
-;;               :old-index  int
-;;               }}
-
-(defn create-controller
-  "Creates an AnimationController with the given vsync and duration."
-  ^a/AnimationController [vsync ^dc/Duration duration]
-  (a/AnimationController .vsync vsync .duration duration))
-
-(defn create-curved-animation
-  "Creates a CurvedAnimation from controller and curve."
-  ^a/CurvedAnimation [^a/AnimationController controller ^a/Curve curve]
-  (a/CurvedAnimation .parent controller .curve curve))
+;; --- Insert / Remove controllers ---
 
 (defn start-insert-anim
-  "Creates and starts an insert animation. Returns anim-state map."
+  "Creates and starts an insert animation (0→1). Returns anim-state map."
   [vsync config on-complete]
   (when-let [insert-config (:insert config)]
-    (let [^a/AnimationController ctrl (create-controller vsync (:duration insert-config))
-          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve insert-config))]
+    (let [^a/AnimationController ctrl (a/AnimationController
+                                       .vsync vsync
+                                       .duration (:duration insert-config))
+          ^a/CurvedAnimation anim (a/CurvedAnimation
+                                   .parent ctrl
+                                   .curve (:curve insert-config))]
       (.addStatusListener ctrl
         (fn [^a/AnimationStatus status]
           (when (.-isCompleted status)
@@ -76,11 +67,15 @@
       {:type :insert :controller ctrl :animation anim})))
 
 (defn start-remove-anim
-  "Creates and starts a remove animation (reverse 1.0->0.0). Returns anim-state map."
+  "Creates and starts a remove animation (1→0). Returns anim-state map."
   [vsync config item ^int old-index on-complete]
   (when-let [remove-config (:remove config)]
-    (let [^a/AnimationController ctrl (create-controller vsync (:duration remove-config))
-          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve remove-config))]
+    (let [^a/AnimationController ctrl (a/AnimationController
+                                       .vsync vsync
+                                       .duration (:duration remove-config))
+          ^a/CurvedAnimation anim (a/CurvedAnimation
+                                   .parent ctrl
+                                   .curve (:curve remove-config))]
       (.addStatusListener ctrl
         (fn [^a/AnimationStatus status]
           (when (.-isDismissed status)
@@ -90,121 +85,236 @@
       {:type :remove :controller ctrl :animation anim
        :item item :old-index old-index})))
 
-(defn start-move-anim
-  "Creates and starts a move animation. The actual from-offset is set
-   after layout in a post-frame callback. Returns anim-state map."
-  [vsync config ^w/Offset from-offset on-complete]
-  (when-let [move-config (:move config)]
-    (let [^a/AnimationController ctrl (create-controller vsync (:duration move-config))
-          ^a/CurvedAnimation anim (create-curved-animation ctrl (:curve move-config))]
-      (.addStatusListener ctrl
-        (fn [^a/AnimationStatus status]
-          (when (.-isCompleted status)
-            (on-complete))))
-      (.forward ctrl .from 0.0)
-      {:type :move :controller ctrl :animation anim
-       :from-offset from-offset})))
-
-(defn interrupt-anim
-  "Handles interrupted animation. Returns the current interpolated value
-   that the new animation should start from.
-   For move: returns current offset.
-   For insert/remove: returns current opacity value."
-  [existing-anim]
-  (when existing-anim
-    (let [^a/AnimationController ctrl (:controller existing-anim)
-          ^double value (.-value ctrl)]
-      (case (:type existing-anim)
-        :move (when-let [from (:from-offset existing-anim)]
-                (w/Offset.lerp from w/Offset.zero value))
-        :insert value
-        :remove value
-        nil))))
-
 (defn dispose-anim
-  "Disposes animation controller."
+  "Disposes an anim-state's controller and curved animation."
   [anim-state]
   (when-let [^a/AnimationController ctrl (:controller anim-state)]
     (.dispose ^a/CurvedAnimation (:animation anim-state))
     (.dispose ctrl)))
 
-(defn dispose-all-anims
-  "Disposes all active animations."
-  [active-anims]
+(defn dispose-all-anims [active-anims]
   (doseq [[_ anim] active-anims]
     (dispose-anim anim)))
 
-;; --- Transition Builders ---
+;; --- Insert / Remove transitions ---
 
-(defn default-insert-transition
-  "Default insert animation: size grow + fade-in."
-  [^a/Animation animation ^w/Widget child]
+(defn- ^w/Axis scroll-axis
+  "Scroll axis of the enclosing scrollable — size transitions must collapse
+   along the main axis, which isn't always vertical."
+  [^w/BuildContext ctx]
+  (if-let [^w/ScrollableState s (w/Scrollable.maybeOf ctx)]
+    (w/axisDirectionToAxis (.-axisDirection (.-position s)))
+    w/Axis.vertical))
+
+(defn- default-inout-transition
+  [^a/Animation animation ^w/Axis axis ^w/Widget child]
   (w/SizeTransition
    .sizeFactor animation
-   .child (w/FadeTransition
-           .opacity animation
-           .child child)))
-
-(defn default-remove-transition
-  "Default remove animation: fade-out + size collapse."
-  [^a/Animation animation ^w/Widget child]
-  (w/SizeTransition
-   .sizeFactor animation
-   .child (w/FadeTransition
-           .opacity animation
-           .child child)))
+   .axis axis
+   .child (w/FadeTransition .opacity animation .child child)))
 
 (defn wrap-with-insert-transition
-  "Wraps child with insert transition based on config."
-  [config anim-state ^w/Widget child]
-  (let [^a/Animation animation (:animation anim-state)
-        custom-builder (get-in config [:insert :builder])]
-    (if custom-builder
-      (custom-builder child animation)
-      (default-insert-transition animation child))))
+  "Wraps child with the insert transition (custom :builder or size+fade)."
+  [config anim-state ^w/BuildContext ctx ^w/Widget child]
+  (let [^a/Animation animation (:animation anim-state)]
+    (if-let [custom (get-in config [:insert :builder])]
+      (custom child animation)
+      (default-inout-transition animation (scroll-axis ctx) child))))
 
 (defn wrap-with-remove-transition
-  "Wraps child with remove transition based on config."
-  [config anim-state ^w/Widget child]
-  (let [^a/Animation animation (:animation anim-state)
-        custom-builder (get-in config [:remove :builder])]
-    (if custom-builder
-      (custom-builder child animation)
-      (default-remove-transition animation child))))
+  "Wraps child with the remove transition (custom :builder or size+fade)."
+  [config anim-state ^w/BuildContext ctx ^w/Widget child]
+  (let [^a/Animation animation (:animation anim-state)]
+    (if-let [custom (get-in config [:remove :builder])]
+      (custom child animation)
+      (default-inout-transition animation (scroll-axis ctx) child))))
 
-(defn wrap-with-move-transition
-  "Wraps child with move transition (Transform.translate animated from delta to zero)."
-  [anim-state ^w/Widget child]
-  (let [^a/Animation animation (:animation anim-state)
-        ^w/Offset from-offset (:from-offset anim-state)]
-    (w/AnimatedBuilder
-     .animation animation
-     .child child
-     .builder (fn [^w/BuildContext _ ^w/Widget? child]
-                (let [^double t (.-value animation)
-                      ^w/Offset offset (w/Offset.lerp from-offset w/Offset.zero t)]
-                  (w/Transform.translate
-                   .offset offset
-                   .child child))))))
+;; --- Move: position-capture render proxy ---
+
+(deftype MoveRender
+  [^:mutable ^w/Offset? pendingFrom  ;; visual position captured before a change
+   ^:mutable ^w/Offset? fromDelta    ;; translation the child animates away from
+   ^:mutable ^double progress        ;; curved 0..1; 1 = settled
+   ^:mutable onStart]                ;; provided by MoveLayerState; starts the controller
+  :extends r/RenderProxyBox
+
+  (paint [this ^r/PaintingContext ctx ^w/Offset offset]
+    ;; consume a pending capture: first paint after relayout knows both
+    ;; the old (captured) and new (current) positions
+    (when-let [^w/Offset from (.-pendingFrom this)]
+      (.-pendingFrom! this nil)
+      (when (.-hasSize this)
+        (let [^w/Offset cur (.localToGlobal this w/Offset.zero)
+              ^double dx (- (.-dx from) (.-dx cur))
+              ^double dy (- (.-dy from) (.-dy cur))]
+          (when (> (+ (* dx dx) (* dy dy)) 0.25)
+            (.-fromDelta! this (w/Offset dx dy))
+            (.-progress! this 0.0)
+            (when-let [f (.-onStart this)] (f))))))
+    (let [^w/Offset? from (.-fromDelta this)
+          child (.-child this)]
+      (when child
+        (if (and from (< (.-progress this) 1.0))
+          (let [^double k (- 1.0 (.-progress this))]
+            (.paintChild ctx ^r/RenderBox child
+                         (w/Offset (+ (.-dx offset) (* (.-dx ^w/Offset from) k))
+                                   (+ (.-dy offset) (* (.-dy ^w/Offset from) k)))))
+          (.paintChild ctx ^r/RenderBox child offset)))))
+
+  (hitTestChildren [this ^r/BoxHitTestResult result ^w/Offset .position]
+    (let [child (.-child this)
+          ^w/Offset? from (.-fromDelta this)]
+      (cond
+        (nil? child) false
+
+        (and from (< (.-progress this) 1.0))
+        (let [^double k (- 1.0 (.-progress this))
+              d (w/Offset (* (.-dx ^w/Offset from) k) (* (.-dy ^w/Offset from) k))]
+          (.addWithPaintOffset result
+           .offset d
+           .position position
+           .hitTest (fn [^r/BoxHitTestResult res ^w/Offset pos]
+                      (.hitTest ^r/RenderBox child res .position pos))))
+
+        :else (.hitTest ^r/RenderBox child result .position position)))))
+
+(defn- ^w/Offset visual-position
+  "Current on-screen position of a proxy, including any in-flight translation
+   — so interrupted moves are captured where the user sees them."
+  [^MoveRender rr]
+  (let [^w/Offset base (.localToGlobal rr w/Offset.zero)]
+    (if-let [^w/Offset d (.-fromDelta rr)]
+      (let [^double k (- 1.0 (.-progress rr))]
+        (w/Offset (+ (.-dx base) (* (.-dx d) k))
+                  (+ (.-dy base) (* (.-dy d) k))))
+      base)))
+
+(defn capture-positions!
+  "Records the visual position of every registered move proxy. Call right
+   before a change that will relayout items; the next paint animates each
+   moved item from its recorded position."
+  [registry]
+  (doseq [[_ ^MoveRender rr] @registry]
+    (when (and (.-attached rr) (.-hasSize rr))
+      (.-pendingFrom! rr (visual-position rr))
+      ;; ensure a paint happens even for items whose subtree didn't repaint,
+      ;; so stale captures are consumed this frame, not on a random later one
+      (.markNeedsPaint rr))))
+
+(deftype ^:private MoveRenderWidget [attach ^w/Widget? childW]
+  :extends (w/SingleChildRenderObjectWidget .child childW)
+
+  (createRenderObject [_this ^w/BuildContext _context]
+    (let [rr (MoveRender nil nil 1.0 nil)]
+      (attach rr)
+      rr))
+
+  (updateRenderObject [_this ^w/BuildContext _context render-object]
+    (attach render-object)
+    nil))
+
+(declare MoveLayerState)
+
+(deftype MoveLayer
+  [itemKey     ;; identity key; registry entry name
+   registry    ;; atom {key -> MoveRender}, owned by the collection state
+   ^dc/Duration duration
+   ^a/Curve curve
+   ^w/Widget childW]
+  :extends (w/StatefulWidget)
+
+  (createState [_this] (MoveLayerState nil nil)))
+
+(deftype MoveLayerState
+  [^:mutable ^a/AnimationController? ctrl
+   ^:mutable ^MoveRender? rr]
+  :extends (#/(w/State MoveLayer))
+  ^:mixin #/(w/SingleTickerProviderStateMixin MoveLayer)
+
+  (initState [^MoveLayerState this]
+    (.initState ^super this)
+    (let [^MoveLayer wgt (.-widget this)
+          c (a/AnimationController .vsync this
+                                   .duration (.-duration wgt)
+                                   .value 1.0)]
+      (.addListener c
+        (fn []
+          (when-let [^MoveRender r (.-rr this)]
+            (.-progress! r (.transform ^a/Curve (.-curve ^MoveLayer (.-widget this))
+                                       (.-value c)))
+            (when (.-attached r)
+              (.markNeedsPaint r)))))
+      (.addStatusListener c
+        (fn [^a/AnimationStatus status]
+          (when (.-isCompleted status)
+            (when-let [^MoveRender r (.-rr this)]
+              (.-fromDelta! r nil)))))
+      (.-ctrl! this c))
+    nil)
+
+  (didUpdateWidget [^MoveLayerState this ^MoveLayer old]
+    (.didUpdateWidget ^super this old)
+    (let [^MoveLayer wgt (.-widget this)]
+      (.-duration! ^a/AnimationController (.-ctrl this) (.-duration wgt))
+      (when-let [r (.-rr this)]
+        (when (not= (.-itemKey old) (.-itemKey wgt))
+          (swap! (.-registry old) dissoc (.-itemKey old)))
+        (swap! (.-registry wgt) assoc (.-itemKey wgt) r)))
+    nil)
+
+  (dispose [^MoveLayerState this]
+    (let [^MoveLayer wgt (.-widget this)]
+      (when-let [r (.-rr this)]
+        (when (identical? r (get @(.-registry wgt) (.-itemKey wgt)))
+          (swap! (.-registry wgt) dissoc (.-itemKey wgt)))))
+    (.dispose ^a/AnimationController (.-ctrl this))
+    (.dispose ^super this))
+
+  (^w/Widget build [^MoveLayerState this ^w/BuildContext _ctx]
+    (let [^MoveLayer wgt (.-widget this)]
+      (MoveRenderWidget
+       (fn [^MoveRender r]
+         (.-rr! this r)
+         ;; controller can't start during paint (markNeedsPaint would assert),
+         ;; so the proxy paints the full delta this frame and animation begins
+         ;; on the next one
+         (.-onStart! r
+           (fn []
+             (.addPostFrameCallback w/WidgetsBinding.instance
+               (fn [_]
+                 (when (.-mounted this)
+                   (.forward ^a/AnimationController (.-ctrl this) .from 0.0))
+                 nil))))
+         (swap! (.-registry wgt) assoc (.-itemKey wgt) r))
+       (.-childW wgt)))))
+
+(defn ^w/Widget move-layer
+  "Wraps a live item so relayout-induced position changes animate.
+   `move-config` is the parsed :move section of the animation config."
+  [registry item-key move-config ^w/Widget child]
+  (MoveLayer item-key registry
+             (:duration move-config)
+             (:curve move-config)
+             child))
 
 ;; --- Shadow Data ---
 ;;
 ;; Shadow-data merges live data + dying items into a single vec.
 ;; Each entry: {:type :live, :key k, :data-index i}
 ;;          or {:type :dying, :key k, :item item, :controller ctrl, :animation anim}
-;; This is the single source of truth for childCount, builder, and findChildIndexCallback.
+;; It is the single source of truth for childCount, the builder, and
+;; findChildIndexCallback while remove animations play.
 
 (defn build-shadow-data
   "Merges new-data (live items) with dying items into a unified shadow vec.
-   Dying items are inserted at their old-index positions (clamped).
-   Returns vec of {:type :live/:dying ...} entries."
+   Dying items are inserted at their old-index positions (clamped)."
   [new-data key-fn dying-items]
   (let [live (mapv (fn [i item] {:type :live :key (key-fn item) :data-index i})
                    (range (count new-data)) new-data)]
     (if (empty? dying-items)
       live
-      ;; Insert dying items from highest old-index to lowest
-      ;; so earlier insertions don't shift later ones
+      ;; insert from highest old-index to lowest so earlier insertions
+      ;; don't shift later ones
       (let [sorted (sort-by :old-index > dying-items)]
         (reduce
          (fn [v dying]
@@ -216,6 +326,6 @@
          sorted)))))
 
 (defn shadow-key->index
-  "Builds {key -> shadow-index} map from shadow-data."
+  "Builds {key -> shadow-index} from shadow-data."
   [shadow-data]
   (into {} (map-indexed (fn [i entry] [(:key entry) i]) shadow-data)))

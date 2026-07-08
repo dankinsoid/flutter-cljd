@@ -4,8 +4,11 @@
    [flutter-cljd.widgets :as ui]
    [flutter-cljd.utils :as ut]
    [flutter-cljd.shader :as shader]
+   [flutter-cljd.internal.collection.layout :as clay]
    [cljd.flutter :as f]
    [clojure.string :as str]
+   ["dart:async" :as da]
+   ["dart:core" :as dc]
    ["dart:math" :as math]
    ["dart:ui" :as dart-ui]
    ["package:flutter/cupertino.dart" :as c]
@@ -297,6 +300,135 @@
     20
     (fn [_ i]
       (color-tile (str "More " i) (nth colors (mod (+ i 3) (count colors))) 64)))))
+
+;; ====== 8a. WRAP LAYOUT ======
+
+(def ^:private tag-words
+  ["clojure" "dart" "flutter" "sliver" "layout" "wrap" "masonry" "grid"
+   "virtualized" "lazy" "geometry" "cache" "anchor" "scroll" "flow" "ui"])
+
+(defn wrap-layout-preview []
+  (ui/custom-scroll-view
+   (ui/sliver-padding 8
+    (ui/sliver-collection
+     120
+     :layout :wrap
+     :spacing 8
+     :run-spacing 8
+     (fn [_ i]
+       (->> (ui/text (str (nth tag-words (mod i (count tag-words))) "-" i)
+                     {:size (+ 12.0 (* 4 (mod i 3))) :color :white})
+            (ui/padding {:h 10 :v 6})
+            (ui/clip-corners :all 12)
+            (ui/colored (nth colors (mod i (count colors))))))))))
+
+;; ====== 8b. MASONRY LAYOUT ======
+
+(defn masonry-layout-preview []
+  (ui/custom-scroll-view
+   (ui/sliver-padding 8
+    (ui/sliver-collection
+     100
+     :layout :masonry
+     :cross-axis-count 3
+     :cross-axis-spacing 8
+     :main-axis-spacing 8
+     (fn [_ i]
+       ;; deterministic pseudo-random heights
+       (color-tile (str i)
+                   (nth colors (mod i (count colors)))
+                   (+ 60.0 (* 20 (mod (* i 7) 6)))))))))
+
+;; ====== 8c. CUSTOM LAYOUT (user-defined flow) ======
+;; Staircase: items at 60% width, alternating left/right, overlapping by 30%.
+;; Shows the full custom-layout contract in a handful of lines.
+
+(def ^:private stair-layout
+  {:id [:stair]
+   :init (fn [_env] 0.0)
+   :measure (fn [env _i]
+              (let [^double cw (* 0.6 ^double (:cross-extent env))]
+                (clay/main-loose-constraints env cw cw)))
+   :place (fn [env i size ^double offset]
+            [{:offset offset
+              :cross (if (even? ^int i) 0.0 (* 0.4 ^double (:cross-extent env)))}
+             (+ offset (* 0.7 (clay/size-main env size)))])
+   :flow-end (fn [_env ^double state] state)
+   :anchor (fn [_env _i ^double offset] offset)})
+
+(defn custom-layout-preview []
+  (ui/custom-scroll-view
+   (ui/sliver-to-box-adapter
+    (->> (ui/text "Custom :layout map — staircase flow with overlap"
+                  {:size 12 :color :grey})
+         (ui/padding 8)))
+   (ui/sliver-padding 8
+    (ui/sliver-collection
+     60
+     :layout stair-layout
+     (fn [_ i]
+       (color-tile (str "Step " i) (nth colors (mod i (count colors))) 96))))))
+
+;; ====== 8d. SOAK — auto-exercising stress scene ======
+;; Scrolls up and down and mutates the data on a timer while cycling layouts;
+;; smoke-tests the collection engine (cache, GC, corrections, animations).
+
+(defn soak-preview []
+  (f/widget
+   :watch [items (atom (vec (map #(make-item % (str "Item " %)) (range 60)))) :as $items
+           next-id (atom 60) :as $next-id
+           tick (atom 0) :as $tick]
+   :managed [^w/ScrollController controller (w/ScrollController)
+             _timer (da/Timer.periodic
+                     (dc/Duration .milliseconds 700)
+                     (fn [_]
+                       (let [t (swap! $tick inc)]
+                         (when (.-hasClients controller)
+                           (let [^double mx (.-maxScrollExtent (.-position controller))]
+                             (.animateTo controller
+                                         (if (even? (quot t 3)) mx 0.0)
+                                         .duration (dc/Duration .milliseconds 600)
+                                         .curve w/Curves.easeInOut)))
+                         (case (int (mod t 4))
+                           0 (let [id @$next-id]
+                               (swap! $next-id inc)
+                               (swap! $items #(vec (cons (make-item id (str "New " id)) %))))
+                           1 (when (> (count @$items) 12)
+                               (let [i (rand-int (count @$items))]
+                                 (swap! $items #(vec (concat (subvec % 0 i)
+                                                             (subvec % (inc i)))))))
+                           2 (swap! $items shuffle)
+                           3 nil))))
+             :dispose .cancel]
+   (let [layout (case (int (mod (quot tick 6) 4))
+                  0 :list 1 :wrap 2 :masonry 3 :grid)]
+     (ui/column
+      :cross-axis-alignment :stretch
+      (->> (ui/text (str "soak · " (name layout) " · tick " tick
+                         " · items " (count items))
+                    {:size 12 :color :grey})
+           (ui/padding 8))
+      (->> (ui/custom-scroll-view
+            :controller controller
+            (ui/sliver-padding 8
+             (ui/sliver-collection
+              items
+              :key-fn :id
+              :animate true
+              :layout layout
+              :cross-axis-count 3
+              :spacing 6
+              :run-spacing 6
+              :cross-axis-spacing 6
+              :main-axis-spacing 6
+              (fn [_ item]
+                (->> (ui/text (:label item) {:size 13 :weight :bold :color :white})
+                     (ui/center)
+                     (ui/sized :h (+ 40.0 (* 14 (mod (:id item) 4))))
+                     (ui/clip-corners :all 8)
+                     (ui/colored (nth colors (mod (:id item) (count colors))))
+                     (ui/padding 2))))))
+           (ui/expanded))))))
 
 ;; ====== 9. GRADIENT COLOR SPACES ======
 
@@ -615,6 +747,10 @@
    ["Reorder"    reorder-preview]
    ["Offset Fix" offset-correction-preview]
    ["Mixed"      mixed-layouts-preview]
+   ["Wrap"       wrap-layout-preview]
+   ["Masonry"    masonry-layout-preview]
+   ["Custom"     custom-layout-preview]
+   ["Soak"       soak-preview]
    ["Gradients"  gradient-color-page]
    ["Chroma"     gradient-comparison]
    ["Alpha"      alpha-gradient-page]])

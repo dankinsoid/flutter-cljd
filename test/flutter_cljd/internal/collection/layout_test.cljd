@@ -1,0 +1,165 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.layout-test
+  (:require [clojure.test :refer [deftest is testing]]
+            ["dart:ui" :as ui]
+            ["package:flutter/rendering.dart" :as r]
+            [flutter-cljd.internal.collection.layout :as lay]
+            [flutter-cljd.internal.collection.diff :as diff]
+            [flutter-cljd.internal.collection.animation :as an]))
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(def ^:private venv {:axis :vertical :cross-extent 300.0 :item-count 100})
+
+(defn- place-all
+  "Runs a flow layout's place chain over sizes; returns geometries with the
+   state after each placement attached as :state."
+  [layout env sizes]
+  (loop [i 0
+         state ((:init layout) env)
+         acc []]
+    (if (< i (count sizes))
+      (let [[gm state'] ((:place layout) env i (nth sizes i) state)]
+        (recur (inc i) state' (conj acc (assoc gm :state state'))))
+      acc)))
+
+;; --- list ---
+
+(deftest list-layout-flow
+  (let [l (lay/list-layout {:spacing 10})
+        geoms (place-all l venv [(ui/Size 300 50) (ui/Size 300 80) (ui/Size 300 20)])]
+    (testing "items stack with spacing"
+      (is (close? 0 (:offset (nth geoms 0))))
+      (is (close? 60 (:offset (nth geoms 1))))
+      (is (close? 150 (:offset (nth geoms 2))))
+      (is (every? #(close? 0 (:cross %)) geoms)))
+    (testing "flow-end is the next free offset"
+      (is (close? 180 ((:flow-end l) venv (:state (nth geoms 2))))))
+    (testing "anchor state is the raw offset"
+      (is (close? 500 ((:anchor l) venv 7 500.0))))))
+
+(deftest list-layout-estimate
+  (let [l (lay/list-layout {:item-extent 48})]
+    (testing "fixed extent gives an exact total"
+      (is (close? (* 48 100) ((:estimate l) venv 5 288.0 100))))
+    (testing "spacing is counted between items only"
+      (let [l (lay/list-layout {:item-extent 48 :spacing 2})]
+        (is (close? (- (* 50 100) 2) ((:estimate l) venv 5 288.0 100)))))))
+
+;; --- wrap ---
+
+(deftest wrap-layout-flow
+  (let [l (lay/wrap-layout {:spacing 10 :run-spacing 6})
+        ;; cross-extent 300; items 100 wide → 0 and 110 fit, 220+100 > 300 wraps
+        geoms (place-all l venv [(ui/Size 100 50) (ui/Size 100 80) (ui/Size 100 20)])]
+    (testing "packs a run until the cross axis runs out"
+      (is (close? 0 (:cross (nth geoms 0))))
+      (is (close? 110 (:cross (nth geoms 1))))
+      (is (close? 0 (:offset (nth geoms 0))))
+      (is (close? 0 (:offset (nth geoms 1)))))
+    (testing "new run starts below the tallest item plus run-spacing"
+      (is (close? 0 (:cross (nth geoms 2))))
+      (is (close? 86 (:offset (nth geoms 2)))))
+    (testing "flow-end is the current run's start"
+      (is (close? 86 ((:flow-end l) venv (:state (nth geoms 2))))))
+    (testing "anchor restarts a run at the given offset"
+      (let [st ((:anchor l) venv 40 300.0)
+            [gm _] ((:place l) venv 40 (ui/Size 100 50) st)]
+        (is (close? 300 (:offset gm)))
+        (is (close? 0 (:cross gm)))))))
+
+;; --- masonry ---
+
+(deftest masonry-layout-flow
+  (let [env (assoc venv :cross-extent 320.0)
+        l (lay/masonry-layout {:cross-axis-count 3 :cross-axis-spacing 10})
+        ;; column width (320 - 20) / 3 = 100
+        geoms (place-all l env [(ui/Size 100 100) (ui/Size 100 50)
+                                (ui/Size 100 30) (ui/Size 100 40)])]
+    (testing "first items fill empty columns left to right"
+      (is (close? 0 (:cross (nth geoms 0))))
+      (is (close? 110 (:cross (nth geoms 1))))
+      (is (close? 220 (:cross (nth geoms 2))))
+      (is (every? #(close? 0 (:offset %)) (take 3 geoms))))
+    (testing "next item lands in the shortest column"
+      (is (close? 220 (:cross (nth geoms 3))))
+      (is (close? 30 (:offset (nth geoms 3)))))
+    (testing "flow-end is the shortest column height"
+      (is (close? 50 ((:flow-end l) env (:state (nth geoms 3))))))
+    (testing "anchor levels all columns at the offset"
+      (is (= [7.0 7.0 7.0] ((:anchor l) env 3 7.0))))))
+
+;; --- grid (indexed) ---
+
+(defn- ^r/SliverConstraints sliver-constraints [^double cross ^double main]
+  (r/SliverConstraints
+   .axisDirection r/AxisDirection.down
+   .growthDirection r/GrowthDirection.forward
+   .userScrollDirection r/ScrollDirection.idle
+   .scrollOffset 0.0
+   .precedingScrollExtent 0.0
+   .overlap 0.0
+   .remainingPaintExtent main
+   .crossAxisExtent cross
+   .crossAxisDirection r/AxisDirection.right
+   .viewportMainAxisExtent main
+   .remainingCacheExtent main
+   .cacheOrigin 0.0))
+
+(deftest grid-layout-indexed
+  (let [l (lay/resolve-layout :grid {:cross-axis-count 3 :main-axis-extent 50})
+        env0 (assoc (lay/make-env (sliver-constraints 300.0 600.0) 10) :item-count 10)
+        env (assoc env0 :ctx ((:prepare l) env0))]
+    (testing "is an indexed layout"
+      (is (some? (:geometry l))))
+    (testing "geometry is row-major math"
+      (let [g3 ((:geometry l) env 3)
+            g4 ((:geometry l) env 4)]
+        (is (close? 50 (:offset g3)))
+        (is (close? 0 (:cross g3)))
+        (is (close? 100 (:cross g4)))
+        (is (close? 50 (:main-extent g3)))
+        (is (close? 100 (:cross-extent g3)))))
+    (testing "index range and total extent"
+      (is (= 3 ((:first-index l) env 50.0)))
+      (is (close? 200 ((:max-extent l) env 10))))))
+
+(deftest resolve-layout-dispatch
+  (testing "custom layout maps pass through untouched"
+    (let [custom {:id [:x] :init identity}]
+      (is (identical? custom (lay/resolve-layout custom {})))))
+  (testing "keywords build the matching built-ins"
+    (is (= :list (first (:id (lay/resolve-layout :list {})))))
+    (is (= :wrap (first (:id (lay/resolve-layout :wrap {})))))
+    (is (= :masonry (first (:id (lay/resolve-layout :masonry {})))))
+    (is (some? (:geometry (lay/resolve-layout :grid {:cross-axis-count 2}))))))
+
+;; --- diff ---
+
+(deftest diff-inserts-and-removes
+  (let [d (diff/compute-diff [{:id 1} {:id 2} {:id 3}]
+                             [{:id 2} {:id 3} {:id 4}]
+                             :id)]
+    (is (= [{:key 4 :new-index 2}] (:inserts d)))
+    (is (= [{:key 1 :old-index 0 :item {:id 1}}] (:removes d))))
+  (testing "reorder alone produces no inserts or removes"
+    (let [d (diff/compute-diff [{:id 1} {:id 2}] [{:id 2} {:id 1}] :id)]
+      (is (empty? (:inserts d)))
+      (is (empty? (:removes d))))))
+
+;; --- shadow data ---
+
+(deftest shadow-data-merge
+  (let [dying [{:key :b :old-index 1 :item {:id :b}}]
+        shadow (an/build-shadow-data [{:id :a} {:id :c}] :id dying)]
+    (testing "dying items occupy their old slots between live ones"
+      (is (= [:a :b :c] (mapv :key shadow)))
+      (is (= [:live :dying :live] (mapv :type shadow))))
+    (testing "live entries keep data indices"
+      (is (= [0 nil 1] (mapv :data-index shadow))))
+    (testing "key->index covers both kinds"
+      (is (= {:a 0 :b 1 :c 2} (an/shadow-key->index shadow)))))
+  (testing "dying old-index beyond the end clamps"
+    (let [shadow (an/build-shadow-data [{:id :a}] :id
+                                       [{:key :z :old-index 9 :item {:id :z}}])]
+      (is (= [:a :z] (mapv :key shadow))))))
