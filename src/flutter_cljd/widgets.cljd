@@ -2443,7 +2443,9 @@ Grid options:
 Data/collection options: `:item-count`, `:key-fn`, `:animate`, `:on-prefetch`,
 `:prefetch-distance`, `:auto-keep-alive` — see `sliver-collection`.
 
-Scroll options: `:controller`, `:primary`, `:physics`, `:shrink-wrap`,
+Scroll options: `:controller`, `:primary`, `:physics`, `:shrink-wrap`
+(size the scroll view to its content — the grid takes only the height it
+needs and scrolls once it overflows; forces the stack `:fit` to `:content`),
 `:padding`, `:clip`, `:cache-extent`. (`:axis`/`:reverse` are gone — `:flow`
 covers both.)"
   [& args]

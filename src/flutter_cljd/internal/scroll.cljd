@@ -176,6 +176,10 @@
 (defn ^m/Widget grid-view* [raw-args]
   (let [[args source builder children] (parse-grid-args raw-args)
         normalized (grid-opts/scroll-normalize (grid-opts/parse args) (:anchor args))
+        ;; a shrink-wrapping viewport is content-sized by definition — a :fill
+        ;; stack would ask it for "remaining space" it doesn't have
+        normalized (cond-> normalized
+                     (:shrink-wrap args) (assoc :stack-fit :content))
         item-count (cond
                      (int? source) (int source)
                      source (count source)
