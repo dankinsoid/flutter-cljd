@@ -2286,7 +2286,7 @@ builder `(fn [ctx status])`, where `status` is a map:
 Options:
 
 - `:data` — payload delivered to `drag-target` on drop
-- `:feedback` — the widget under the pointer while dragging: a widget or a builder `(fn [ctx status])`. Defaults to the child
+- `:feedback` — the widget under the pointer while dragging: a widget or a builder `(fn [ctx status])`. Defaults to the child, frozen at its laid-out size (the overlay imposes no constraints, so without this a child sized by its parent — e.g. a grid cell — would re-layout and shift at drag start); an explicit `:feedback` sizes itself
 - `:placeholder` — what stays in the child's slot while a copy is dragging/flying: a widget or a builder `(fn [ctx status])`. Defaults to a size-preserving empty gap
 - `:delay` — Duration or `:default` (long-press) before drag starts
 - `:axis` — `:horizontal` / `:vertical` to constrain drag direction

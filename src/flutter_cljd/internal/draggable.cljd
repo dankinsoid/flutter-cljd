@@ -328,6 +328,10 @@
                                  (some? fb)  (fn [_ _] fb)
                                  (fn? child) child
                                  :else       (fn [_ _] child))
+              ;; Only the default (child-as-feedback) gets frozen at the child's
+              ;; laid-out size; an explicit :feedback sizes itself.
+              ^w/Size? source-size (when (nil? fb)
+                                     (some-> this .-context .findRenderObject .-size))
               ;; Feedback is mounted under the Overlay, so it loses the inherited
               ;; environment (themes + `with-inherited` bindings) above the draggable.
               ;; Capture it once here; buildWidget re-wraps each rebuild.
@@ -340,6 +344,7 @@
                                   drag-start-point
                                   feedback-builder
                                   wrap-feedback
+                                  source-size
                                   (.-feedbackOffset widget)
                                   (.-catchPoint widget)
                                   (fn [details ^w/Offset offset]
@@ -430,6 +435,12 @@
                      ;; on stage/hover changes; wrapFeedback re-injects captured themes.
                      feedbackBuilder
                      wrapFeedback
+                     ;; Laid-out size of the in-place child at drag start, or nil when an
+                     ;; explicit :feedback was given. The overlay imposes loose constraints,
+                     ;; so an unconstrained default feedback would re-layout to its intrinsic
+                     ;; size and visually jump if the parent (e.g. a grid cell) had sized the
+                     ;; child wider; tightening to this size keeps it pixel-identical.
+                     ^w/Size? sourceSize
                      ^w/Offset feedbackOffset
                      catchPoint
                      onDragUpdate
@@ -677,7 +688,10 @@
     (.-context! this context)
     (let [^bool over-target? (some? (.-activeTarget this))
           raw ((.-feedbackBuilder this) context {:stage (.-stage this) :over-target? over-target?})
-          ^w/Widget feedback ((.-wrapFeedback this) raw)]
+          ^w/Widget feedback ((.-wrapFeedback this) raw)
+          ^w/Widget feedback (if-let [^w/Size size (.-sourceSize this)]
+                               (w/SizedBox.fromSize .size size .child feedback)
+                               feedback)]
     (w/AnimatedBuilder
      .animation (.-controller this)
      .child (w/ExcludeSemantics
