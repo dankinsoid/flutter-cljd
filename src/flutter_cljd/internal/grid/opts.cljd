@@ -56,9 +56,13 @@
     (= align far) (if (= start-side far) :start :end)
     :else (throw (Exception. (str "grid: invalid " who " align " align
                                   " — expected " near "/" far
-                                  "/:center/:space-between/:space-around/:space-evenly")))))
+                                  "/:center/:space-between/:space-around/:space-evenly"
+                                  (when (#{:left :right :top :bottom} align)
+                                    (str "; " align " is a side of the other axis")))))))
 
 (defn- sides [axis] (if (= :x axis) [:left :right] [:top :bottom]))
+
+(defn- axis-name [axis] (if (= :x axis) ":columns" ":rows"))
 
 ;; content packs toward the side a flow direction departs from
 (def ^:private origin-side {:right :left, :left :right, :down :top, :up :bottom})
@@ -123,9 +127,9 @@
         [sn sf] (sides stack-axis)
         ;; default: hug the flow origin
         fill-align (align->internal (or (:align fill-spec) (origin-side fill-dir))
-                                    fn- ff fn- ":columns/:rows")
+                                    fn- ff fn- (axis-name fill-axis))
         stack-align (align->internal (or (:align stack-spec) (origin-side stack-dir))
-                                     sn sf sn ":columns/:rows")
+                                     sn sf sn (axis-name stack-axis))
         line-align* (align->internal (or line-align (origin-side fill-dir))
                                      fn- ff fn- ":line-align")]
     (assoc (geometry-opts parsed fill-align stack-align line-align* fill-mirror)
@@ -163,9 +167,9 @@
         ;; block placement defaults follow the ORIGINAL flow (remap must not
         ;; move blocks, only the within-line order it reversed)
         fill-align (align->internal (or (:align fill-spec) (origin-side fill-dir))
-                                    fn- ff fn- ":columns/:rows")
+                                    fn- ff fn- (axis-name fill-axis))
         stack-align (align->internal (or (:align stack-spec) (origin-side stack-dir))
-                                     sn sf stack-start ":columns/:rows")
+                                     sn sf stack-start (axis-name stack-axis))
         line-align* (align->internal (or line-align (origin-side fill-dir))
                                      fn- ff fn- ":line-align")]
     {:scroll-axis (if (= :y stack-axis) :vertical :horizontal)
