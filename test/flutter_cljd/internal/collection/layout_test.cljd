@@ -107,7 +107,7 @@
    .cacheOrigin 0.0))
 
 (deftest grid-layout-indexed
-  (let [l (lay/resolve-layout :grid {:cross-axis-count 3 :main-axis-extent 50})
+  (let [l (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})
         env0 (assoc (lay/make-env (sliver-constraints 300.0 600.0) 10) :item-count 10)
         env (assoc env0 :ctx ((:prepare l) env0))]
     (testing "is an indexed layout"
@@ -132,7 +132,10 @@
     (is (= :list (first (:id (lay/resolve-layout :list {})))))
     (is (= :wrap (first (:id (lay/resolve-layout :wrap {})))))
     (is (= :masonry (first (:id (lay/resolve-layout :masonry {})))))
-    (is (some? (:geometry (lay/resolve-layout :grid {:cross-axis-count 2}))))))
+    (is (some? (:geometry (lay/resolve-layout :grid {:columns 2})))))
+  (testing "reversing flows need the scroll view — grid-view's job"
+    (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :flow [:right :up]})))
+    (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :anchor :end})))))
 
 ;; --- diff ---
 

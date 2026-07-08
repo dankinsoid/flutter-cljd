@@ -58,9 +58,8 @@
    (ui/sliver-collection
     60
     :layout :grid
-    :cross-axis-count 3
-    :main-axis-spacing 4
-    :cross-axis-spacing 4
+    :columns {:count 3 :gap 4}
+    :rows {:size {:aspect 1} :gap 4}
     (fn [_ i]
       (color-tile i (nth colors (mod i (count colors))) 80)))))
 
@@ -148,9 +147,8 @@
         :key-fn :id
         :animate true
         :layout :grid
-        :cross-axis-count 4
-        :main-axis-spacing 4
-        :cross-axis-spacing 4
+        :columns {:count 4 :gap 4}
+        :rows {:size {:aspect 1} :gap 4}
         (fn [_ item]
           (->> (ui/text (:label item) {:size 18 :weight :bold :color :white})
                (ui/center)
@@ -286,9 +284,8 @@
     (ui/sliver-collection
      12
      :layout :grid
-     :cross-axis-count 3
-     :main-axis-spacing 4
-     :cross-axis-spacing 4
+     :columns {:count 3 :gap 4}
+     :rows {:size {:aspect 1} :gap 4}
      (fn [_ i]
        (color-tile i (nth colors (mod i (count colors))) 80))))
    ;; Header
@@ -411,23 +408,25 @@
       (->> (ui/custom-scroll-view
             :controller controller
             (ui/sliver-padding 8
-             (ui/sliver-collection
+             (apply ui/sliver-collection
               items
               :key-fn :id
               :animate true
               :layout layout
-              :cross-axis-count 3
-              :spacing 6
-              :run-spacing 6
-              :cross-axis-spacing 6
-              :main-axis-spacing 6
-              (fn [_ item]
-                (->> (ui/text (:label item) {:size 13 :weight :bold :color :white})
-                     (ui/center)
-                     (ui/sized :h (+ 40.0 (* 14 (mod (:id item) 4))))
-                     (ui/clip-corners :all 8)
-                     (ui/colored (nth colors (mod (:id item) (count colors))))
-                     (ui/padding 2))))))
+              (concat
+               ;; the grid rejects foreign layout options, so pick per layout
+               (case layout
+                 :grid [:columns {:count 3 :gap 6} :rows {:size 60 :gap 6}]
+                 :masonry [:cross-axis-count 3 :cross-axis-spacing 6 :main-axis-spacing 6]
+                 :wrap [:spacing 6 :run-spacing 6]
+                 [:spacing 6])
+               [(fn [_ item]
+                  (->> (ui/text (:label item) {:size 13 :weight :bold :color :white})
+                       (ui/center)
+                       (ui/sized :h (+ 40.0 (* 14 (mod (:id item) 4))))
+                       (ui/clip-corners :all 8)
+                       (ui/colored (nth colors (mod (:id item) (count colors))))
+                       (ui/padding 2)))]))))
            (ui/expanded))))))
 
 ;; ====== 9. GRADIENT COLOR SPACES ======
@@ -683,54 +682,54 @@
 (defn flexible-grid-preview []
   (ui/column
    :cross-axis-alignment :stretch
-   ;; BOX host — both axes flexible, non-scrolling; performLayout, item-align,
-   ;; column-major, RTL, main-fit fill
+   ;; BOX host — both axes flexible, non-scrolling; item-align, column fill,
+   ;; RTL, bottom-pinned rows
    (->> (ui/single-child-scroll-view
          (ui/column
           :cross-axis-alignment :stretch
           :spacing 6
           (fg-sec ":item-align :center — 28px in 56px cells"
-                  (ui/grid :max-columns 5 :cross-sizer 56 :main-sizer 56 :cross-gap 6 :main-gap 6
+                  (ui/grid :columns {:count 5 :size 56 :gap 6} :rows {:size 56 :gap 6}
                            :item-align :center
                            (map (fn [i] (->> (ui/text (str i) {:size 11 :color :white})
                                              (ui/center) (ui/sized {:w 28 :h 28})
                                              (ui/clip-corners :all 6) (ui/colored :cyan)))
                                 (range 10))))
-          (fg-sec ":cross-sizer :flex — cells stretch to fill the full width"
-                  (ui/grid :max-columns 4 :cross-sizer :flex :main-sizer 52 :cross-gap 8 :main-gap 8
+          (fg-sec "flex columns — cells stretch to fill the full width"
+                  (ui/grid :columns {:count 4 :gap 8} :rows {:size 52 :gap 8}
                            (map fg-tile (range 7))))
-          (fg-sec ":cross-align :space-between — fixed 48px cols"
-                  (ui/grid :max-columns 4 :cross-sizer 48 :main-sizer 48 :main-gap 8
-                           :cross-align :space-between
+          (fg-sec ":align :space-between — fixed 48px cols"
+                  (ui/grid :columns {:count 4 :size 48 :align :space-between}
+                           :rows {:size 48 :gap 8}
                            (map fg-tile (range 8))))
           (fg-sec ":line-align :center — partial last row centered under the block"
-                  (ui/grid :max-columns 3 :cross-sizer 80 :main-sizer 48 :cross-gap 8 :main-gap 8
-                           :cross-align :center :line-align :center
+                  (ui/grid :columns {:count 3 :size 80 :gap 8 :align :center}
+                           :rows {:size 48 :gap 8} :line-align :center
                            (map fg-tile (range 5))))
-          (fg-sec ":primary :column — numbers run DOWN first"
-                  (ui/grid :max-columns 4 :primary :column :cross-sizer 56 :main-sizer 40
-                           :cross-gap 6 :main-gap 6
+          (fg-sec ":flow [:down :right] — numbers run DOWN first"
+                  (ui/grid :columns {:count 4 :size 56 :gap 6} :rows {:size 40 :gap 6}
+                           :flow [:down :right]
                            (map #(fg-tile % (c/CupertinoColors.activeOrange)) (range 11))))
-          (fg-sec ":cross-dir :end (RTL) — 0 at the right"
-                  (ui/grid :max-columns 4 :cross-sizer 48 :main-sizer 48 :cross-gap 8 :main-gap 8
-                           :cross-dir :end
+          (fg-sec ":flow [:left :down] (RTL) — 0 at the right"
+                  (ui/grid :columns {:count 4 :size 48 :gap 8} :rows {:size 48 :gap 8}
+                           :flow [:left :down]
                            (map fg-tile (range 7))))
-          (fg-sec ":main-fit :fill + :main-align :end (h 140)"
+          (fg-sec ":rows :fit :fill + :align :bottom (h 140)"
                   (ui/sized {:h 140}
-                    (ui/grid :max-columns 3 :cross-sizer 64 :main-sizer 40 :main-gap 8
-                             :main-fit :fill :main-align :end
+                    (ui/grid :columns {:count 3 :size 64}
+                             :rows {:size 40 :gap 8 :align :bottom :fit :fill}
                              (map #(fg-tile % (c/CupertinoColors.activeGreen)) (range 6)))))
           (ui/sized {:h 12})))
         (ui/expanded))
-   ;; SLIVER host — native SliverGrid + our delegate, virtualized
+   ;; SLIVER host — collection-backed, virtualized
    (->> (ui/text "SLIVER · fixed 100px cols, space-between, 60 items, scrolls"
                  {:size 11 :weight :bold :color :white})
         (ui/padding {:h 8 :v 6})
         (ui/colored (c/CupertinoColors.darkBackgroundGray)))
    (ui/sized {:h 200}
      (ui/grid-view (range 60)
-                   :max-columns 3 :cross-sizer 100 :cross-align :space-between
-                   :main-sizer 100 :main-gap 12 :padding 12
+                   :columns {:count 3 :size 100 :align :space-between}
+                   :rows {:size 100 :gap 12} :padding 12
                    (fn [_ i] (fg-tile i))))))
 
 ;; ====== PREVIEW SWITCHER ======

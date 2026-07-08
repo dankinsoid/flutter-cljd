@@ -1,172 +1,56 @@
 ;; @ai-generated(guided)
 (ns flutter-cljd.internal.grid.sliver
-  "Sliver host for the flexible grid — no custom RenderSliver.
+  "Sliver host for the flexible grid — an INDEXED layout map for the
+   sliver-collection engine (see flutter-cljd.internal.collection.layout).
+   No native SliverGrid: virtualization, child management and GC are the
+   collection engine's job; this file only answers per-index geometry, so the
+   grid composes with the engine's animations, prefetch and keep-alive.
 
-   We implement Flutter's own `SliverGridLayout` / `SliverGridDelegate` extension
-   points backed by the pure track solver and feed them to the stock `SliverGrid`.
-   Virtualization, the child manager, garbage collection and paint geometry are all
-   the native `RenderSliverGrid`'s job; this file only answers per-index geometry.
-
-   v1 sizers are uniform per axis, so both axes resolve through the solver's
-   closed-form `solve-uniform` and every answer here is a stride formula — O(1)
-   per layout and per index, regardless of item count. When heterogeneous or
-   self-sized tracks arrive they get a separate table-based layout branch (built
-   on the generic `solve-tracks`); this fast path stays as is.
-
-   Cross axis: flex tracks, min/max, gaps, justify alignment, :cross-dir mirror —
-   resolved against the viewport's crossAxisExtent.
-
-   Main axis: the delegate knows the item count (Flutter doesn't pass it to
-   `getLayout`, but we construct the delegate ourselves), so the total content
-   extent is analytic and the axis gets two modes:
-     :content (default)  sliver occupies exactly its content; flex row sizers and
-                         :main-align are inert (they'd distribute leftover space,
-                         and there is none by definition) — same coercion Flutter
-                         applies to mainAxisAlignment under MainAxisSize.min.
-     :fill               sliver claims the remaining viewport (viewport minus
-                         preceding slivers, SliverFillRemaining-style). When the
-                         content fits, the leftover space feeds :main-align and
-                         flex row/gap sizers; when it doesn't, sizers collapse to
-                         :min and it scrolls like a plain grid.
-
-   Not here by design: column-major fill (would make the visible index range
-   non-contiguous) and main-axis reversal (use the scroll view's `reverse`) — both
-   belong to the box host."
+   The geometry always stacks forward (offsets grow with index) — an upward/
+   leftward stack or `:anchor :end` is realized by the scroll view's `reverse`
+   plus index remapping, both handled in grid-view (see grid.opts/scroll-
+   normalize). The fill axis solves against the sliver's crossAxisExtent; the
+   stack axis solves against content (`:fit :content`, default) or the viewport
+   space remaining after preceding slivers (`:fit :fill`), which is what feeds
+   the stack `:align` and flex line sizers."
   (:require
+   ["dart:math" :as math]
    ["package:flutter/rendering.dart" :as r]
-   ["package:flutter/widgets.dart" :as w]
-   [flutter-cljd.internal.grid.solver :as solver]))
+   [flutter-cljd.internal.grid.geometry :as geo]))
 
-(deftype FlexSliverGridLayout
-  [^int cols
-   ^int rows
-   ^bool flip              ;; cross-dir :end — column c maps to track (cols-1-c)
-   ^double crossLead
-   ^double crossSize
-   ^double crossStride
-   ^double mainLead
-   ^double mainSize
-   ^double mainStride
-   ^double maxScroll
-   lineAlign               ;; per-line justify of the partial last row within the block
-   ^int lastRowCols]       ;; item count in the last row (< cols when partial)
-  :extends r/SliverGridLayout
-
-  (^int getMinChildIndexForScrollOffset [_this ^double scroll-offset]
-    (if (or (zero? rows) (<= mainStride 0.0))
-      0
-      (let [^int row (.floor (/ (- scroll-offset mainLead) mainStride))]
-        (* cols (int (min (dec rows) (max 0 row)))))))
-
-  (^int getMaxChildIndexForScrollOffset [_this ^double scroll-offset]
-    (cond
-      (zero? rows) 0
-      (<= mainStride 0.0) (dec (* cols rows))
-      :else
-      (let [^int row (.ceil (/ (- scroll-offset mainLead) mainStride))
-            ^int clamped (int (min (dec rows) (max 0 row)))]
-        (dec (* cols (inc clamped))))))
-
-  (^r/SliverGridGeometry getGeometryForChildIndex [_this ^int index]
-    (let [^int row (quot index cols)
-          ^int col (rem index cols)
-          ;; :cross-align already placed the track block; :line-align justifies the
-          ;; partial last row's items within it (full rows: residual 0 → no shift)
-          ^int k (if (= row (dec rows)) lastRowCols cols)
-          off (solver/align-offsets lineAlign (* (double (- cols k)) crossStride) k)
-          ^double lo (+ (double (nth off 0)) (* (double col) (+ crossStride (double (nth off 1)))))
-          ^double block (+ (* (double (dec cols)) crossStride) crossSize)
-          ^double cross-off (+ crossLead (if flip (- block lo crossSize) lo))]
-      (r/SliverGridGeometry
-       .scrollOffset (+ mainLead (* (double row) mainStride))
-       .crossAxisOffset cross-off
-       .mainAxisExtent mainSize
-       .crossAxisExtent crossSize)))
-
-  (^double computeMaxScrollOffset [_this ^int _child-count]
-    maxScroll))
-
-(deftype FlexSliverGridDelegate
-  [^int maxColumns
-   ^int itemCount
-   crossSizer
-   crossGap
-   crossAlign
-   crossLineAlign
-   ^bool flip
-   mainSizer
-   mainGap
-   mainAlign
-   ^bool fillMain]
-  :extends r/SliverGridDelegate
-
-  (^r/SliverGridLayout getLayout [_this ^r/SliverConstraints constraints]
-    (let [cols (max 1 (min maxColumns (max itemCount 1)))
-          rows (if (pos? itemCount) (quot (+ itemCount (dec cols)) cols) 0)
-          cross (solver/solve-uniform (.-crossAxisExtent constraints)
-                                      cols crossSizer crossGap crossAlign)
-          ;; :fill distributes the viewport space left after preceding slivers;
-          ;; :content shrink-wraps (##Inf collapses flex to :min in the solver)
-          main-available (if fillMain
-                           (max 0.0 (- (.-viewportMainAxisExtent constraints)
-                                       (.-precedingScrollExtent constraints)))
-                           ##Inf)
-          main (solver/solve-uniform main-available rows mainSizer mainGap mainAlign)]
-      (FlexSliverGridLayout
-       cols rows flip
-       (double (:lead cross)) (double (:size cross))
-       (+ (double (:size cross)) (double (:gap cross)))
-       (double (:lead main)) (double (:size main))
-       (+ (double (:size main)) (double (:gap main)))
+(defn flex-grid-layout
+  "Indexed collection layout from scroll-normalized grid opts:
+   `{:geometry <geometry opts> :stack-fit :content|:fill}`."
+  [{:keys [geometry stack-fit]}]
+  {:id [:flex-grid geometry stack-fit]
+   :prepare
+   (fn [env]
+     (let [^r/SliverConstraints c (:constraints env)
+           n (or (:item-count env)
+                 (throw (Exception. "grid: an indexed grid needs a finite item count — pass a data source or :item-count")))
+           stack-avail (if (= :fill stack-fit)
+                         (math/max 0.0 (- (.-viewportMainAxisExtent c)
+                                          (.-precedingScrollExtent c)))
+                         ##Inf)]
+       (geo/resolve-grid (assoc geometry
+                                :item-count (int n)
+                                :fill-available (.-crossAxisExtent c)
+                                :stack-available stack-avail))))
+   :geometry
+   (fn [env ^int i]
+     (let [cell (geo/cell (:ctx env) i)
+           f (:fill cell)
+           s (:stack cell)]
+       {:offset (:offset s)
+        :cross (:offset f)
+        :main-extent (:size s)
+        :cross-extent (:size f)}))
+   :first-index (fn [env ^double off] (geo/first-index (:ctx env) off))
+   :last-index (fn [env ^double off] (geo/last-index (:ctx env) off))
+   :max-extent
+   (fn [env ^int _n]
+     (let [g (:ctx env)]
        ;; an empty :fill grid must not claim the leftover viewport
-       (if (zero? rows) 0.0 (double (:extent main)))
-       crossLineAlign
-       (if (pos? rows) (- itemCount (* (dec rows) cols)) 0))))
-
-  (^bool shouldRelayout [_this ^r/SliverGridDelegate _old]
-    ;; geometry is re-derived from constraints on every layout; a delegate swap
-    ;; (new opts) must always trigger one
-    true))
-
-(defn ^r/SliverGridDelegate grid-delegate
-  "Build the flexible-grid SliverGridDelegate from opts (see `sliver-grid`)."
-  [{:keys [max-columns cross-sizer cross-gap cross-align line-align cross-dir
-           main-sizer main-gap main-align main-fit]
-    :or {cross-sizer :flex cross-gap 0 cross-align :start line-align :start
-         cross-dir :start main-gap 0 main-align :start main-fit :content}
-    n :count}]
-  (FlexSliverGridDelegate
-   (int max-columns)
-   (int n)
-   cross-sizer cross-gap cross-align line-align
-   (= cross-dir :end)
-   main-sizer main-gap main-align
-   (= main-fit :fill)))
-
-(defn ^w/Widget sliver-grid
-  "A flexible grid sliver for a CustomScrollView, built on the native SliverGrid.
-
-   opts:
-     :max-columns  cross-axis track count (columns for a vertical scroll); required
-     :cross-sizer  per-cell cross size — number / :flex / {:min :max :flex}
-                   (default :flex — tracks share the width equally)
-     :cross-gap    inter-column gap sizer (default 0)
-     :cross-align  column distribution when leftover cross space remains and nothing
-                   flexes: :start :end :center :space-between :space-around :space-evenly
-     :line-align   justify the partial last row's items within the column block (same
-                   values; :cross-align moves the block, :line-align the short row)
-     :cross-dir    :start | :end — mirror the column order, e.g. RTL (default :start)
-     :main-sizer   per-cell main size (row height) — same sizer format; required.
-                   Flex only has effect under :main-fit :fill.
-     :main-gap     inter-row gap sizer (default 0); flex only under :main-fit :fill
-     :main-align   row distribution within leftover main space (:main-fit :fill only)
-     :main-fit     :content — sliver is exactly as tall as its rows (default);
-                   :fill — sliver claims the viewport space remaining after preceding
-                   slivers, so :main-align and flex rows/gaps get room to distribute;
-                   overflowing content degrades to plain scrolling
-
-   item-builder: (fn [ctx index] widget), item-count: total number of items."
-  [opts item-builder ^int item-count]
-  (w/SliverGrid
-   .gridDelegate (grid-delegate (assoc opts :count item-count))
-   .delegate (w/SliverChildBuilderDelegate item-builder .childCount item-count)))
+       (if (zero? ^int (:lines g))
+         0.0
+         (double (:extent (:stack g))))))})

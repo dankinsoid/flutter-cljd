@@ -1,0 +1,106 @@
+(ns flutter-cljd.internal.grid.opts-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.internal.grid.opts :as o]))
+
+(deftest parse-validation
+  (testing "number is count shorthand"
+    (is (= {:count 3} (:columns (o/parse {:columns 3})))))
+  (testing "unknown axis-spec key"
+    (is (thrown? Exception (o/parse {:columns {:sizes 3}}))))
+  (testing "legacy option names fail fast"
+    (is (thrown? Exception (o/parse {:max-columns 3})))
+    (is (thrown? Exception (o/parse {:cross-axis-count 2})))
+    (is (thrown? Exception (o/parse {:axis :horizontal}))))
+  (testing "flow must be two orthogonal directions"
+    (is (thrown? Exception (o/parse {:flow [:right :left]})))
+    (is (thrown? Exception (o/parse {:flow [:right]})))
+    (is (thrown? Exception (o/parse {:flow :right}))))
+  (testing "fill/stack specs follow the flow axes"
+    (let [p (o/parse {:columns {:count 3} :rows {:size 50} :flow [:down :right]})]
+      (is (= :y (:fill-axis p)))
+      (is (= {:size 50} (:fill-spec p)))
+      (is (= {:count 3} (:stack-spec p))))))
+
+(deftest align-vocabulary-is-absolute
+  (testing "sides are validated per axis"
+    (is (thrown? Exception (o/box-normalize (o/parse {:columns {:align :top}}))))
+    (is (thrown? Exception (o/box-normalize (o/parse {:rows {:align :left}}))))
+    (is (thrown? Exception (o/box-normalize (o/parse {:columns {:align :start}})))))
+  (testing "absolute sides map to axis space"
+    (let [n (o/box-normalize (o/parse {:columns {:align :right} :rows {:align :bottom}}))]
+      (is (= :end (get-in n [:fill :align])))
+      (is (= :end (get-in n [:stack :align]))))
+    (let [n (o/box-normalize (o/parse {:columns {:align :left} :rows {:align :top}}))]
+      (is (= :start (get-in n [:fill :align])))
+      (is (= :start (get-in n [:stack :align])))))
+  (testing "sides stay absolute under a mirrored flow"
+    (let [n (o/box-normalize (o/parse {:columns {:align :left} :flow [:left :down]}))]
+      (is (= :start (get-in n [:fill :align]))))))
+
+(deftest box-defaults-follow-flow
+  (testing "[:right :down]: hug left/top, fill × content fits"
+    (let [n (o/box-normalize (o/parse {}))]
+      (is (= :start (get-in n [:fill :align])))
+      (is (= :start (get-in n [:stack :align])))
+      (is (false? (:fill-mirror n)))
+      (is (false? (:stack-mirror n)))
+      (is (= :fill (:fill-fit n)))
+      (is (= :content (:stack-fit n)))))
+  (testing "[:left :up]: mirrored, hugging right/bottom"
+    (let [n (o/box-normalize (o/parse {:flow [:left :up]}))]
+      (is (true? (:fill-mirror n)))
+      (is (true? (:stack-mirror n)))
+      (is (= :end (get-in n [:fill :align])))
+      (is (= :end (get-in n [:stack :align]))))))
+
+(deftest line-align-maps-into-flow-space
+  (testing "defaults to the flow origin"
+    (is (= :start (:line-align (o/box-normalize (o/parse {})))))
+    (is (= :start (:line-align (o/box-normalize (o/parse {:flow [:left :down]}))))))
+  (testing "absolute side under a mirrored fill flips in flow space"
+    (is (= :end (:line-align (o/box-normalize (o/parse {:line-align :left :flow [:left :down]})))))
+    (is (= :start (:line-align (o/box-normalize (o/parse {:line-align :right :flow [:left :down]})))))
+    (is (= :center (:line-align (o/box-normalize (o/parse {:line-align :center :flow [:left :down]})))))))
+
+(deftest scroll-axis-and-reverse
+  (testing "scroll axis is the stack direction's axis"
+    (is (= :vertical (:scroll-axis (o/scroll-normalize (o/parse {}) nil))))
+    (is (= :horizontal (:scroll-axis (o/scroll-normalize (o/parse {:flow [:down :right]}) nil)))))
+  (testing "upward/leftward stack reverses the scroll view, geometry stays forward"
+    (let [n (o/scroll-normalize (o/parse {:flow [:right :up]}) nil)]
+      (is (true? (:reverse n)))
+      (is (false? (:remap n)))
+      (is (false? (get-in n [:geometry :stack-mirror])))))
+  (testing "anchor :end flips scroll + item order + pads the first line"
+    (let [n (o/scroll-normalize (o/parse {}) :end)]
+      (is (true? (:reverse n)))
+      (is (true? (:remap n)))
+      (is (true? (get-in n [:geometry :pad-start?])))
+      ;; remap reverses within-line order; the mirror flips it back
+      (is (true? (get-in n [:geometry :fill-mirror])))))
+  (testing "anchor :end on an upward flow cancels the reverse"
+    (let [n (o/scroll-normalize (o/parse {:flow [:right :up]}) :end)]
+      (is (false? (:reverse n)))
+      (is (true? (:remap n)))))
+  (testing "invalid anchor"
+    (is (thrown? Exception (o/scroll-normalize (o/parse {}) :middle)))))
+
+(deftest scroll-align-mapping
+  (testing "stack sides map against the (possibly reversed) sliver direction"
+    ;; forward: sliver offset 0 = top
+    (let [n (o/scroll-normalize (o/parse {:rows {:align :bottom}}) nil)]
+      (is (= :end (get-in n [:geometry :stack :align]))))
+    ;; reversed ([:right :up]): sliver offset 0 = bottom
+    (let [n (o/scroll-normalize (o/parse {:rows {:align :bottom} :flow [:right :up]}) nil)]
+      (is (= :start (get-in n [:geometry :stack :align])))))
+  (testing "stack default hugs the flow origin"
+    ;; [:right :down] → top; forward sliver → :start
+    (is (= :start (get-in (o/scroll-normalize (o/parse {}) nil) [:geometry :stack :align])))
+    ;; [:right :up] → bottom; reversed sliver → :start again
+    (is (= :start (get-in (o/scroll-normalize (o/parse {:flow [:right :up]}) nil)
+                          [:geometry :stack :align])))
+    ;; anchor :end reverses the sliver under an unchanged flow → origin lands at :end
+    (is (= :end (get-in (o/scroll-normalize (o/parse {}) :end) [:geometry :stack :align]))))
+  (testing "line-align default lands the partial line at the visual flow origin"
+    ;; anchor :end: fill-mirror is on, so flow-space :end = screen left
+    (is (= :end (:line-align (:geometry (o/scroll-normalize (o/parse {}) :end)))))))

@@ -15,10 +15,8 @@
               .centerTitle true)
     .body
     (->> (f/grid-view
-           :cross-axis-count 2
-           :child-aspect-ratio 1.2
-           :cross-axis-spacing 16
-           :main-axis-spacing 16
+           :columns {:count 2 :gap 16}
+           :rows {:size {:aspect 1.2} :gap 16}
            categories/categories
            (fn [ctx category]
              (card/category-card

@@ -53,7 +53,9 @@
    ["dart:core" :as dc]
    ["dart:math" :as math]
    ["dart:ui" :as ui]
-   ["package:flutter/rendering.dart" :as r]))
+   ["package:flutter/rendering.dart" :as r]
+   [flutter-cljd.internal.grid.opts :as grid-opts]
+   [flutter-cljd.internal.grid.sliver :as grid-sliver]))
 
 ;; --- env & size helpers ---
 
@@ -189,27 +191,17 @@
    :max-extent (fn [env ^int n]
                  (.computeMaxScrollOffset ^r/SliverGridLayout (:ctx env) n))})
 
-(defn- ^r/SliverGridDelegate grid-delegate-from-opts [opts]
-  (if-let [max-extent (:max-cross-axis-extent opts)]
-    (r/SliverGridDelegateWithMaxCrossAxisExtent
-     .maxCrossAxisExtent (double max-extent)
-     .mainAxisSpacing (double (or (:main-axis-spacing opts) 0))
-     .crossAxisSpacing (double (or (:cross-axis-spacing opts) 0))
-     .childAspectRatio (double (or (:child-aspect-ratio opts) 1.0))
-     .mainAxisExtent (some-> (:main-axis-extent opts) double))
-    (r/SliverGridDelegateWithFixedCrossAxisCount
-     .crossAxisCount (int (or (:cross-axis-count opts) 2))
-     .mainAxisSpacing (double (or (:main-axis-spacing opts) 0))
-     .crossAxisSpacing (double (or (:cross-axis-spacing opts) 0))
-     .childAspectRatio (double (or (:child-aspect-ratio opts) 1.0))
-     .mainAxisExtent (some-> (:main-axis-extent opts) double))))
-
 ;; --- Factory ---
 
 (defn resolve-layout
   "Resolves the :layout option into a layout map.
    Accepts a layout map (used as-is), :list/:grid/:wrap/:masonry keywords,
-   or a SliverGridDelegate instance."
+   or a SliverGridDelegate instance (interop).
+
+   `:grid` is the flexible grid (see `flutter-cljd.widgets/grid-view` for the
+   option language). Inside a bare sliver the stack must run forward — the
+   sliver cannot reverse its scroll view, so `[:.. :up]`/`[:.. :left]` flows
+   belong to `grid-view` (or reverse the scroll view and use a forward flow)."
   [layout opts]
   (cond
     (map? layout) layout
@@ -218,13 +210,10 @@
     (grid-layout layout [:grid-delegate layout])
 
     (= :grid layout)
-    (if-let [d (:grid-delegate opts)]
-      (grid-layout d [:grid-delegate d])
-      (grid-layout (grid-delegate-from-opts opts)
-                   [:grid
-                    (:max-cross-axis-extent opts) (:cross-axis-count opts)
-                    (:main-axis-spacing opts) (:cross-axis-spacing opts)
-                    (:child-aspect-ratio opts) (:main-axis-extent opts)]))
+    (let [normalized (grid-opts/scroll-normalize (grid-opts/parse opts) (:anchor opts))]
+      (when (or (:reverse normalized) (:remap normalized))
+        (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view instead of a bare :grid sliver")))
+      (grid-sliver/flex-grid-layout normalized))
 
     (= :wrap layout) (wrap-layout opts)
     (= :masonry layout) (masonry-layout opts)

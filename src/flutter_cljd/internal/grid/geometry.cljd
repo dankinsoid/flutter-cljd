@@ -1,88 +1,194 @@
-;; @ai-generated(paired)
+;; @ai-generated(guided)
 (ns flutter-cljd.internal.grid.geometry
-  "Pure 2-D placement for the flexible grid: compose the 1-D `solver` on both axes
-   and map item indices to cell rects.
+  "Pure 2-D placement for the flexible grid: compose the 1-D `solver` on both
+   axes and map item indices to cell rects.
 
-   Axis-agnostic — everything is expressed in cross/main track space; the host maps
-   cross/main onto x/y from the grid's orientation. The 8 fill directions are the
-   product of three orthogonal knobs (never an 8-way enum):
-     :primary   :row (fill a cross line, then advance main) | :column (fill main first)
-     :cross-dir :start | :end      (e.g. LTR | RTL)
-     :main-dir  :forward | :reverse (e.g. top→bottom | bottom→top)
+   Works in FLOW SPACE: the `:fill` axis is the one a line fills along, the
+   `:stack` axis is the one lines advance along; the opts layer maps the public
+   absolute `:columns`/`:rows`/`:flow` language onto these (see grid.opts).
+   Direction reversal is a per-axis `:mirror` flag — positions still compute in
+   forward flow space and flip at the end, so index math stays row-major and the
+   materialized index range of any stack-axis window stays contiguous (what
+   sliver virtualization needs).
 
-   Both traversal orders share the SAME grid shape (cols×rows); only the index→(row,col)
-   formula differs, so column-major works under an unbounded main axis because `rows`
-   is derived from the known item count, not measured.
+   `:slot-offset` pads the FIRST line with empty leading slots so the LAST line
+   ends exactly full — the anchor-:end/chat shape, where the partial line is the
+   visually first one. Always < tracks.
 
-   Two cross-axis alignments compose:
-     :cross-align distributes the column TRACK BLOCK in the cross extent (grid
-                  justify-content; tracks are shared by all rows).
-     :line-align  justifies a row's items WITHIN that block. Full rows fill the block
-                  exactly, so they are unaffected; only a partial last row shifts —
-                  e.g. :line-align :center centers the leftover items under the block.
+   Three alignments compose, all resolved through the same solver:
+     axis `:align`  places the whole track block inside the axis extent
+                    (compiled into edge gaps by `solver/line-spec`)
+     `:line-align`  justifies a partial line's items within the block
+     item alignment inside a cell is the hosts' business (loose layout / Align).
 
-   Sizers are uniform per axis in v1, so both axes resolve through the closed-form
-   `solve-uniform` and every cell is a stride formula — O(1) per index."
-  (:require [flutter-cljd.internal.grid.solver :as solver]))
+   Sizers are uniform per axis in v1, so both axes resolve through the O(1)
+   `solve-line` and every cell is a stride formula."
+  (:require
+   ["dart:math" :as math]
+   [flutter-cljd.internal.grid.solver :as solver]))
 
-(defn- ceil-div [a b] (quot (+ a (dec b)) b))
+(defn- ceil-div ^int [^int a ^int b] (quot (+ a (dec b)) b))
 
-(defn- items-in-row
-  "How many items land in row `r` — `cols` for full rows, fewer for the last row."
-  [primary cols rows cnt r]
-  (if (= primary :column)
-    ;; column-major: item i sits in row (i mod rows); count c in [0,cols) with c*rows+r < cnt
-    (min cols (ceil-div (- cnt r) rows))
-    ;; row-major: only the last row is short
-    (if (= r (dec rows)) (- cnt (* (dec rows) cols)) cols)))
+(defn- aspect-of [axis-opts]
+  (let [t (:track axis-opts)]
+    (when (map? t) (:aspect t))))
+
+(defn- ^double apply-aspect
+  "Cell size on `axis` from the OTHER axis' resolved cell size and a w/h ratio."
+  [axis ^double other-size aspect]
+  (let [^double a (double aspect)]
+    (if (= :x axis)
+      (* other-size a)      ;; width = height * aspect
+      (/ other-size a))))   ;; height = width / aspect
+
+(defn- solved-track
+  "Track sizer with `:aspect` resolved to a fixed size (clamped by explicit
+   min/max), or the sizer untouched when no aspect."
+  [axis-opts axis ^double other-cell-size]
+  (let [t (solver/sizer (or (:track axis-opts) :flex))]
+    (if-let [aspect (aspect-of axis-opts)]
+      (let [v (apply-aspect axis other-cell-size aspect)
+            v (-> v (math/max ^double (:min t)) (math/min ^double (:max t)))]
+        (assoc t :min v :max v :flex 0.0))
+      t)))
+
+(defn- solve-axis [axis-opts available ^int n track]
+  (let [spec (solver/line-spec {:track track
+                                :gap (:gap axis-opts)
+                                :margin (:margin axis-opts)
+                                :align (:align axis-opts)
+                                :n n})
+        r (solver/solve-line available n spec)]
+    {:lead (double (:lead r))
+     :size (double (:size r))
+     :stride (+ (double (:size r)) (double (:gap r)))
+     :extent (double (:extent r))}))
 
 (defn resolve-grid
-  "Resolve track geometry once — O(cols+rows). The sliver host calls this then `cell`
-   per visible index; the box host calls `cell` for every item.
+  "Resolve track geometry once — O(1). Hosts then call `cell` per index.
 
-   opts (extents are `##Inf` for shrink-wrap; sizer/gap specs are as in `solver/sizer`):
-     :count :max-columns
-     :primary :cross-dir :main-dir :line-align
-     :cross-available :main-available
-     :cross-sizer :main-sizer  :cross-gap :main-gap  :cross-align :main-align
+   opts (flow-space, produced by grid.opts/normalize):
+     :item-count   int (0 allowed)
+     :fill         {:count :track :gap :margin :align} — axis a line fills along
+     :stack        same shape; :count here is only a fallback for deriving the
+                   fill count as ceil(item-count / stack-count)
+     :fill-axis    :x | :y — which screen axis :fill is (aspect needs to know)
+     :fill-available :stack-available   extent or ##Inf (shrink-wrap)
+     :fill-mirror :stack-mirror         flip that axis (e.g. RTL / bottom-up)
+     :pad-start?   pad the first line with empty leading slots so the LAST line
+                   ends exactly full (the anchor-:end/chat shape)
+     :line-align   internal align keyword or fn (see solver/justify)
 
-   Returns a stride-form map consumed by `cell`."
-  [{:keys [max-columns primary cross-dir main-dir line-align
-           cross-available main-available cross-sizer main-sizer
-           cross-gap main-gap cross-align main-align]
-    :or {primary :row cross-dir :start main-dir :forward line-align :start
-         cross-gap 0 main-gap 0 cross-align :start main-align :start}
-    n :count}]
-  (let [cols (if (zero? n) 0 (min max-columns n))
-        rows (if (zero? cols) 0 (ceil-div n cols))
-        cross (solver/solve-uniform cross-available cols cross-sizer cross-gap cross-align)
-        main (solver/solve-uniform main-available rows main-sizer main-gap main-align)]
-    {:cols cols :rows rows :count n
-     :primary primary :cross-dir cross-dir :main-dir main-dir :line-align line-align
-     :cross-lead (double (:lead cross)) :cross-size (double (:size cross))
-     :cross-stride (+ (double (:size cross)) (double (:gap cross)))
-     :cross-extent (:extent cross)
-     :main-lead (double (:lead main)) :main-size (double (:size main))
-     :main-stride (+ (double (:size main)) (double (:gap main)))
-     :main-extent (:extent main)}))
+   Returns the stride-form map consumed by `cell`/`first-index`/`last-index`."
+  [{:keys [item-count fill stack fill-axis fill-available stack-available
+           fill-mirror stack-mirror pad-start? line-align]
+    :or {fill-axis :x line-align :start}}]
+  (let [^int n (int item-count)
+        fill-aspect (aspect-of fill)
+        stack-aspect (aspect-of stack)
+        _ (when (and fill-aspect stack-aspect)
+            (throw (Exception. "grid: :aspect on both axes is circular — give one axis a concrete :size")))
+        _ (when (and fill-aspect (not (number? (:count fill))))
+            (throw (Exception. "grid: :aspect on the fill axis needs an explicit :count on it")))
+        fill-spec (solver/line-spec {:track (when-not fill-aspect (:track fill))
+                                     :gap (:gap fill) :margin (:margin fill)
+                                     :align (:align fill) :n 0})
+        ^int tracks (if (zero? n)
+                      0
+                      (if-let [sc (and (nil? (:count fill))
+                                       (number? (:count stack))
+                                       (int (:count stack)))]
+                        ;; explicit line count on the stack axis → tracks from it
+                        (let [^int t (ceil-div n (if (< ^int sc 1) 1 sc))]
+                          (if (< t 1) 1 t))
+                        (int (solver/derive-count fill-available fill-spec (:count fill) n))))
+        slot-offset (if (and pad-start? (pos? ^int tracks))
+                      (rem (- ^int tracks (rem n ^int tracks)) ^int tracks)
+                      0)
+        lines (if (zero? n) 0 (ceil-div (+ n ^int slot-offset) tracks))
+        stack-axis (if (= :x fill-axis) :y :x)
+        ;; the aspect-free axis resolves first and feeds the other's cell size
+        [fill-solved stack-solved]
+        (if fill-aspect
+          (let [ss (solve-axis stack stack-available lines
+                               (solved-track stack stack-axis 0.0))
+                fs (solve-axis fill fill-available tracks
+                               (solved-track fill fill-axis (:size ss)))]
+            [fs ss])
+          (let [fs (solve-axis fill fill-available tracks
+                               (solved-track fill fill-axis 0.0))
+                ss (solve-axis stack stack-available lines
+                               (solved-track stack stack-axis (:size fs)))]
+            [fs ss]))]
+    {:tracks tracks :lines lines :item-count n :slot-offset slot-offset
+     :fill-mirror (boolean fill-mirror) :stack-mirror (boolean stack-mirror)
+     :line-align line-align
+     :fill fill-solved
+     :stack stack-solved}))
+
+(defn- items-in-line
+  "How many items land in line `l`: only the first line (slot padding) and the
+   last line (short collection) can be partial."
+  ^int [{:keys [tracks item-count slot-offset]} ^int l]
+  (let [^int tracks tracks
+        ^int slots (+ ^int item-count ^int slot-offset)
+        ^int hi (* (inc l) tracks)
+        ^int hi (if (< slots hi) slots hi)
+        ^int lo (* l tracks)
+        ^int lo (if (> ^int slot-offset lo) slot-offset lo)]
+    (- hi lo)))
 
 (defn cell
-  "Cross/main rect of item `i` in a resolved grid: `{:cross {:offset :size} :main {..}}`.
-   Maps `i` to (row, col) per :primary, flips each axis per :cross-dir / :main-dir, and
-   justifies a partial row within the track block per :line-align."
-  [{:keys [cols rows count primary cross-dir main-dir line-align
-           cross-lead cross-size cross-stride main-lead main-size main-stride]} i]
-  (let [flip (= cross-dir :end)
-        [r c] (if (= primary :column)
-                [(rem i rows) (quot i rows)]
-                [(quot i cols) (rem i cols)])
-        k (items-in-row primary cols rows count r)
-        ;; justify the row's k items within the (cols-wide) track block
-        [lead between] (solver/align-offsets line-align (* (double (- cols k)) cross-stride) k)
-        ;; logical (LTR) offset from the block's start
-        lo (+ (double lead) (* (double c) (+ cross-stride (double between))))
-        block (+ (* (double (dec cols)) cross-stride) cross-size)
-        cross-off (+ cross-lead (if flip (- block lo cross-size) lo))
-        r* (if (= main-dir :reverse) (- rows 1 r) r)]
-    {:cross {:offset cross-off :size cross-size}
-     :main {:offset (+ main-lead (* (double r*) main-stride)) :size main-size}}))
+  "Rect of item `i`: `{:fill {:offset :size} :stack {:offset :size}}` in flow
+   space (the opts layer told the host which screen axis each one is).
+   Justifies partial lines within the track block per `:line-align`, then
+   mirrors each axis per its flag."
+  [{:keys [tracks lines slot-offset fill-mirror stack-mirror line-align
+           fill stack]
+    :as g} ^int i]
+  (let [^int tracks tracks
+        ^int slot (+ i ^int slot-offset)
+        ^int line (quot slot tracks)
+        ;; index among the line's items (line 0 may start mid-block)
+        ^int j (- (rem slot tracks) (if (zero? line) ^int slot-offset 0))
+        ^int k (items-in-line g line)
+        ^double stride (:stride fill)
+        ^double size (:size fill)
+        [^double jlead ^double jbetween]
+        (solver/justify line-align (* (double (- tracks k)) stride) k)
+        ;; forward flow-space offset within the track block
+        lo (+ jlead (* (double j) (+ stride jbetween)))
+        block (+ (* (double (dec tracks)) stride) size)
+        fill-off (+ ^double (:lead fill)
+                    (if fill-mirror (- block lo size) lo))
+        ^int line* (if stack-mirror (- ^int lines 1 line) line)]
+    {:fill {:offset fill-off :size size}
+     :stack {:offset (+ ^double (:lead stack) (* (double line*) ^double (:stride stack)))
+             :size (:size stack)}}))
+
+;; --- stack-axis window → index range (sliver virtualization; forward stack only) ---
+
+(defn- ^int line-at [{:keys [stack lines]} ^double offset]
+  (let [^double stride (:stride stack)]
+    (if (<= stride 0.0)
+      0
+      (let [^int l (.floor (/ (- offset ^double (:lead stack)) stride))
+            ^int hi (dec ^int lines)]
+        (cond (neg? l) 0 (> l hi) hi :else l)))))
+
+(defn ^int first-index
+  "First item index of the line containing stack offset `off`."
+  [{:keys [tracks slot-offset lines] :as g} ^double off]
+  (if (zero? ^int lines)
+    0
+    (let [^int i (- (* (line-at g off) ^int tracks) ^int slot-offset)]
+      (if (neg? i) 0 i))))
+
+(defn ^int last-index
+  "Last item index (inclusive) of the line containing stack offset `off`."
+  [{:keys [tracks slot-offset lines item-count] :as g} ^double off]
+  (if (zero? ^int lines)
+    0
+    (let [^int i (- (* (inc (line-at g off)) ^int tracks) 1 ^int slot-offset)
+          ^int hi (dec ^int item-count)]
+      (if (> i hi) hi i))))

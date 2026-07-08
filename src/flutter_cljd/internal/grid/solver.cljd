@@ -1,16 +1,26 @@
-;; @ai-generated(paired)
+;; @ai-generated(guided)
 (ns flutter-cljd.internal.grid.solver
-  "Pure 1-D track solver for the flexible grid.
+  "Pure 1-D line solver for the flexible grid.
 
-   One axis at a time: given an extent to fill and a line of tracks separated by a
-   uniform gap, resolve each track's offset and size. Deliberately Flutter-free so
-   it is unit-testable in isolation and reused verbatim by both the box host (main
-   bound = parent constraint) and the sliver host (main bound = viewport extent).
+   A line is `[lead-gap track gap track … track trail-gap]` — tracks separated by
+   uniform inner gaps, wrapped by two edge gaps. Every element normalizes to the
+   same sizer shape `{:min :max :flex}`, and one water-fill distributes the free
+   space. Alignment is not a separate mechanism: align keywords COMPILE into gap
+   sizers (`:center` → both edge gaps grow, `:space-between` → inner gaps grow…),
+   so fixed gaps, constrained gaps (`{:min 8 :max 24}`), flex gaps and every
+   justify mode are the same computation.
 
-   Every track/gap sizer normalizes to `{:min :max :flex}` — the same min/max shape
-   as `(sized)`, plus a growth weight. This is the forward-compat seam for self-size:
-   an `:auto` track later just contributes a *measured* value into `:min`; the
-   distribution math below never changes.")
+   Align-added growth is *second tier* (`:tier 1`): it only receives space left
+   after tier-0 entries (tracks, and any explicit user flex on gaps) are done
+   growing. That preserves the familiar semantics — flex tracks defeat alignment,
+   and an explicit `:flex` on a gap/margin overrides the align keyword's implicit
+   growth.
+
+   Deliberately Flutter-free so it is unit-testable in isolation and shared
+   verbatim by the box host and the sliver (collection) host. Self-size seam:
+   an `:auto` track later contributes a *measured* value into `:min`; the
+   distribution math never changes."
+  (:require ["dart:math" :as math]))
 
 (def ^:private inf ##Inf)
 (def ^:private eps 1e-9)
@@ -24,42 +34,41 @@
      map        -> {:min :max :flex} (defaults 0 / ∞ / 0), or {:fixed n}
 
    `:flex` is the share of leftover space this entry grows into; 0 means rigid.
-   A finite `:max` caps growth; `:min` is the floor (and the shrink-wrap size)."
+   A finite `:max` caps growth; `:min` is the floor (and the shrink-wrap size).
+   Extra keys (`:aspect`, `:tier`) pass through untouched."
   [s]
   (cond
     (number? s) {:min (double s) :max (double s) :flex 0.0}
     (= :flex s) {:min 0.0 :max inf :flex 1.0}
     (map? s) (if-let [f (:fixed s)]
-               {:min (double f) :max (double f) :flex 0.0}
-               {:min (double (:min s 0.0))
-                :max (double (:max s inf))
-                :flex (double (:flex s 0.0))})
+               (merge (dissoc s :fixed) {:min (double f) :max (double f) :flex 0.0})
+               (merge s
+                      {:min (double (:min s 0.0))
+                       :max (double (:max s inf))
+                       :flex (double (:flex s 0.0))}))
     :else (throw (Exception. (str "Invalid grid sizer: " s)))))
 
 (defn- sum ^double [xs] (reduce + 0.0 xs))
 
-(defn- grow
-  "Water-fill: grow entries from their `:min` by sharing `free` across positive-flex
-   entries proportional to `:flex`, clamping at `:max`. When an entry hits its cap its
-   surplus share redistributes among the rest, so total `free` is honored exactly
-   (up to remaining flex capacity). Returns the vector of final sizes.
-
-   `entries` are normalized sizer maps; `free` must be > 0."
-  [entries ^double free]
-  (let [n (count entries)
-        maxs (mapv :max entries)
+(defn- grow-tier
+  "Water-fill one tier: grow `entries` (indices `active`) from their current
+   `sizes` by sharing `free` proportional to `:flex`, clamping at `:max`. When an
+   entry caps out its surplus share redistributes among the rest. Returns
+   `[sizes' remaining]`."
+  [entries sizes active ^double free]
+  (let [maxs (mapv :max entries)
         flexes (mapv :flex entries)]
-    (loop [sizes (mapv :min entries)
+    (loop [sizes sizes
            frozen #{}
            remaining free]
-      (let [active (filter (fn [i] (and (not (frozen i)) (pos? (double (nth flexes i)))))
-                           (range n))
-            total-flex (sum (map #(nth flexes %) active))]
-        (if (or (<= remaining eps) (empty? active) (<= total-flex eps))
-          sizes
+      (let [live (filter (fn [i] (and (not (frozen i)) (pos? (double (nth flexes i)))))
+                         active)
+            total-flex (sum (map #(nth flexes %) live))]
+        (if (or (<= remaining eps) (empty? live) (<= total-flex eps))
+          [sizes remaining]
           (let [share (fn [i] (* remaining (/ (double (nth flexes i)) total-flex)))
                 over (filter (fn [i] (> (+ (double (nth sizes i)) (share i)) (double (nth maxs i))))
-                            active)]
+                             live)]
             (if (seq over)
               ;; some entries would exceed their cap — pin them at :max and redistribute
               (let [used (sum (map (fn [i] (- (double (nth maxs i)) (double (nth sizes i)))) over))]
@@ -67,107 +76,231 @@
                        (into frozen over)
                        (- remaining used)))
               ;; nobody caps out — apply the proportional shares and finish
-              (reduce (fn [s i] (assoc s i (+ (double (nth s i)) (share i)))) sizes active))))))))
+              [(reduce (fn [s i] (assoc s i (+ (double (nth s i)) (share i)))) sizes live)
+               0.0])))))))
 
-(defn align-offsets
-  "Leading offset and extra between-item spacing for distributing `residual`
-   free space across `n` items per a justify-content-style `align`. Matches
-   Flutter's MainAxisAlignment. Returns `[lead between]`.
+(defn grow
+  "Distribute `free` (> 0) across normalized sizer entries, tier by tier: all
+   tier-0 flex growth completes (to caps) before tier 1 sees a pixel. Returns the
+   vector of final sizes."
+  [entries ^double free]
+  (let [n (count entries)
+        tiers (sort (distinct (map #(:tier % 0) entries)))]
+    (loop [sizes (mapv :min entries)
+           remaining free
+           tiers tiers]
+      (if (or (empty? tiers) (<= remaining eps))
+        sizes
+        (let [t (first tiers)
+              active (filter #(= t (:tier (nth entries %) 0)) (range n))
+              [sizes' remaining'] (grow-tier entries sizes active remaining)]
+          (recur sizes' (double remaining') (rest tiers)))))))
 
-   Used both for track distribution inside `solve-tracks`/`solve-uniform` and, by
-   the grid hosts, for per-line item justification (`:line-align`) of a partial row."
-  [align ^double residual n]
-  (if (<= residual eps)
-    [0.0 0.0]
-    (case align
-      :start [0.0 0.0]
-      :end [residual 0.0]
-      :center [(/ residual 2.0) 0.0]
-      :space-between (if (<= n 1) [0.0 0.0] [0.0 (/ residual (double (dec n)))])
-      :space-around (let [u (/ residual (double n))] [(/ u 2.0) u])
-      :space-evenly (let [u (/ residual (double (inc n)))] [u u])
-      [0.0 0.0])))
+;; --- align → gaps compilation ---
 
-(defn solve-uniform
-  "Closed-form counterpart of `solve-tracks` for a line of `n` IDENTICAL tracks —
-   the guaranteed-O(1) path hosts take while an axis' sizers are uniform (v1 always
-   is). Heterogeneous / self-sized tracks are the generic `solve-tracks` branch.
+(defn- growable
+  "Open a sizer for align-driven growth unless the user already made it flex:
+   explicit flex keeps the entry as-is (tier 0, competing with tracks); otherwise
+   the cap opens and it gets tier-1 flex — free space only after content."
+  [s]
+  (if (pos? (double (:flex s)))
+    s
+    (assoc s :max inf :flex 1.0 :tier 1)))
 
-   Aggregating each class (all tracks, all gaps) into a single entry turns the
-   water-fill into a two-entry problem, so cost and memory are constant in `n`,
-   and the whole line is representable as a formula instead of a table:
-     offset(i) = :lead + i * (:size + :gap)
-   `:gap` already includes any spacing a space-* `align` mode adds; `:extent` has
-   the same overflow/shrink-wrap semantics as `solve-tracks`."
-  [available n track-sizer gap-sizer align]
+(defn line-spec
+  "Compile one axis' options into the line's four sizer classes
+   `{:track :gap :lead :trail}` (normalized, `:tier` set where align applies).
+
+   `align` is an internal axis-space keyword — `:start :end :center
+   :space-between :space-around :space-evenly` — or a function
+   `(fn [{:keys [n track gap margin]}] {:lead s :gap s :trail s})` returning raw
+   sizer specs (missing keys fall back to margin/gap). `n` is the track count."
+  [{:keys [track gap margin align n]}]
+  (let [track (sizer (or track :flex))
+        gap (sizer (or gap 0))
+        margin (sizer (or margin 0))]
+    (if (fn? align)
+      (let [m (align {:n n :track track :gap gap :margin margin})]
+        {:track track
+         :lead (sizer (or (:lead m) margin))
+         :gap (sizer (or (:gap m) gap))
+         :trail (sizer (or (:trail m) margin))})
+      (case (or align :start)
+        :start {:track track :lead margin :gap gap :trail (growable margin)}
+        :end {:track track :lead (growable margin) :gap gap :trail margin}
+        :center {:track track :lead (growable margin) :gap gap :trail (growable margin)}
+        ;; one track has no "between" — degrade like Flutter: pack to start
+        :space-between (if (<= (int (or n 0)) 1)
+                         {:track track :lead margin :gap gap :trail (growable margin)}
+                         {:track track :lead margin :gap (growable gap) :trail margin})
+        :space-around {:track track
+                       :lead (growable margin)
+                       :gap (if (pos? (double (:flex gap)))
+                              gap
+                              (assoc gap :max inf :flex 2.0 :tier 1))
+                       :trail (growable margin)}
+        :space-evenly {:track track :lead (growable margin)
+                       :gap (growable gap) :trail (growable margin)}
+        (throw (Exception. (str "Invalid grid align: " align)))))))
+
+;; --- line solving ---
+
+(defn- scale
+  "Aggregate `k` identical entries into one: identical entries always split a
+   class' share equally, so a whole class collapses to a single water-fill entry."
+  [s ^int k]
+  (if (zero? k)
+    {:min 0.0 :max 0.0 :flex 0.0}
+    {:min (* (double k) (double (:min s)))
+     ;; k * ##Inf is safe here: k > 0
+     :max (* (double k) (double (:max s)))
+     :flex (* (double k) (double (:flex s)))
+     :tier (:tier s 0)}))
+
+(defn solve-line
+  "Solve a uniform line — `n` identical tracks, `n-1` identical inner gaps, lead
+   and trail edge gaps — packed into `available` (`##Inf` = shrink-wrap: every
+   entry stays at `:min`).
+
+   `spec` is a compiled `line-spec`. Aggregating each class into one entry turns
+   the water-fill into a ≤4-entry problem — O(1) in `n`, and the whole line is a
+   stride formula: `offset(i) = :lead + i * (:size + :gap)`.
+
+   Returns `{:lead :size :gap :extent}`; `:extent` is the span the line occupies:
+   content size under shrink-wrap, otherwise `available` (or the content size
+   when it overflows — `:extent > available` signals overflow to the host, which
+   clips (box) or scrolls (sliver))."
+  [available ^int n spec]
   (if (zero? n)
     {:lead 0.0 :size 0.0 :gap 0.0
-     :extent (if (= available inf) 0.0 (max (double available) 0.0))}
+     :extent (if (= available inf) 0.0 (math/max (double available) 0.0))}
     (let [available (double available)
-          gaps (dec n)
-          scale (fn [s k]
-                  (if (zero? k)
-                    {:min 0.0 :max 0.0 :flex 0.0}
-                    (let [e (sizer s)]
-                      ;; k * ##Inf is safe here: k > 0
-                      {:min (* (double k) (double (:min e)))
-                       :max (* (double k) (double (:max e)))
-                       :flex (* (double k) (double (:flex e)))})))
-          entries [(scale track-sizer n) (scale gap-sizer gaps)]
-          content-min (+ (double (:min (nth entries 0))) (double (:min (nth entries 1))))
+          entries [(scale (:lead spec) 1)
+                   (scale (:track spec) n)
+                   (scale (:gap spec) (dec n))
+                   (scale (:trail spec) 1)]
+          content-min (sum (map :min entries))
           shrink? (= available inf)
           free (- available content-min)
-          [tt gg] (if (or shrink? (<= free eps))
-                    [(:min (nth entries 0)) (:min (nth entries 1))]
-                    (grow entries free))
-          content (+ (double tt) (double gg))
-          extent (if shrink? content (max available content))
-          residual (if shrink? 0.0 (- available content))
-          [lead between] (align-offsets align residual n)]
-      {:lead lead
-       :size (/ (double tt) (double n))
-       :gap (if (pos? gaps) (+ (/ (double gg) (double gaps)) (double between)) 0.0)
-       :extent extent})))
+          sizes (if (or shrink? (<= free eps))
+                  (mapv :min entries)
+                  (grow entries free))
+          [^double ll ^double tt ^double gg _] sizes
+          content (sum sizes)]
+      {:lead ll
+       :size (/ tt (double n))
+       :gap (if (> n 1) (/ gg (double (dec n))) 0.0)
+       :extent (if shrink? content (math/max available content))})))
 
-(defn solve-tracks
-  "Resolve one axis: `n` tracks separated by a uniform gap, packed into `available`.
+(defn solve-line*
+  "Generic counterpart of `solve-line` for HETEROGENEOUS tracks: `track-sizers`
+   is a vector of raw/normalized sizer specs, one per track; gaps and edges come
+   from `spec` as in `solve-line`. O(n) — the seam for future `:auto`/per-track
+   sizing; `solve-line` is the closed form the hosts use while an axis is
+   uniform (v1 always is).
 
-   Args:
-     available    extent to fill; `##Inf` requests shrink-wrap (size to content).
-     track-sizers vector of `n` sizer specs (raw or normalized), one per track.
-     gap-sizer    sizer spec for each of the `n-1` inter-track gaps.
-     align        content distribution when leftover space remains and nothing
-                  flexes: :start :end :center :space-between :space-around :space-evenly.
-
-   Returns `{:tracks [{:offset :size} ...] :extent e}` where `:extent` is the span
-   the line occupies on this axis: content size under shrink-wrap, otherwise
-   `available` (or the content size if it overflows — `:extent > available` signals
-   overflow to the host, which clips (box) or scrolls (sliver))."
-  [^double available track-sizers gap-sizer align]
+   Returns `{:tracks [{:offset :size} …] :extent e}`."
+  [available track-sizers spec]
   (let [n (count track-sizers)]
     (if (zero? n)
-      {:tracks [] :extent (if (= available inf) 0.0 (max available 0.0))}
-      (let [tracks (mapv sizer track-sizers)
-            gap (sizer gap-sizer)
-            ;; interleave: [t0 g t1 g ... t(n-1)] — track i at 2i, gap i at 2i+1
-            entries (into [] (interpose gap tracks))
+      {:tracks []
+       :extent (if (= available inf) 0.0 (math/max (double available) 0.0))}
+      (let [available (double available)
+            tracks (mapv sizer track-sizers)
+            gap (sizer (:gap spec))
+            ;; [lead t0 g t1 g … t(n-1) trail] — track i at 2i+1, gap i at 2i+2
+            entries (-> [(sizer (:lead spec))]
+                        (into (interpose gap tracks))
+                        (conj (sizer (:trail spec))))
             content-min (sum (map :min entries))
             shrink? (= available inf)
             free (- available content-min)
             sizes (if (or shrink? (<= free eps))
                     (mapv :min entries)
                     (grow entries free))
-            content (sum sizes)
-            extent (if shrink? content (max available content))
-            residual (if shrink? 0.0 (- available content))
-            [lead between] (align-offsets align residual n)]
+            content (sum sizes)]
         (loop [i 0
-               off (double lead)
+               off (double (nth sizes 0))
                out (transient [])]
           (if (>= i n)
-            {:tracks (persistent! out) :extent extent}
-            (let [ts (double (nth sizes (* 2 i)))
-                  gs (if (< i (dec n)) (+ (double (nth sizes (inc (* 2 i)))) (double between)) 0.0)]
+            {:tracks (persistent! out)
+             :extent (if shrink? content (math/max available content))}
+            (let [ts (double (nth sizes (inc (* 2 i))))
+                  gs (if (< i (dec n)) (double (nth sizes (+ 2 (* 2 i)))) 0.0)]
               (recur (inc i)
                      (+ off ts gs)
                      (conj! out {:offset off :size ts})))))))))
+
+;; --- per-line justification (line-align) ---
+
+(defn justify
+  "Leading offset and extra between-item spacing distributing `residual` free
+   space across `k` items — the per-line counterpart of align for justifying a
+   partial line within the track block. `align` is an internal keyword or
+   `(fn [residual k] [lead between])`. Returns `[lead between]`."
+  [align ^double residual ^int k]
+  (cond
+    (<= residual eps) [0.0 0.0]
+    (fn? align) (align residual k)
+    :else
+    (case (or align :start)
+      :start [0.0 0.0]
+      :end [residual 0.0]
+      :center [(/ residual 2.0) 0.0]
+      :space-between (if (<= k 1) [0.0 0.0] [0.0 (/ residual (double (dec k)))])
+      :space-around (let [u (/ residual (double k))] [(/ u 2.0) u])
+      :space-evenly (let [u (/ residual (double (inc k)))] [u u])
+      (throw (Exception. (str "Invalid grid line-align: " align))))))
+
+;; --- track count derivation ---
+
+(defn derive-count
+  "Resolve one axis' track count.
+
+   `count-spec`: int (explicit), `{:min :max}` (clamp a derived count),
+   `(fn [{:keys [available item-count]}] int)`, or nil (fully derived).
+   `spec` is a compiled `line-spec`; `item-count` may be nil (unknown/infinite).
+
+   Derivation against a finite `available`:
+     track `:min` > 0  -> as many tracks as fit at their minimum
+     finite track `:max` -> as few tracks as cover `available` at their maximum
+                            (the max-cross-extent pattern)
+     otherwise         -> no basis, throws.
+   A derived (not explicit) count is additionally capped by `item-count`, so a
+   short collection doesn't get more tracks than items. Under an unbounded
+   `available` (shrink-wrap) nothing can be derived: the explicit count, the
+   range's `:max`, or `item-count` is used — in that order."
+  [available spec count-spec item-count]
+  (let [c count-spec
+        at-least-1 (fn ^int [^int k] (if (< k 1) 1 k))]
+    (cond
+      (number? c) (at-least-1 (int c))
+      (fn? c) (at-least-1 (int (c {:available available :item-count item-count})))
+      :else
+      (let [^int cmin (at-least-1 (int (or (when (map? c) (:min c)) 1)))
+            cmax (when (map? c) (some-> (:max c) int))
+            clamp (fn ^int [^int k]
+                    (let [^int k (if (< k cmin) cmin k)]
+                      (if (and cmax (> k ^int cmax)) (int cmax) k)))]
+        (if (= (double available) inf)
+          (if-let [k (or cmax item-count)]
+            (clamp (int k))
+            (throw (Exception. "grid: cannot derive track count on an unbounded axis — give :count (or a finite item count)")))
+          (let [track (:track spec)
+                ^double tmin (:min track)
+                ^double tmax (:max track)
+                ^double gmin (:min (:gap spec))
+                inner (- (double available)
+                         (double (:min (:lead spec)))
+                         (double (:min (:trail spec))))
+                ^int k (cond
+                         (> tmin eps)
+                         (int (/ (+ inner gmin) (+ tmin gmin)))
+
+                         (and (< tmax inf) (> tmax eps))
+                         (.ceil (/ (+ inner gmin) (+ tmax gmin)))
+
+                         :else
+                         (throw (Exception. "grid: cannot derive track count — give :count, or a :size with :min or a finite :max")))
+                ^int k (if (and item-count (< (int item-count) k)) (int item-count) k)]
+            (clamp k)))))))

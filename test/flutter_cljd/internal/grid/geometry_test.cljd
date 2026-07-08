@@ -5,29 +5,30 @@
 (defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
 
 (defn- at?
-  "True when cell `c` sits at the given cross/main offsets."
-  [c cross-off main-off]
-  (and (close? (get-in c [:cross :offset]) cross-off)
-       (close? (get-in c [:main :offset]) main-off)))
+  "True when cell `c` sits at the given fill/stack offsets."
+  [c fill-off stack-off]
+  (and (close? (get-in c [:fill :offset]) fill-off)
+       (close? (get-in c [:stack :offset]) stack-off)))
 
-;; 6 items, 3 columns, fixed 100 (cross) x 50 (main), no gaps.
+;; 6 items, 3 fixed-100 tracks, 50-deep lines, no gaps, x fill / y stack.
 (def ^:private base
-  {:count 6 :max-columns 3
-   :cross-available 300.0 :main-available 100.0
-   :cross-sizer 100 :main-sizer 50})
+  {:item-count 6
+   :fill {:count 3 :track 100}
+   :stack {:track 50}
+   :fill-axis :x
+   :fill-available 300.0
+   :stack-available 100.0})
 
 (deftest grid-shape
   (let [gr (g/resolve-grid base)]
-    (is (= 3 (:cols gr)))
-    (is (= 2 (:rows gr)))
-    (is (close? (:cross-extent gr) 300))
-    (is (close? (:main-extent gr) 100)))
-  (testing "columns capped at item count"
-    (is (= 2 (:cols (g/resolve-grid (assoc base :count 2))))))
+    (is (= 3 (:tracks gr)))
+    (is (= 2 (:lines gr)))
+    (is (close? (get-in gr [:fill :extent]) 300))
+    (is (close? (get-in gr [:stack :extent]) 100)))
   (testing "empty grid"
-    (let [gr (g/resolve-grid (assoc base :count 0))]
-      (is (= 0 (:cols gr)))
-      (is (= 0 (:rows gr))))))
+    (let [gr (g/resolve-grid (assoc base :item-count 0))]
+      (is (= 0 (:tracks gr)))
+      (is (= 0 (:lines gr))))))
 
 (deftest row-major-placement
   (let [gr (g/resolve-grid base)]
@@ -36,53 +37,123 @@
     (is (at? (g/cell gr 3) 0 50))
     (is (at? (g/cell gr 4) 100 50))))
 
-(deftest column-major-placement
-  (testing "fill main axis first, then advance cross"
-    (let [gr (g/resolve-grid (assoc base :primary :column))]
-      (is (at? (g/cell gr 1) 0 50))
-      (is (at? (g/cell gr 2) 100 0))
-      (is (at? (g/cell gr 5) 200 50)))))
-
-(deftest direction-flips
-  (testing ":cross-dir :end mirrors columns (RTL)"
-    (let [gr (g/resolve-grid (assoc base :cross-dir :end))]
+(deftest mirrors
+  (testing ":fill-mirror flips positions within the track block (RTL)"
+    (let [gr (g/resolve-grid (assoc base :fill-mirror true))]
       (is (at? (g/cell gr 0) 200 0))
       (is (at? (g/cell gr 2) 0 0))))
-  (testing ":main-dir :reverse mirrors rows (bottom-up)"
-    (let [gr (g/resolve-grid (assoc base :main-dir :reverse))]
+  (testing ":stack-mirror flips line order (bottom-up, box host)"
+    (let [gr (g/resolve-grid (assoc base :stack-mirror true))]
       (is (at? (g/cell gr 0) 0 50))
       (is (at? (g/cell gr 3) 0 0)))))
 
-(deftest partial-last-row
-  (let [gr (g/resolve-grid (assoc base :count 5))]
-    (is (= 2 (:rows gr)))
-    (is (at? (g/cell gr 4) 100 50))))
-
-(deftest line-align-justifies-partial-row
-  (testing "default :start leaves the partial row at the block start"
-    (let [gr (g/resolve-grid (assoc base :count 5))]
+(deftest line-align-justifies-partial-lines
+  (testing "default :start leaves the partial line at the block start"
+    (let [gr (g/resolve-grid (assoc base :item-count 5))]
+      (is (= 2 (:lines gr)))
       (is (at? (g/cell gr 3) 0 50))
       (is (at? (g/cell gr 4) 100 50))))
-  (testing ":center centers the partial row within the block; full rows unchanged"
-    (let [gr (g/resolve-grid (assoc base :count 5 :line-align :center))]
-      (is (at? (g/cell gr 0) 0 0))          ; full row keeps its track positions
+  (testing ":center centers the partial line; full lines keep track positions"
+    (let [gr (g/resolve-grid (assoc base :item-count 5 :line-align :center))]
+      (is (at? (g/cell gr 0) 0 0))
       (is (at? (g/cell gr 2) 200 0))
-      (is (at? (g/cell gr 3) 50 50))        ; partial row (2 items) centered
+      (is (at? (g/cell gr 3) 50 50))
       (is (at? (g/cell gr 4) 150 50))))
-  (testing ":line-align has no effect when every row is full"
+  (testing ":line-align has no effect when every line is full"
     (let [gr (g/resolve-grid (assoc base :line-align :center))]
       (is (at? (g/cell gr 3) 0 50))
-      (is (at? (g/cell gr 5) 200 50)))))
+      (is (at? (g/cell gr 5) 200 50))))
+  (testing "mirror composes with justification"
+    (let [gr (g/resolve-grid (assoc base :item-count 5 :fill-mirror true :line-align :end))]
+      ;; :end packs the 2 items to flow end; mirrored, they occupy the left tracks
+      (is (at? (g/cell gr 3) 100 50))
+      (is (at? (g/cell gr 4) 0 50)))))
+
+(deftest pad-start
+  ;; 5 items padded so the LAST line is full: line 0 holds 2, line 1 holds 3
+  (let [gr (g/resolve-grid (assoc base :item-count 5 :pad-start? true))]
+    (is (= 1 (:slot-offset gr)))
+    (is (= 2 (:lines gr)))
+    (testing "first line is the partial one and justifies per line-align"
+      (is (at? (g/cell gr 0) 0 0))
+      (is (at? (g/cell gr 1) 100 0)))
+    (testing "the rest fill their lines exactly"
+      (is (at? (g/cell gr 2) 0 50))
+      (is (at? (g/cell gr 4) 200 50))))
+  (testing "line-align :end pushes the padded first line to the block end"
+    (let [gr (g/resolve-grid (assoc base :item-count 5 :pad-start? true :line-align :end))]
+      (is (at? (g/cell gr 0) 100 0))
+      (is (at? (g/cell gr 1) 200 0))))
+  (testing "full grid needs no pad"
+    (is (= 0 (:slot-offset (g/resolve-grid (assoc base :pad-start? true)))))))
+
+(deftest count-derivation-and-fallback
+  (testing "count derived from track :min"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :item-count 12)
+                                 (assoc :fill {:track {:min 90 :flex 1} :gap 10})))]
+      (is (= 3 (:tracks gr)))))
+  (testing "underivable fill count falls back to the stack :count"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :fill {:track :flex})
+                                 (assoc :stack {:track 50 :count 2})))]
+      (is (= 3 (:tracks gr)))
+      (is (= 2 (:lines gr))))))
+
+(deftest aspect-sizing
+  (testing "stack cell size derives from the fill cell (w/h)"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :fill {:count 3 :track :flex})
+                                 (assoc :stack {:track {:aspect 2}})
+                                 (assoc :stack-available ##Inf)))]
+      ;; 300/3 = 100 wide → 100/2 = 50 high
+      (is (close? (get-in gr [:stack :size]) 50))))
+  (testing "fill aspect resolves after the stack, needs explicit count"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :fill {:count 3 :track {:aspect 0.5}})
+                                 (assoc :stack {:track 60})))]
+      ;; x-axis track: width = height * aspect = 60 * 0.5 = 30
+      (is (close? (get-in gr [:fill :size]) 30)))
+    (is (thrown? Exception
+                 (g/resolve-grid (-> base
+                                     (assoc :fill {:track {:aspect 1}})
+                                     (assoc :stack {:track 60}))))))
+  (testing ":aspect on both axes is rejected"
+    (is (thrown? Exception
+                 (g/resolve-grid (-> base
+                                     (assoc :fill {:count 3 :track {:aspect 1}})
+                                     (assoc :stack {:track {:aspect 1}})))))))
 
 (deftest composes-solver-features
-  (testing "flex cells split the cross extent"
-    (let [gr (g/resolve-grid (assoc base :cross-sizer :flex))]
-      (is (at? (g/cell gr 0) 0 0))
-      (is (at? (g/cell gr 1) 100 0))
-      (is (close? (:cross-extent gr) 300))))
-  (testing "unbounded main shrink-wraps to content"
-    (let [gr (g/resolve-grid (assoc base :main-available ##Inf))]
-      (is (close? (:main-extent gr) 100))))
-  (testing "main-axis gap offsets rows"
-    (let [gr (g/resolve-grid (assoc base :main-available 110.0 :main-gap 10))]
-      (is (at? (g/cell gr 3) 0 60)))))
+  (testing "flex cells split the fill extent"
+    (let [gr (g/resolve-grid (assoc-in base [:fill :track] :flex))]
+      (is (at? (g/cell gr 1) 100 0))))
+  (testing "unbounded stack shrink-wraps to content"
+    (let [gr (g/resolve-grid (assoc base :stack-available ##Inf))]
+      (is (close? (get-in gr [:stack :extent]) 100))))
+  (testing "stack gap offsets lines"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :stack-available 110.0)
+                                 (assoc :stack {:track 50 :gap 10})))]
+      (is (at? (g/cell gr 3) 0 60))))
+  (testing "stack align :end pins content to the far edge"
+    (let [gr (g/resolve-grid (-> base
+                                 (assoc :stack-available 200.0)
+                                 (assoc :stack {:track 50 :align :end})))]
+      (is (at? (g/cell gr 0) 0 100)))))
+
+(deftest window-index-range
+  (let [gr (g/resolve-grid base)]
+    (is (= 0 (g/first-index gr 0.0)))
+    (is (= 2 (g/last-index gr 0.0)))
+    (is (= 3 (g/first-index gr 60.0)))
+    (is (= 5 (g/last-index gr 60.0)))
+    (testing "offsets clamp to the line range"
+      (is (= 0 (g/first-index gr -50.0)))
+      (is (= 5 (g/last-index gr 1000.0)))))
+  (testing "pad-start shifts the ranges"
+    (let [gr (g/resolve-grid (assoc base :item-count 5 :pad-start? true))]
+      (is (= 0 (g/first-index gr 0.0)))
+      (is (= 1 (g/last-index gr 0.0)))
+      (is (= 2 (g/first-index gr 60.0)))
+      (is (= 4 (g/last-index gr 60.0))))))

@@ -1,24 +1,12 @@
 (ns flutter-cljd.internal.scroll
   (:require
    ["package:flutter/material.dart" :as m]
-   ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
-   [flutter-cljd.internal.grid.sliver :as grid]
+   [flutter-cljd.internal.grid.opts :as grid-opts]
+   [flutter-cljd.internal.grid.sliver :as grid-sliver]
+   [flutter-cljd.internal.sliver-collection :as scol]
    [flutter-cljd.types :as t]
    [flutter-cljd.utils :as ut]))
-
-(defn- ^r/SliverGridDelegate grid-delegate-for
-  "Pick a SliverGridDelegate for grid args. `:max-columns` selects the flexible grid
-   (flex/min-max tracks, gap sizers, justify alignment); anything else
-   falls back to the native aspect-ratio delegates. The flexible delegate needs the
-   item count up front (Flutter doesn't hand it to getLayout)."
-  [args item-count]
-  (if (:max-columns args)
-    (do
-      (when (nil? item-count)
-        (throw (Exception. "flexible grid (:max-columns) needs a finite item count — pass a data source, an :item-count, or static children")))
-      (grid/grid-delegate (assoc args :count (int item-count))))
-    (t/sliver-grid-delegate args)))
 
 (defn- parse-scroll-args
   [raw-args]
@@ -130,64 +118,85 @@
 
 ;; --- grid-view ---
 
-(defn ^m/Widget grid-view* [raw-args]
-  (let [[args children] (parse-scroll-args raw-args)
-        key (t/widget-key (:key args))
-        direction (t/axis (or (:axis args) :vertical))
-        reverse (if (contains? args :reverse)
-                  (boolean (:reverse args))
-                  (= :end (:main-align args)))
-        controller (:controller args)
-        primary (:primary args)
-        physics (some-> (:physics args) t/scroll-physics)
-        shrink-wrap (boolean (:shrink-wrap args))
-        padding (some-> (:padding args) t/insets)
-        clip (t/clip (or (:clip args) :hard-edge))
-        cache-extent (some-> (:cache-extent args) double)
-        item-builder (:item-builder args)
-        item-count (:item-count args)
-        delegate (grid-delegate-for (assoc args :main-fit (if shrink-wrap :content :fill))
-                                    (if item-builder item-count (count children)))
-        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
-        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
-        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
-    (if item-builder
-      ;; GridView.builder
-      (m/GridView.builder
-       .key key
-       .scrollDirection direction
-       .reverse reverse
-       .controller controller
-       .primary primary
-       .physics physics
-       .shrinkWrap shrink-wrap
-       .padding padding
-       .clipBehavior clip
-       .cacheExtent cache-extent
-       .gridDelegate delegate
-       .itemCount (some-> item-count int)
-       .itemBuilder item-builder
-       .addAutomaticKeepAlives add-automatic-keep-alives
-       .addRepaintBoundaries add-repaint-boundaries
-       .addSemanticIndexes add-semantic-indexes)
+(defn- parse-grid-args
+  "Like `parse-scroll-args` but keeps the raw data source so it can be handed
+   to sliver-collection (diffing, :key-fn, :animate work on the items).
+   Returns [opts source builder children]."
+  [raw-args]
+  (let [f (first raw-args)
+        [source rst] (if (or (int? f) (sequential? f))
+                       [f (rest raw-args)]
+                       [nil raw-args])
+        l (last rst)]
+    (if (fn? l)
+      (do
+        (when (fn? (last (butlast rst)))
+          (throw (Exception. "grid-view: separator builders are not supported")))
+        (let [args (ut/key-values-map (butlast rst))]
+          [(if (map? args) args {}) source l nil]))
+      (let [[args children] (ut/key-values-args-and-children
+                             (if source (cons source rst) rst))]
+        [args nil nil children]))))
 
-      ;; GridView (static children)
-      (m/GridView
-       .key key
-       .scrollDirection direction
-       .reverse reverse
-       .controller controller
-       .primary primary
-       .physics physics
-       .shrinkWrap shrink-wrap
-       .padding padding
-       .clipBehavior clip
-       .cacheExtent cache-extent
-       .gridDelegate delegate
-       .addAutomaticKeepAlives add-automatic-keep-alives
-       .addRepaintBoundaries add-repaint-boundaries
-       .addSemanticIndexes add-semantic-indexes
-       .children children))))
+(defn- grid-collection-sliver
+  "The sliver-collection carrying a flexible grid: applies the anchor-:end
+   index remap, wraps children per :item-align, forwards collection opts."
+  [args normalized ^int item-count source builder children]
+  (let [remap (:remap normalized)
+        item-align (:item-align normalized)
+        align (when (not= :stretch item-align) (t/alignment item-align))
+        wrap (if align
+               (fn [^w/Widget child] (w/Align .alignment align .child child))
+               identity)
+        ;; anchor :end feeds the engine reversed indices — combined with the
+        ;; reversed scroll view the visual order stays normal, anchored to the end
+        [source builder] (cond
+                           (and remap source (not (int? source)))
+                           [(vec (reverse source)) builder]
+
+                           remap
+                           [source (fn [ctx ^int i] (builder ctx (- item-count 1 i)))]
+
+                           :else [source builder])
+        [source builder] (if children
+                           [(vec (if remap (reverse children) children))
+                            (fn [_ctx ^w/Widget child] child)]
+                           [source builder])
+        builder (if align (fn [ctx x] (wrap (builder ctx x))) builder)
+        forwarded (mapcat (fn [k] (when (contains? args k) [k (get args k)]))
+                          [:key-fn :animate :on-prefetch :prefetch-distance
+                           :auto-keep-alive])]
+    (scol/sliver-collection*
+     (concat (when source [source])
+             [:layout (grid-sliver/flex-grid-layout normalized)]
+             (when (nil? source) [:item-count item-count])
+             forwarded
+             [builder]))))
+
+(defn ^m/Widget grid-view* [raw-args]
+  (let [[args source builder children] (parse-grid-args raw-args)
+        normalized (grid-opts/scroll-normalize (grid-opts/parse args) (:anchor args))
+        item-count (cond
+                     (int? source) (int source)
+                     source (count source)
+                     children (count children)
+                     (:item-count args) (int (:item-count args))
+                     :else (throw (Exception. "grid-view needs a finite item count — pass a data source, static children, or :item-count")))
+        sliver (grid-collection-sliver args normalized item-count source builder children)
+        sliver (if-let [padding (:padding args)]
+                 (w/SliverPadding .padding (t/insets padding) .sliver sliver)
+                 sliver)]
+    (m/CustomScrollView
+     .key (t/widget-key (:key args))
+     .scrollDirection (t/axis (:scroll-axis normalized))
+     .reverse (boolean (:reverse normalized))
+     .controller (:controller args)
+     .primary (:primary args)
+     .physics (some-> (:physics args) t/scroll-physics)
+     .shrinkWrap (boolean (:shrink-wrap args))
+     .clipBehavior (t/clip (or (:clip args) :hard-edge))
+     .cacheExtent (some-> (:cache-extent args) double)
+     .slivers [sliver])))
 
 ;; --- custom-scroll-view ---
 
@@ -276,31 +285,17 @@
        .children children))))
 
 (defn ^w/Widget sliver-grid* [raw-args]
-  (let [[args children] (parse-scroll-args raw-args)
-        key (t/widget-key (:key args))
-        item-builder (:item-builder args)
-        item-count (:item-count args)
-        delegate (grid-delegate-for args (if item-builder item-count (count children)))
-        add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
-        add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
-        add-semantic-indexes (boolean (:add-semantic-indexes args true))]
-    (if item-builder
-      (w/SliverGrid.builder
-       .key key
-       .gridDelegate delegate
-       .itemCount (some-> item-count int)
-       .itemBuilder item-builder
-       .addAutomaticKeepAlives add-automatic-keep-alives
-       .addRepaintBoundaries add-repaint-boundaries
-       .addSemanticIndexes add-semantic-indexes)
-      (w/SliverGrid
-       .key key
-       .gridDelegate delegate
-       .delegate (w/SliverChildListDelegate
-                  children
-                  .addAutomaticKeepAlives add-automatic-keep-alives
-                  .addRepaintBoundaries add-repaint-boundaries
-                  .addSemanticIndexes add-semantic-indexes)))))
+  (let [[args source builder children] (parse-grid-args raw-args)
+        normalized (grid-opts/scroll-normalize (grid-opts/parse args) (:anchor args))
+        _ (when (or (:reverse normalized) (:remap normalized))
+            (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view, or reverse your custom-scroll-view and use a forward :flow")))
+        item-count (cond
+                     (int? source) (int source)
+                     source (count source)
+                     children (count children)
+                     (:item-count args) (int (:item-count args))
+                     :else (throw (Exception. "sliver-grid needs a finite item count — pass a data source, static children, or :item-count")))]
+    (grid-collection-sliver args normalized item-count source builder children)))
 
 (defn ^w/Widget sliver-to-box-adapter* [args child]
   (w/SliverToBoxAdapter

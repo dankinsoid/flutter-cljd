@@ -2379,80 +2379,104 @@ Extra: `:item-extent`,
   (scrl/list-view* args))
 
 (defn ^w/Widget grid-view
-  "Scrollable grid of widgets.
+  "Scrollable flexible grid — a `custom-scroll-view` + `sliver-collection`
+under the hood, so `:animate`/`:key-fn`/`:on-prefetch` work here too.
 
-Two grid engines, chosen by options:
-
-- Native (aspect-ratio): `:cross-axis-count` or `:max-cross-axis-extent`.
-- Flexible: `:max-columns` — up to N columns whose widths and the row height are
-  given explicitly by sizers (`number` / `:flex` / `{:min :max :flex}`), with
-  independent cross/main gaps, justify alignment, RTL and a fill mode.
+Everything is screen-absolute: `:columns` are vertical tracks, `:rows` are
+horizontal ones, sides are `:left`/`:right`/`:top`/`:bottom` — never
+start/end. The fill order is `:flow [fill stack]` and the scroll axis is the
+stack (second) direction's axis.
 
 Trailing `fn` → lazy builder; collection/number before it sets data source.
 
 Examples:
 
 ```clojure
-(grid-view :cross-axis-count 2 (text \"A\") (text \"B\") (text \"C\"))
-(grid-view :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
-(grid-view :max-cross-axis-extent 200 50 (fn [ctx i] (text (str i))))
-;; flexible: 3 flex columns 8px apart, 80px rows
-(grid-view :max-columns 3 :cross-gap 8 :main-sizer 80 items
-           (fn [ctx it] (tile it)))
+;; 3 columns, square cells, 8px gaps
+(grid-view items :columns {:count 3 :gap 8} :rows {:size {:aspect 1} :gap 8}
+           (fn [ctx item] (tile item)))
+;; adaptive: as many ≥120px columns as fit, stretched evenly
+(grid-view items :columns {:size {:min 120 :flex 1} :gap 12} :rows {:size 80}
+           (fn [ctx item] (tile item)))
+;; fixed cells spread apart, partial last row centered
+(grid-view items :columns {:count 4 :size 64 :align :space-between}
+           :rows {:size 64 :gap 8} :line-align :center tile)
+;; chat: normal order, viewport anchored to the bottom
+(grid-view messages :columns 1 :anchor :end (fn [ctx m] (bubble m)))
+;; bottom-up fill
+(grid-view items :columns 2 :flow [:right :up] tile)
+;; horizontal: fill columns downward, scroll right
+(grid-view items :rows {:count 3} :columns {:size 100 :gap 8}
+           :flow [:down :right] tile)
 ```
 
-Native grid options: `:cross-axis-count`, `:max-cross-axis-extent`, `:child-aspect-ratio`,
-`:cross-axis-spacing`, `:main-axis-spacing`, `:main-axis-extent`.
+Axis options (`:columns` / `:rows` — a number is shorthand for `{:count n}`):
 
-Flexible grid options (with `:max-columns`): `:cross-sizer` (default `:flex`),
-`:cross-gap`, `:cross-align` (`:start`/`:end`/`:center`/`:space-between`/`:space-around`/`:space-evenly`),
-`:line-align` (justify the partial last row within the column block, same values),
-`:cross-dir` (`:start`/`:end` for RTL), `:main-sizer` (row height), `:main-gap`,
-`:main-align`. Needs a finite item count.
+- `:count` — number, `{:min :max}` (clamps a derived count), `(fn [ctx] n)`, or
+  omitted: derived from `:size` (as many tracks as fit `:min`; or as few as
+  cover the extent at a finite `:max` — the adaptive pattern)
+- `:size` — sizer: number, `:flex`, or `{:min :max :flex :aspect}`; `:aspect`
+  (w/h) computes the size from the other axis' resolved cell size
+- `:gap` / `:margin` — inner / edge spacing, same sizer language (a
+  `{:min 8 :max 24 :flex 1}` gap grows within its bounds)
+- `:align` — placement of the track block in leftover space: `:left`/`:right`
+  (columns), `:top`/`:bottom` (rows), `:center`, `:space-between`,
+  `:space-around`, `:space-evenly`. Alignment compiles into edge/inner gap
+  sizers, so it composes with `:gap`/`:margin` and is inert when something
+  already flexes. Default: hug the `:flow` origin.
+- `:fit` — stack axis only: `:content` (default) — the grid is exactly as tall
+  as its lines; `:fill` — claim the remaining viewport so `:align` and flex
+  lines/gaps have room; overflowing content just scrolls.
 
-Alignments are axis-relative: `:start`/`:end`/`:center`/`:space-*`. `:main-align :end`
-with no explicit `:reverse` anchors to the far end by reversing the scroll.
+Grid options:
 
-Scroll options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
-`:shrink-wrap`, `:padding`, `:clip`, `:cache-extent`."
+- `:flow` — `[fill stack]`, two orthogonal directions; default `[:right :down]`.
+  `[:left :down]` RTL, `[:right :up]` bottom-up, `[:down :right]` fills columns
+  and scrolls horizontally. Scroll axis = the stack direction's axis.
+- `:line-align` — justify a partial line's items within the track block (same
+  vocabulary as `:align` along the fill axis; full lines are unaffected)
+- `:item-align` — child within its cell: `:stretch` (default) or an alignment
+  like `:center`, `:top-left`
+- `:anchor` — `:end` starts the viewport at the far end and keeps it there
+  (chat); purely a scroll concern, the visual order stays normal
+
+Data/collection options: `:item-count`, `:key-fn`, `:animate`, `:on-prefetch`,
+`:prefetch-distance`, `:auto-keep-alive` — see `sliver-collection`.
+
+Scroll options: `:controller`, `:primary`, `:physics`, `:shrink-wrap`,
+`:padding`, `:clip`, `:cache-extent`. (`:axis`/`:reverse` are gone — `:flow`
+covers both.)"
   [& args]
   (scrl/grid-view* args))
 
 (defn ^w/Widget grid
-  "Bounded, non-scrolling flexible grid — the box counterpart of `grid-view`.
+  "Bounded, non-scrolling flexible grid — the box counterpart of `grid-view`,
+same option language (`:columns`/`:rows`/`:flow`/`:line-align`/`:item-align`),
+no scroll options. Lays all children out at once (no virtualization). For
+calendars, keypads, toolbars, bento layouts.
 
-Lays all children out at once (no virtualization) and, unlike the scrollable grid,
-flexes and aligns on BOTH axes: flex/`{:min :max :flex}` column widths AND row
-heights, main-axis justify alignment, column-major fill, axis reversal. Shrink-wraps
-on whichever incoming constraint is unbounded (e.g. inside a `column` its height
-hugs the rows). For calendars, keypads, toolbars, bento layouts.
-
-Children are widgets you build yourself (pass a seq or varargs); map your data with
-`for`/`map`.
+Children are widgets you build yourself (pass a seq or varargs); map your data
+with `for`/`map`.
 
 Examples:
 
 ```clojure
-;; 7-column month grid, square-ish cells filling the given width, 4px gaps
-(grid :max-columns 7 :main-sizer 44 :cross-gap 4 :main-gap 4
+;; 7-column month grid, 44px rows, 4px gaps
+(grid :columns {:count 7 :gap 4} :rows {:size 44 :gap 4}
       (for [d days] (day-cell d)))
-;; fixed 64px cells, centered as a block, content-height
-(grid :max-columns 4 :cross-sizer 64 :main-sizer 64 :cross-align :center
+;; fixed 64px cells, block centered, content-height
+(grid :columns {:count 4 :size 64 :align :center} :rows {:size 64}
       (map icon-tile icons))
+;; keypad pinned to the bottom of the available height
+(grid :columns 3 :rows {:size 56 :gap 8 :align :bottom :fit :fill}
+      (map key-cap keys))
 ```
 
-Options: `:max-columns` (required); `:cross-sizer` (default `:flex`), `:main-sizer`
-(row size, required); `:cross-gap`, `:main-gap`; `:cross-align`, `:main-align`
-(`:start`/`:end`/`:center`/`:space-between`/`:space-around`/`:space-evenly`);
-`:line-align` (justify the partial last row's items within the column block, same
-values — `:cross-align` positions the whole block, `:line-align` justifies the short
-row inside it; full rows unaffected); `:cross-fit` (`:fill` default — span the width /
-`:content` — hug columns),
-`:main-fit` (`:content` default — hug rows / `:fill` — span the height, enabling
-`:main-align` and flex rows); `:cross-dir`/`:main-dir` (`:start`/`:end`,
-`:forward`/`:reverse`); `:primary` (`:row`/`:column`); `:axis`
-(`:vertical`/`:horizontal`); `:item-align` (how a child sits in its cell when
-smaller — `:stretch` default, or an alignment like `:center`); `:key`."
+Unlike the scrollable grid, `:fit` works on BOTH axes here (`:fill` — span the
+incoming constraint / `:content` — hug the tracks; defaults: fill axis `:fill`,
+stack axis `:content`), an unbounded incoming constraint always shrink-wraps,
+and all 8 `:flow` directions are available (no virtualization constraints).
+See `grid-view` for the axis-spec/sizer/align reference."
   [& args]
   (let [[opts children] (ut/key-values-args-and-children args)
         children (if (and (= 1 (count children)) (sequential? (first children)))
@@ -2538,19 +2562,20 @@ Examples:
   (scrl/sliver-list* args))
 
 (defn ^w/Widget sliver-grid
-  "Sliver that displays children in a grid. Use inside `custom-scroll-view`.
+  "Sliver that displays children in a flexible grid. Use inside
+`custom-scroll-view`. Same option language as `grid-view` (see there for the
+full reference), minus the scroll options.
 
-Same two engines as `grid-view`: native `:cross-axis-count`/`:max-cross-axis-extent`,
-or flexible `:max-columns` (explicit column/row sizers, gaps, alignment, RTL,
-`:main-fit`). See `grid-view` for the full flexible option list.
+A bare sliver cannot reverse its scroll view, so upward/leftward `:flow`
+stacking and `:anchor :end` are `grid-view`-only — here either use a forward
+`:flow` or reverse the enclosing `custom-scroll-view` yourself.
 
 Examples:
 
 ```clojure
-(sliver-grid :cross-axis-count 2 (text \"A\") (text \"B\"))
-(sliver-grid :cross-axis-count 3 items (fn [ctx item] (text (:name item))))
-(sliver-grid :max-columns 4 :cross-gap 8 :main-sizer 96 items
-             (fn [ctx it] (tile it)))
+(sliver-grid :columns 2 (text \"A\") (text \"B\"))
+(sliver-grid items :columns {:count 3 :gap 8} :rows {:size 96}
+             (fn [ctx item] (tile item)))
 ```"
   [& args]
   (scrl/sliver-grid* args))
@@ -2619,7 +2644,8 @@ Examples:
 (sliver-collection items (fn [ctx item] (text (:name item))))
 (sliver-collection 1000 :item-extent 48 (fn [ctx i] (text (str i))))
 (sliver-collection (fn [ctx i] (text (str i))))              ;; infinite
-(sliver-collection items :layout :grid :cross-axis-count 3
+(sliver-collection items :layout :grid :columns {:count 3 :gap 8}
+  :rows {:size {:aspect 1} :gap 8}
   (fn [ctx item] (card (:title item))))
 (sliver-collection items :layout :masonry :cross-axis-count 2
   (fn [ctx item] (photo-card item)))
@@ -2630,11 +2656,11 @@ Examples:
 Layout (default `:list`):
 
 - `:layout` — `:list` | `:grid` | `:wrap` | `:masonry` | `SliverGridDelegate`
-  | a custom layout map (see below)
+  (interop) | a custom layout map (see below)
 - `:list` options: `:item-extent` (fixed main-axis size), `:spacing`
-- `:grid` options: `:cross-axis-count` or `:max-cross-axis-extent`,
-  `:child-aspect-ratio`, `:cross-axis-spacing`, `:main-axis-spacing`,
-  `:main-axis-extent`, or a ready `:grid-delegate`
+- `:grid` options: the flexible-grid language — `:columns`, `:rows`, `:flow`,
+  `:line-align` (see `grid-view`; forward `:flow` stacking only — a bare
+  sliver cannot reverse its scroll view)
 - `:wrap` options: `:spacing`, `:run-spacing`
 - `:masonry` options: `:cross-axis-count`, `:cross-axis-spacing`,
   `:main-axis-spacing`
