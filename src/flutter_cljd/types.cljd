@@ -550,6 +550,40 @@
     locale
     (m/Locale locale)))
 
+(def default-color-space
+  "The `ui/ColorSpace` in which `color` interprets color LITERALS — numbers, hex
+   strings, `[r g b]` vectors and named keywords. Already-built `Color` instances
+   pass through untouched.
+
+   Display P3 by default: literal component values are taken as P3 coordinates,
+   so on wide-gamut displays they render at full vividness (matching how iOS
+   design tools treat hex values), while on sRGB surfaces the engine gamut-maps
+   them back to plain sRGB. Change via `set-default-color-space!`."
+  (atom ui/ColorSpace.displayP3))
+
+(defn set-default-color-space!
+  "Sets `default-color-space`: `:srgb`, `:extended-srgb`, `:display-p3`,
+   or a raw `ui/ColorSpace`."
+  [space]
+  (reset! default-color-space
+          (case space
+            :srgb ui/ColorSpace.sRGB
+            :extended-srgb ui/ColorSpace.extendedSRGB
+            :display-p3 ui/ColorSpace.displayP3
+            (if (instance? ui/ColorSpace space)
+              space
+              (throw (ArgumentError. (str "Unknown color space: " space)))))))
+
+(defn- ^m/Color in-default-space
+  "Reinterprets `c`'s components in `default-color-space` (no value conversion —
+   the numbers stay, the space changes)."
+  [^m/Color c]
+  (let [^ui/ColorSpace space @default-color-space]
+    (if (identical? space (.-colorSpace c))
+      c
+      (m/Color.from .alpha (.-a c) .red (.-r c) .green (.-g c) .blue (.-b c)
+                    .colorSpace space))))
+
 (defn ^m/Color color
   "Returns a `Color` object for the specified color.
 
@@ -560,21 +594,26 @@
     - a hex string: \"#RRGGBB\" or \"#AARRGGBB\". Prefer using the number format for better performance.
     - a keyword: :blue, :red, :green, :yellow, :orange, :purple, :pink, :cyan, :magenta, :teal, :amber, :lime, :light-blue, :light-green, :deep-orange, :deep-purple, :indigo, :blue-grey, :grey, :black, :white, :transparent
 
+   Literals (everything except a ready `Color` instance) are interpreted in
+   `default-color-space` — Display P3 unless overridden.
+
    [Flutter docs](https://api.flutter.dev/flutter/dart-ui/Color-class.html)"
-  ([r g b] (m/Color.fromRGBO r g b 1.0))
-  ([r g b o] (m/Color.fromRGBO r g b o))
+  ([r g b] (in-default-space (m/Color.fromRGBO r g b 1.0)))
+  ([r g b o] (in-default-space (m/Color.fromRGBO r g b o)))
   ([value]
    (cond
      (instance? m/Color value) value
-     (number? value) (m/Color value)
+     (number? value) (in-default-space (m/Color value))
      (string? value) (let [hex (-> value str/lower-case)]
                        (if (re-matches #"^#([0-9a-f]{6}|[0-9a-f]{8})$" hex)
-                         (m/Color (if (= (count hex) 7)
-                                    (dc/int.parse (str "0xff" (subs hex 1)))
-                                    (dc/int.parse (str "0x" (subs hex 1)))))
+                         (in-default-space
+                          (m/Color (if (= (count hex) 7)
+                                     (dc/int.parse (str "0xff" (subs hex 1)))
+                                     (dc/int.parse (str "0x" (subs hex 1))))))
                          (throw (Exception. (str "Invalid color hex: " value)))))
 
-     (keyword? value) (case value
+     (keyword? value) (in-default-space
+                       (case value
                         :blue m/Colors.blue
                         :red m/Colors.red
                         :green m/Colors.green
@@ -598,8 +637,8 @@
                         :black m/Colors.black
                         :white m/Colors.white
                         :transparent m/Colors.transparent
-                        (throw (Exception. (str "Unknown color keyword: " value))))
-     :else (m/Color value))))
+                        (throw (Exception. (str "Unknown color keyword: " value)))))
+     :else (in-default-space (m/Color value)))))
 
 (defn ^m/ColorFilter color-filter
   "A description of a color filter to apply when drawing a shape or compositing a layer with a particular Paint.
