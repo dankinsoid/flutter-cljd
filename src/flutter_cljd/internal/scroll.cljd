@@ -175,10 +175,18 @@
 
 (defn ^m/Widget grid-view* [raw-args]
   (let [[args source builder children] (parse-grid-args raw-args)
-        normalized (grid-opts/scroll-normalize (grid-opts/parse args) (:anchor args))
-        ;; a shrink-wrapping viewport is content-sized by definition — a :fill
-        ;; stack would ask it for "remaining space" it doesn't have
+        parsed (grid-opts/parse args)
+        normalized (grid-opts/scroll-normalize parsed (:anchor args))
+        ;; grid-view owns its whole viewport (single sliver), so an explicit
+        ;; stack-axis :align means "distribute the leftover" — lift :fit to
+        ;; :fill unless the caller pinned it. Bare slivers keep the :content
+        ;; default: there the claim affects sibling slivers.
         normalized (cond-> normalized
+                     (and (nil? (:fit (:stack-spec parsed)))
+                          (some? (:align (:stack-spec parsed))))
+                     (assoc :stack-fit :fill)
+                     ;; a shrink-wrapping viewport is content-sized by definition
+                     ;; — a :fill stack would ask it for space it doesn't have
                      (:shrink-wrap args) (assoc :stack-fit :content))
         item-count (cond
                      (int? source) (int source)

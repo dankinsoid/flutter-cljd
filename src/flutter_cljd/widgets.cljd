@@ -2424,9 +2424,13 @@ Axis options (`:columns` / `:rows` — a number is shorthand for `{:count n}`):
   `:space-around`, `:space-evenly`. Alignment compiles into edge/inner gap
   sizers, so it composes with `:gap`/`:margin` and is inert when something
   already flexes. Default: hug the `:flow` origin.
-- `:fit` — stack axis only: `:content` (default) — the grid is exactly as tall
-  as its lines; `:fill` — claim the remaining viewport so `:align` and flex
-  lines/gaps have room; overflowing content just scrolls.
+- `:fit` — stack axis only: `:content` — the grid is exactly as tall as its
+  lines (so there is no leftover and `:align`/flex are inert); `:fill` — claim
+  the whole viewport so `:align` and flex lines/gaps have room; overflowing
+  content just scrolls either way. Default is `:content`, but an explicit
+  `:align` on this axis lifts it to `:fill` (in `grid-view` the sliver is
+  alone, so claiming the viewport costs nothing); `:shrink-wrap` forces
+  `:content` back.
 
 Grid options:
 
