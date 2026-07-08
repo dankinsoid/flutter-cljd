@@ -630,8 +630,14 @@ Examples:
   ([k0 v0 & args]
    (if (fn? k0)
      (bt/button* k0 (ut/key-values-map (cons v0 (drop-last args))) (last args))
-     (let [[args [child]] (ut/key-values-args-and-children (concat [k0 v0] args))]
-       (bt/button* args child))))
+     ;; Options-first form. The child is always the final argument; an optional
+     ;; on-tap handler may sit just before it (natural under `->>`) — a fn in that
+     ;; slot is unambiguously the handler, since the child is always a widget.
+     (let [values (concat [k0 v0] args)
+           child (last values)
+           [opts positionals] (ut/key-values-and-rest (butlast values))
+           on-tap (first (filter fn? positionals))]
+       (bt/button* (cond-> opts on-tap (assoc :on-tap on-tap)) child))))
   ([args child] (bt/button* args child)))
 
 (defn ^w/Widget with-button-modifier
