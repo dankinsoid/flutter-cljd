@@ -271,9 +271,9 @@
   (-equiv [o other] (identical? o other))
   (dispose [^MotionController this]
     (.dispose (.-parent this)))
-  (^sc/TickerFuture animateBack [^MotionAnimationController this target .duration .curve]
+  (^sc/TickerFuture animateBack [^MotionController this target .duration .curve]
     (.animateBack (.-parent this) (double target) .duration (some-> duration t/duration) .curve (t/curve (or curve :linear))))
-  (^sc/TickerFuture animateTo [^MotionAnimationController this target .duration .curve]
+  (^sc/TickerFuture animateTo [^MotionController this target .duration .curve]
     (.animateTo (.-parent this) (double target) .duration (some-> duration t/duration) .curve (t/curve (or curve :linear))))
   (^sc/TickerFuture forward [^MotionController this ^double? .from]
     (.forward (.-parent this) .from (some-> from double)))
