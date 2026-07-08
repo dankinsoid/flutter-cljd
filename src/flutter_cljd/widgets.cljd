@@ -61,6 +61,7 @@
    [flutter-cljd.internal.lifecycle-observer :as lco]
    [flutter-cljd.internal.on-visibility-change :as ovc]
    [flutter-cljd.internal.unconstrained :as uc]
+   [flutter-cljd.internal.overflow-box :as ovb]
    [flutter-cljd.internal.hero :as hr]
    [flutter-cljd.internal.draggable :as drg]
    [flutter-cljd.internal.scroll :as scrl]
@@ -2204,6 +2205,26 @@ Args:
   [arg0 & args]
   (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
     (uc/unconstrained* args (last children))))
+
+(defn ^w/Widget overflow
+  "A widget that imposes different constraints on its child than it gets from its parent, possibly allowing the child to overflow the parent.
+
+The box lays its child out with the given min/max constraints (each defaulting to the corresponding incoming constraint when omitted), then sizes *itself* to the incoming constraints and positions the child within that box according to `:alignment`. The child is not clipped, so it may paint outside the box's bounds.
+
+Args:
+
+- `args` — Optional map of arguments (or leading keyword/value pairs):
+  - `:key` — Widget key.
+  - `:alignment` — keyword or `AlignmentGeometry`, default: `:center`. How to align the child within the box.
+  - `:min-width`/`:min-w`, `:max-width`/`:max-w` — number, default: incoming constraint. Width bounds imposed on the child.
+  - `:min-height`/`:min-h`, `:max-height`/`:max-h` — number, default: incoming constraint. Height bounds imposed on the child.
+  - `:fit` — keyword or `OverflowBoxFit`, default: `:max`. How the box sizes itself relative to the child. Possible values: `:max` (always as large as the incoming constraints allow), `:defer-to-child` (size to the child).
+- `child` — The child widget.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/OverflowBox-class.html)"
+  [arg0 & args]
+  (let [[args children] (ut/key-values-args-and-children (cons arg0 args))]
+    (ovb/overflow* args (last children))))
 
 (defn ^w/Widget hero
   "A widget that marks its child as being a candidate for hero animations.

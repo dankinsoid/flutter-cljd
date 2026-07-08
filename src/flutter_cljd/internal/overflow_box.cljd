@@ -1,0 +1,27 @@
+(ns flutter-cljd.internal.overflow-box
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter/rendering.dart" :as r]
+   [flutter-cljd.types :as t]))
+
+;; @ai-generated(solo)
+(defn ^r/OverflowBoxFit overflow-box-fit [fit]
+  (if (instance? r/OverflowBoxFit fit)
+    fit
+    (case fit
+      :max r/OverflowBoxFit.max
+      :defer-to-child r/OverflowBoxFit.deferToChild
+      (throw (Exception. (str "Invalid overflow-box-fit: " fit))))))
+
+;; @ai-generated(solo)
+(defn ^w/Widget overflow*
+  [args child]
+  (w/OverflowBox
+   .key (t/widget-key (:key args))
+   .alignment (t/alignment-geometry (:alignment args :center))
+   .minWidth (some-> (some args [:min-width :min-w]) double)
+   .maxWidth (some-> (some args [:max-width :max-w]) double)
+   .minHeight (some-> (some args [:min-height :min-h]) double)
+   .maxHeight (some-> (some args [:max-height :max-h]) double)
+   .fit (overflow-box-fit (:fit args :max))
+   .child child))
