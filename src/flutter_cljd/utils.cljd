@@ -625,9 +625,14 @@
    [(if (map? args) args {})
     (flatten-children (if (map? args) children (cons args children)))]))
 
-(defn key-values-args-and-children [values]
+(defn key-values-and-rest
+  "Splits leading keyword/value option pairs (or a single leading map) from the
+   trailing positional values. Returns `[opts-map trailing-vec]` with the tail
+   left raw — neither flattened nor widget-validated, so callers can decide how
+   to interpret trailing functions/children."
+  [values]
   (if (map? (first values))
-    (args-children (first values) (rest values))
+    [(first values) (vec (rest values))]
     (let [{:keys [args i key]} (reduce
                                 (fn [{:keys [args key i]} v]
                                   (cond
@@ -641,8 +646,12 @@
                                 values)]
       ;; A leftover `key` means a trailing keyword with no value — silently swallowed otherwise.
       (assert (nil? key)
-              (str "key-values-args-and-children: option key " key " has no value"))
-      (args-children args (vec (drop i values))))))
+              (str "key-values-and-rest: option key " key " has no value"))
+      [args (vec (drop i values))])))
+
+(defn key-values-args-and-children [values]
+  (let [[args tail] (key-values-and-rest values)]
+    (args-children args tail)))
 
 (defn key-values-and-child
   "Splits leading keyword/value pairs (or a single leading map) from one trailing

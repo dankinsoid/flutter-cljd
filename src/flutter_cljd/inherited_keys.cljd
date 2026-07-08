@@ -1,6 +1,10 @@
 (ns flutter-cljd.inherited-keys)
 
-(def enabled {:key :enabled :default-value true})
+;; `:merge` composes nested regions by logical AND: a `(disabled ...)` inside an
+;; enabled subtree stays disabled, and a nested `(enabled ...)` can't re-enable a
+;; disabled ancestor. Leaves resolve the same way against their local prop
+;; (see `flutter-cljd.core/resolve-enabled`), so "either false wins" holds end to end.
+(def enabled {:key :enabled :default-value true :merge (fn [outer inner] (and outer inner))})
 (def button-context {:key :button-context :default-value {}})
 (def enable-feedback {:key :enable-feedback :default-value false})
 (def exclude-from-semantics {:key :exclude-from-semantics :default-value false})

@@ -432,16 +432,32 @@ To access the inherited bindings, use `c/get-inherited` function."
      child)))
 
 (defn ^w/Widget enabled
-  "A widget that sets the `flutter-cljd.inherited-keys/enabled` inherited value"
+  "AND-composes `value` (default true) into the inherited
+   `flutter-cljd.inherited-keys/enabled`. Because it AND's, it can never re-enable
+   a subtree an ancestor `(disabled ...)` switched off — `(enabled true ...)` is a
+   no-op there. Use `force-enabled` to punch through a disabled region."
   ([child] (enabled true child))
   ([value child]
    (with-inherited inh/enabled value child)))
 
 (defn ^w/Widget disabled
-  "A widget that sets the `flutter-cljd.inherited-keys/enabled` inherited value to false"
+  "AND-composes `(not value)` into the inherited
+   `flutter-cljd.inherited-keys/enabled`, switching the subtree off (default true →
+   disabled). A `false` from anywhere in the chain sticks: nested `enabled` can't
+   undo it (see `force-enabled`)."
   ([child] (disabled true child))
   ([value child]
    (with-inherited inh/enabled (not value) child)))
+
+(defn ^w/Widget force-enabled
+  "Overwrites the inherited `flutter-cljd.inherited-keys/enabled` with `value`
+   (default true) instead of AND'ing it — the escape hatch for the one thing
+   `enabled` can't do: re-open an island inside a subtree an ancestor `(disabled
+   ...)` switched off. Sets the region's baseline only; leaves still AND their own
+   local `:enabled`, so a widget passing `:enabled false` here stays disabled."
+  ([child] (force-enabled true child))
+  ([value child]
+   (wi/with-transformed-inherited* inh/enabled (constantly value) child)))
 
 (defn ^w/Widget shortcuts
   "A widget that creates keyboard shortcuts for its descendants.
@@ -1365,7 +1381,7 @@ Examples:
       - `:on-canceled` (fn []): Called when the menu is dismissed without a choice.
       - `:on-opened` (fn []): Called when the menu is shown.
       - `:initial-value`: The item value highlighted when the menu opens.
-      - `:enabled` (boolean): Whether the button is interactive. Unset follows the inherited `enabled` (see `enabled`/`disabled`, default true); an explicit value overrides the inherited one.
+      - `:enabled` (boolean): Whether the button is interactive. Effective state is this AND'd with the inherited `enabled` (see `enabled`/`disabled`, default true): either being false disables.
       - `:tooltip` (string): Long-press tooltip text.
       - `:icon` (Widget): Trigger icon, used only when no `child` is given.
       - `:icon-size` / `:icon-color` / `:splash-radius` (number/color/number).
@@ -2303,7 +2319,7 @@ Options:
 - `:root-overlay` — bool, use root overlay (default false)
 - `:hit-test-behavior` — HitTestBehavior (default `:defer-to-child`)
 - `:allowed-buttons-filter` — predicate filtering pointer buttons
-- `:enabled` — bool; when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely. Unset follows the inherited `enabled` (see `enabled`/`disabled`, default true); an explicit value overrides the inherited one
+- `:enabled` — bool; when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely. Effective state is this AND'd with the inherited `enabled` (see `enabled`/`disabled`, default true): either being false disables, and a disabled region can't be re-enabled here
 - `:return-on-drop` — bool (default false). By default a dropped child stays where it landed; when true it returns to its home position instead. Reactive: flipping it true later sends an already-displaced child home at that moment
 - `:return-animation` — animation options for going home: both the feedback flying back when a drag ends off-target (rejected or dropped on nothing) and the `:return-on-drop` child slide. A `{:duration :curve :on-end}` map (or a plain ms number, or `[dur curve on-end]`); `0` duration snaps instantly. Defaults to the inherited animation theme (see `with-animation`)
 - `:drop-animation` — same shape, for the feedback docking onto the target that accepted it. Defaults to the inherited animation theme"
@@ -2333,7 +2349,7 @@ Options:
 - `:on-move` — `(fn [data offset])` called on each move while hovering
 - `:accept-region` — `(fn [rect] -> rect)` mapping the target's box (in local coords, `(0,0)`-based) to the region that catches draggables. May return any rect-like value (see `rect`). Narrower than the box shrinks it; larger reaches past the box (registers the target for out-of-box hit-testing). Defaults to the box itself
 - `:hit-test-behavior` — HitTestBehavior (default `:translucent`)
-- `:enabled` — bool; when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through. Unset follows the inherited `enabled` (see `enabled`/`disabled`, default true); an explicit value overrides the inherited one"
+- `:enabled` — bool; when false the target drops out of hit-testing entirely (no `MetaData` node) — no draggable can catch it and other gestures pass through. Effective state is this AND'd with the inherited `enabled` (see `enabled`/`disabled`, default true): either being false disables, and a disabled region can't be re-enabled here"
   [& args]
   (let [[opts builder] (ut/key-values-and-child args)]
     (drg/drag-target* (assoc opts :builder builder))))

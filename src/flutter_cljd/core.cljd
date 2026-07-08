@@ -78,14 +78,11 @@
      :else (f/get-of context key default-value))))
 
 (defn ^bool resolve-enabled
-  "Effective `enabled` state for a widget: an explicit local value wins, and
-   when unset (`nil`) the widget follows the inherited
-   `flutter-cljd.inherited-keys/enabled` value (default true).
-
-   So a `(disabled ...)` region switches off every descendant that didn't set
-   `:enabled` itself, while an explicit `:enabled true` still carves out a live
-   island inside it — explicit intent beats the ambient default."
+  "Effective `enabled` state for a widget: the logical AND of its local value and
+   the inherited `flutter-cljd.inherited-keys/enabled` (default true). An unset
+   (`nil`) local counts as enabled, so the widget follows the surrounding
+   `(enabled ...)`/`(disabled ...)` region; a `false` from either side disables
+   it, and a disabled region can't be re-enabled from within."
   [context local]
-  (if (some? local)
-    (boolean local)
-    (get-inherited context inh/enabled)))
+  (and (get-inherited context inh/enabled)
+       (not (false? local))))
