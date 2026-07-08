@@ -3,6 +3,8 @@
    ["dart:core" :as dc]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter/material.dart" :as m]
+   [flutter-cljd.core :as c]
+   [flutter-cljd.internal.builder :as bd]
    [flutter-cljd.types :as t]))
 
 ;; @ai-generated(solo)
@@ -63,37 +65,39 @@
 (defn ^w/Widget popup-menu-button*
   [args child]
   (let [items (:items args)]
-    (#/(m/PopupMenuButton dynamic)
-     .key (t/widget-key (:key args))
-     .itemBuilder (fn [^w/BuildContext ctx]
-                    (let [^#/(dc/List #/(m/PopupMenuEntry dynamic)) entries
-                          (mapv menu-entry (if (fn? items) (items ctx) items))]
-                      entries))
-     .initialValue (:initial-value args)
-     .onOpened (:on-opened args)
-     .onSelected (:on-selected args)
-     .onCanceled (:on-canceled args)
-     .tooltip (:tooltip args)
-     .elevation (some-> (:elevation args) double)
-     .shadowColor (some-> (:shadow-color args) t/color)
-     .surfaceTintColor (some-> (:surface-tint-color args) t/color)
-     .padding (t/insets (:padding args 8))
-     .menuPadding (some-> (:menu-padding args) t/insets)
-     .borderRadius (some-> (:border-radius args) t/border-radius)
-     .splashRadius (some-> (:splash-radius args) double)
-     .icon (when (nil? child) (:icon args))
-     .iconSize (some-> (:icon-size args) double)
-     .iconColor (some-> (:icon-color args) t/color)
-     .offset (t/offset (:offset args 0))
-     .enabled (:enabled args true)
-     .shape (:shape args)
-     .color (some-> (:color args) t/color)
-     .enableFeedback (:enable-feedback args)
-     .constraints (some-> (:constraints args) t/box-constraints)
-     .position (some-> (:position args) t/popup-menu-position)
-     .clipBehavior (t/clip (:clip-behavior args :none))
-     .useRootNavigator (:use-root-navigator args false)
-     .popUpAnimationStyle (:animation-style args)
-     .routeSettings (:route-settings args)
-     .style (:style args)
-     .child child)))
+    (bd/builder*
+     (fn [^w/BuildContext bctx]
+       (#/(m/PopupMenuButton dynamic)
+        .key (t/widget-key (:key args))
+        .itemBuilder (fn [^w/BuildContext ctx]
+                       (let [^#/(dc/List #/(m/PopupMenuEntry dynamic)) entries
+                             (mapv menu-entry (if (fn? items) (items ctx) items))]
+                         entries))
+        .initialValue (:initial-value args)
+        .onOpened (:on-opened args)
+        .onSelected (:on-selected args)
+        .onCanceled (:on-canceled args)
+        .tooltip (:tooltip args)
+        .elevation (some-> (:elevation args) double)
+        .shadowColor (some-> (:shadow-color args) t/color)
+        .surfaceTintColor (some-> (:surface-tint-color args) t/color)
+        .padding (t/insets (:padding args 8))
+        .menuPadding (some-> (:menu-padding args) t/insets)
+        .borderRadius (some-> (:border-radius args) t/border-radius)
+        .splashRadius (some-> (:splash-radius args) double)
+        .icon (when (nil? child) (:icon args))
+        .iconSize (some-> (:icon-size args) double)
+        .iconColor (some-> (:icon-color args) t/color)
+        .offset (t/offset (:offset args 0))
+        .enabled (c/resolve-enabled bctx (:enabled args))
+        .shape (:shape args)
+        .color (some-> (:color args) t/color)
+        .enableFeedback (:enable-feedback args)
+        .constraints (some-> (:constraints args) t/box-constraints)
+        .position (some-> (:position args) t/popup-menu-position)
+        .clipBehavior (t/clip (:clip-behavior args :none))
+        .useRootNavigator (:use-root-navigator args false)
+        .popUpAnimationStyle (:animation-style args)
+        .routeSettings (:route-settings args)
+        .style (:style args)
+        .child child)))))

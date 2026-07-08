@@ -1,6 +1,8 @@
 (ns flutter-cljd.internal.draggable
   (:require
    [flutter-cljd.types :as t]
+   [flutter-cljd.core :as c]
+   [flutter-cljd.internal.builder :as bd]
    [cljd.flutter :as f]
    ["dart:core" :as core]
    ["package:flutter/painting.dart" :as p]
@@ -899,52 +901,54 @@
                         ignoring-feedback-semantics true
                         ignoring-feedback-pointer true
                         root-overlay false
-                        enabled true
                         return-on-drop false
                         return-animation {}
                         drop-animation {}}}
                   child]
   (let [delay (some-> (if (= :default delay) g/kLongPressTimeout delay) t/duration)]
-    (Draggable
-     (t/widget-key key)
-     delay
-     feedback
-     data
-     (some-> axis t/axis)
-     placeholder
-     (t/offset feedback-offset)
-     catch-point
-     drag-anchor-strategy
-     (some-> (or affinity axis) t/axis)
-     (some-> max-simultaneous-drags int)
-     on-drag-start
-     on-drag-update
-     on-drag-will-end
-     on-drag-end
-     (normalize-haptics haptic-on (boolean (some-> delay (.> core/Duration.zero))))
-     (boolean ignoring-feedback-semantics)
-     (boolean ignoring-feedback-pointer)
-     (boolean root-overlay)
-     (t/hit-test-behavior hit-test-behavior)
-     allowed-buttons-filter
-     (boolean enabled)
-     (boolean return-on-drop)
-     return-animation
-     drop-animation
-     child)))
+    (bd/builder*
+     (fn [ctx]
+       (Draggable
+        (t/widget-key key)
+        delay
+        feedback
+        data
+        (some-> axis t/axis)
+        placeholder
+        (t/offset feedback-offset)
+        catch-point
+        drag-anchor-strategy
+        (some-> (or affinity axis) t/axis)
+        (some-> max-simultaneous-drags int)
+        on-drag-start
+        on-drag-update
+        on-drag-will-end
+        on-drag-end
+        (normalize-haptics haptic-on (boolean (some-> delay (.> core/Duration.zero))))
+        (boolean ignoring-feedback-semantics)
+        (boolean ignoring-feedback-pointer)
+        (boolean root-overlay)
+        (t/hit-test-behavior hit-test-behavior)
+        allowed-buttons-filter
+        (c/resolve-enabled ctx enabled)
+        (boolean return-on-drop)
+        return-animation
+        drop-animation
+        child)))))
 
 (defn ^w/Widget drag-target*
-  [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior enabled]
-    :or {enabled true}}]
-  (DragTarget
-   (t/widget-key key)
-   (if (fn? builder)
-     builder
-     (constantly builder))
-   on-will-accept
-   on-accept
-   on-leave
-   on-move
-   accept-region
-   (boolean enabled)
-   (t/hit-test-behavior (or hit-test-behavior r/HitTestBehavior.translucent))))
+  [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior enabled]}]
+  (bd/builder*
+   (fn [ctx]
+     (DragTarget
+      (t/widget-key key)
+      (if (fn? builder)
+        builder
+        (constantly builder))
+      on-will-accept
+      on-accept
+      on-leave
+      on-move
+      accept-region
+      (c/resolve-enabled ctx enabled)
+      (t/hit-test-behavior (or hit-test-behavior r/HitTestBehavior.translucent))))))

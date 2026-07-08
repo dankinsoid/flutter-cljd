@@ -413,7 +413,7 @@
            (if-let [modifier (c/get-inherited ctx button-modifier)]
              (modifier label btn-ctx)
              label)))
-       (c/get-inherited ctx inh/enabled (:enabled args))
+       (c/resolve-enabled ctx (:enabled args))
        on-tap
        (:on-tap-down args)
        (:on-tap-up args)
