@@ -201,7 +201,7 @@
 
 (defn- linear->srgb ^double [^double c]
   ;; Sqrt-chain approximation replacing pow(x, 1/2.4) + branch.
-  ;; Guard negative inputs (out-of-gamut values before clamp01).
+  ;; Guard negative inputs (out-of-gamut interpolants clamp to 0).
   (let [a (max 0.0 c)
         s1 (math/sqrt a)
         s2 (math/sqrt s1)
@@ -217,19 +217,60 @@
       y)
     (- (cbrt (- x)))))
 
-(defn- clamp01 ^double [^double x]
-  (max 0.0 (min 1.0 x)))
+;; Exact sRGB transfer functions (pow-based, sign-preserving) — used where
+;; precision defines the palette (color-space re-encoding), unlike the fast
+;; approximations above that only feed gradient interpolation.
+
+(defn srgb-eotf
+  "Exact sRGB signal → linear, sign-preserving (extended-range friendly)."
+  ^double [^double s]
+  (let [a (.abs s)
+        l (if (<= a 0.04045) (/ a 12.92) (math/pow (/ (+ a 0.055) 1.055) 2.4))]
+    (if (neg? s) (- l) (double l))))
+
+(defn srgb-oetf
+  "Exact linear → sRGB signal, sign-preserving (extended-range friendly)."
+  ^double [^double l]
+  (let [a (.abs l)
+        s (if (<= a 0.0031308) (* a 12.92) (- (* 1.055 (math/pow a (/ 1 2.4))) 0.055))]
+    (if (neg? l) (- s) (double s))))
+
+(defn p3->extended-srgb
+  "Re-encodes a color whose components are Display P3 coordinates as
+   extendedSRGB — the same physical color, components may leave 0..1.
+
+   Exists because Impeller (Flutter 3.38, iOS) renders out-of-gamut displayP3
+   solids correctly but mangles IN-gamut ones (hue-tinted neutrals, darks
+   crushed to black), while extendedSRGB colors render bit-exact. Verified
+   empirically swatch-by-swatch on device."
+  ^ui/Color [^ui/Color c]
+  (let [r (srgb-eotf (.-r c)) g (srgb-eotf (.-g c)) b (srgb-eotf (.-b c))
+        ;; linear P3 → linear sRGB
+        r' (+ (* 1.2249401 r) (* -0.2249404 g))
+        g' (+ (* -0.0420569 r) (* 1.0420571 g))
+        b' (+ (* -0.0196376 r) (* -0.0786361 g) (* 1.0982735 b))]
+    (ui/Color.from .alpha (.-a c)
+                   .red (srgb-oetf r') .green (srgb-oetf g') .blue (srgb-oetf b')
+                   .colorSpace ui/ColorSpace.extendedSRGB)))
+
+(defn- srgb->linear-signed ^double [^double c]
+  (if (neg? c) (- (srgb->linear (- c))) (srgb->linear c)))
 
 (defn color->oklab
   "Converts a `Color` to OKLab. Returns `[L a b alpha]`.
+   Color-space aware: displayP3 components are converted to sRGB first;
+   extendedSRGB components pass through sign-preserving (no 8-bit clamp).
 
    ```clojure
    (color->oklab Colors.red) ; => [0.6279… 0.2248… 0.1258… 1.0]
    ```"
   [^ui/Color color]
-  (let [r (srgb->linear (/ (.-red color) 255.0))
-        g (srgb->linear (/ (.-green color) 255.0))
-        b (srgb->linear (/ (.-blue color) 255.0))
+  (let [^ui/Color color (if (identical? ui/ColorSpace.displayP3 (.-colorSpace color))
+                          (p3->extended-srgb color)
+                          color)
+        r (srgb->linear-signed (.-r color))
+        g (srgb->linear-signed (.-g color))
+        b (srgb->linear-signed (.-b color))
         l (cbrt (+ (* 0.4122214708 r) (* 0.5363325363 g) (* 0.0514459929 b)))
         m (cbrt (+ (* 0.2119034982 r) (* 0.6806995451 g) (* 0.1073969566 b)))
         s (cbrt (+ (* 0.0883024619 r) (* 0.2817188376 g) (* 0.6299787005 b)))]
@@ -257,14 +298,14 @@
          l (* l_ l_ l_)
          m (* m_ m_ m_)
          s (* s_ s_ s_)
-         r (clamp01 (linear->srgb (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s))))
-         g (clamp01 (linear->srgb (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s))))
-         bl (clamp01 (linear->srgb (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s))))]
-     (ui/Color.fromRGBO
-      (.round (* r 255))
-      (.round (* g 255))
-      (.round (* bl 255))
-      (double alpha)))))
+         ;; Float extendedSRGB output: keeps precision and lets slightly
+         ;; out-of-gamut interpolants through instead of quantizing to 8-bit
+         ;; sRGB (which visibly dulled wide gradient stops).
+         r (linear->srgb (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s)))
+         g (linear->srgb (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s)))
+         bl (linear->srgb (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s)))]
+     (ui/Color.from .alpha (double alpha) .red r .green g .blue bl
+                    .colorSpace ui/ColorSpace.extendedSRGB))))
 
 (defn- ^double alpha-weighted-t
   "Alpha-weighted interpolation parameter: transparent colors contribute less.

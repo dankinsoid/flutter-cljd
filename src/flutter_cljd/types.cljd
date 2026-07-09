@@ -556,9 +556,15 @@
    pass through untouched.
 
    Display P3 by default: literal component values are taken as P3 coordinates,
-   so on wide-gamut displays they render at full vividness (matching how iOS
-   design tools treat hex values), while on sRGB surfaces the engine gamut-maps
-   them back to plain sRGB. Change via `set-default-color-space!`."
+   matching how iOS design tools treat hex values — noticeably more vivid than
+   the same hex read as sRGB. Change via `set-default-color-space!`.
+
+   Implementation note: P3-interpreted literals are handed to the engine
+   re-encoded as extendedSRGB (`ut/p3->extended-srgb` — same physical color).
+   Impeller (Flutter 3.38, iOS) renders in-gamut displayP3 solids with hue
+   casts and crushes dark ones to black, while extendedSRGB is bit-exact;
+   on sRGB surfaces out-of-gamut components clip honestly, on wide-gamut
+   surfaces they should survive intact."
   (atom ui/ColorSpace.displayP3))
 
 (defn set-default-color-space!
@@ -575,14 +581,16 @@
               (throw (ArgumentError. (str "Unknown color space: " space)))))))
 
 (defn- ^m/Color in-default-space
-  "Reinterprets `c`'s components in `default-color-space` (no value conversion —
-   the numbers stay, the space changes)."
+  "Reinterprets `c`'s components in `default-color-space` (the numbers stay,
+   the space changes). displayP3 results are re-encoded as extendedSRGB before
+   reaching the engine — see `default-color-space` for why."
   [^m/Color c]
   (let [^ui/ColorSpace space @default-color-space]
-    (if (identical? space (.-colorSpace c))
-      c
-      (m/Color.from .alpha (.-a c) .red (.-r c) .green (.-g c) .blue (.-b c)
-                    .colorSpace space))))
+    (cond
+      (identical? space (.-colorSpace c)) c
+      (identical? space ui/ColorSpace.displayP3) (ut/p3->extended-srgb c)
+      :else (m/Color.from .alpha (.-a c) .red (.-r c) .green (.-g c) .blue (.-b c)
+                          .colorSpace space))))
 
 (defn ^m/Color color
   "Returns a `Color` object for the specified color.
