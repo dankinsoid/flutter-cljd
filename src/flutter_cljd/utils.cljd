@@ -217,13 +217,39 @@
         s (if (<= a 0.0031308) (* a 12.92) (- (* 1.055 (math/pow a (/ 1 2.4))) 0.055))]
     (if (neg? l) (- s) (double s))))
 
+(defn- ^ui/Color srgb-family-color
+  "Builds a Color from sRGB-signal components, picking the tag by gamut: plain
+   sRGB when every component fits 0..1, extendedSRGB only when one leaves the
+   range (wide gamut needs the extension). In range the two spaces are
+   bit-identical, but the plain-sRGB tag matters: the framework's `ui/Color.lerp`
+   asserts against extendedSRGB (it clamps channels, which would corrupt
+   wide-gamut components), so any color handed INTO the framework — barrierColor,
+   theme/implicit-animation lerps — must not carry the extended tag needlessly.
+   The epsilon absorbs conversion noise (pure white lands at 1.0000002 after the
+   P3 matrix) so boundary colors aren't spuriously tagged extended; components
+   within tolerance are clamped into range."
+  [^double a ^double r ^double g ^double b]
+  (let [eps 1.0e-5
+        in? (fn [^double x] (and (>= x (- eps)) (<= x (+ 1.0 eps))))]
+    (if (and (in? r) (in? g) (in? b))
+      (ui/Color.from .alpha a
+                     .red (min 1.0 (max 0.0 r))
+                     .green (min 1.0 (max 0.0 g))
+                     .blue (min 1.0 (max 0.0 b))
+                     .colorSpace ui/ColorSpace.sRGB)
+      (ui/Color.from .alpha a .red r .green g .blue b
+                     .colorSpace ui/ColorSpace.extendedSRGB))))
+
 (defn p3->extended-srgb
-  "Re-encodes a color whose components are Display P3 coordinates as
-   extendedSRGB — the same physical color, components may leave 0..1.
+  "Re-encodes a color whose components are Display P3 coordinates in the sRGB
+   family — the same physical color: extendedSRGB when it leaves 0..1, plain
+   sRGB when it fits (in range they're bit-identical, and the plain tag keeps
+   the color safe for the framework's `ui/Color.lerp`, which asserts against
+   extendedSRGB — see `srgb-family-color`).
 
    Exists because Impeller (Flutter 3.38, iOS) renders out-of-gamut displayP3
    solids correctly but mangles IN-gamut ones (hue-tinted neutrals, darks
-   crushed to black), while extendedSRGB colors render bit-exact. Verified
+   crushed to black), while sRGB-family colors render bit-exact. Verified
    empirically swatch-by-swatch on device."
   ^ui/Color [^ui/Color c]
   (let [r (srgb-eotf (.-r c)) g (srgb-eotf (.-g c)) b (srgb-eotf (.-b c))
@@ -231,9 +257,7 @@
         r' (+ (* 1.2249401 r) (* -0.2249404 g))
         g' (+ (* -0.0420569 r) (* 1.0420571 g))
         b' (+ (* -0.0196376 r) (* -0.0786361 g) (* 1.0982735 b))]
-    (ui/Color.from .alpha (.-a c)
-                   .red (srgb-oetf r') .green (srgb-oetf g') .blue (srgb-oetf b')
-                   .colorSpace ui/ColorSpace.extendedSRGB)))
+    (srgb-family-color (.-a c) (srgb-oetf r') (srgb-oetf g') (srgb-oetf b'))))
 
 (defn color->oklab
   "Converts a `Color` to OKLab. Returns `[L a b alpha]`.
@@ -277,14 +301,15 @@
          l (* l_ l_ l_)
          m (* m_ m_ m_)
          s (* s_ s_ s_)
-         ;; Float extendedSRGB output: keeps precision and lets slightly
-         ;; out-of-gamut interpolants through instead of quantizing to 8-bit
-         ;; sRGB (which visibly dulled wide gradient stops).
+         ;; Float sRGB-family output: keeps precision (Color.from stores doubles
+         ;; regardless of tag) and lets out-of-gamut interpolants through as
+         ;; extendedSRGB instead of quantizing to 8-bit sRGB (which visibly
+         ;; dulled wide gradient stops); in-gamut results get the plain-sRGB tag
+         ;; so they stay framework-lerp-safe (see `srgb-family-color`).
          r (srgb-oetf (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s)))
          g (srgb-oetf (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s)))
          bl (srgb-oetf (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s)))]
-     (ui/Color.from .alpha (double alpha) .red r .green g .blue bl
-                    .colorSpace ui/ColorSpace.extendedSRGB))))
+     (srgb-family-color (double alpha) r g bl))))
 
 (defn- ^double alpha-weighted-t
   "Alpha-weighted interpolation parameter: transparent colors contribute less.
@@ -328,6 +353,36 @@
           (+ a1 (* ta (- a2 a1)))
           (+ b1 (* ta (- b2 b1)))
           (+ alpha1 (* t (- alpha2 alpha1)))))))))
+
+(defn ^ui/Color? color-lerp
+  "Component-wise `Color` interpolation, a drop-in for `ui/Color.lerp` minus its
+   restrictions: tolerates extendedSRGB endpoints (no channel clamping, so
+   wide-gamut components survive the blend) and mismatched color spaces —
+   endpoints are normalized to the sRGB family first (displayP3 re-encoded;
+   sRGB ⊂ extendedSRGB share the transfer curve, so their components mix
+   directly). In-gamut results carry the plain-sRGB tag, out-of-gamut ones
+   extendedSRGB (see `srgb-family-color`). A nil endpoint fades alpha, like
+   `ui/Color.lerp`. Linear in signal components — matches `ui/Color.lerp`'s
+   look; for perceptually uniform blends use `oklab-lerp`/`oklch-mix`."
+  ([from to] (fn [t] (color-lerp from to t)))
+  ([^ui/Color? from ^ui/Color? to t]
+   (let [t (double t)
+         normalize (fn ^ui/Color? [^ui/Color? c]
+                     (when (some? c)
+                       (if (identical? ui/ColorSpace.displayP3 (.-colorSpace c))
+                         (p3->extended-srgb c)
+                         c)))
+         ^ui/Color? c1 (normalize from)
+         ^ui/Color? c2 (normalize to)]
+     (cond
+       (and (nil? c1) (nil? c2)) nil
+       (nil? c2) (srgb-family-color (* (- 1.0 t) (.-a c1)) (.-r c1) (.-g c1) (.-b c1))
+       (nil? c1) (srgb-family-color (* t (.-a c2)) (.-r c2) (.-g c2) (.-b c2))
+       :else (srgb-family-color
+              (+ (.-a c1) (* (- (.-a c2) (.-a c1)) t))
+              (+ (.-r c1) (* (- (.-r c2) (.-r c1)) t))
+              (+ (.-g c1) (* (- (.-g c2) (.-g c1)) t))
+              (+ (.-b c1) (* (- (.-b c2) (.-b c1)) t)))))))
 
 (defmulti expand-gradient-colors
   "Expands gradient colors in the given color space.
