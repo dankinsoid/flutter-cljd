@@ -400,9 +400,15 @@
       (is (= (.-right widget) 30.0))
       (is (= (.-bottom widget) 40.0)))))
 
+;; `popup-menu-button` wraps its PopupMenuButton in a Builder so it can resolve
+;; the inherited `enabled` from context. Unwrap it with a nil context (which
+;; carries no inherited region) to inspect the underlying PopupMenuButton.
+(defn- built-popup [& args]
+  ((.-builder (apply f/popup-menu-button args)) nil))
+
 (deftest test-popup-menu-button
   (testing "PopupMenuButton with default properties"
-    (let [widget (f/popup-menu-button
+    (let [widget (built-popup
                   {:items [{:value :edit :child (m/Text "Edit")}]}
                   (m/Text "Menu"))]
       (is (instance? m/PopupMenuButton widget))
@@ -414,7 +420,7 @@
 
   (testing "PopupMenuButton passes through configuration"
     (let [selected (atom nil)
-          widget (f/popup-menu-button
+          widget (built-popup
                   {:on-selected #(reset! selected %)
                    :tooltip "Actions"
                    :enabled false
@@ -430,7 +436,7 @@
       (is (= (.-initialValue widget) :edit))))
 
   (testing "itemBuilder builds the described entries"
-    (let [widget (f/popup-menu-button
+    (let [widget (built-popup
                   {:items [{:value :edit :child (m/Text "Edit")}
                            :divider
                            {:checked true :value :bold :child (m/Text "Bold")}]}
@@ -444,7 +450,7 @@
       (is (true? (.-checked (nth entries 2))))))
 
   (testing "[value child] shorthand items, with optional opts map"
-    (let [widget (f/popup-menu-button
+    (let [widget (built-popup
                   {:items [[:edit (m/Text "Edit")]
                            [:bold (m/Text "Bold") {:checked true}]
                            [:off (m/Text "Off") {:enabled false}]]}
@@ -458,7 +464,7 @@
       (is (false? (.-enabled (nth entries 2))))))
 
   (testing "inline key-value args with trailing child"
-    (let [widget (f/popup-menu-button
+    (let [widget (built-popup
                   :tooltip "Actions"
                   :offset {:dx 4 :dy 8}
                   :items [[:edit (m/Text "Edit")]]
@@ -470,7 +476,7 @@
       (is (= (count ((.-itemBuilder widget) nil)) 1))))
 
   (testing "icon is used when no child is given"
-    (let [widget (f/popup-menu-button
+    (let [widget (built-popup
                   {:icon (m/Icon m/Icons.more_vert)
                    :items [{:value :edit :child (m/Text "Edit")}]})]
       (is (nil? (.-child widget)))

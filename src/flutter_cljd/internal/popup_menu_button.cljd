@@ -66,7 +66,9 @@
   [args child]
   (let [items (:items args)]
     (bd/builder*
-     (fn [^w/BuildContext bctx]
+     ;; bctx is untyped so the widget can be unwrapped with a nil context in
+     ;; tests; it only flows into resolve-enabled, which tolerates any context.
+     (fn [bctx]
        (#/(m/PopupMenuButton dynamic)
         .key (t/widget-key (:key args))
         .itemBuilder (fn [^w/BuildContext ctx]

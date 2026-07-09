@@ -1,9 +1,15 @@
 ;; @ai-generated(guided)
 (ns flutter-cljd.border-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [flutter-cljd.types :as t]
             [flutter-cljd.smooth-corner :as sc]
             ["package:flutter/material.dart" :as m]))
+
+;; Assert colors against the raw Material constants: force plain sRGB so keyword
+;; literals aren't re-interpreted in the default Display P3 space.
+(use-fixtures :each
+  (fn ([] (t/set-default-color-space! :srgb))
+      ([_] (t/set-default-color-space! :display-p3))))
 
 (def ^:private grad {:type :linear :colors [:red :blue]})
 

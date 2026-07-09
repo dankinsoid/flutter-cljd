@@ -605,12 +605,53 @@
     (some-> image-painter .dispose)
     nil))
 
+(defn- ^m/Color? lerp-color
+  "Component-wise color interpolation that tolerates extendedSRGB.
+
+   `ui/Color.lerp` asserts against extendedSRGB (dart:ui painting.dart) and, with
+   the assert stripped in release, clamps wide-gamut channels to 0..1 — but the
+   default P3 color space re-encodes every literal as extendedSRGB, so animating
+   a colored `SmoothDecoration` (fill or shadow) would crash in debug and
+   silently desaturate in release. Invariant: `a` and `b` share a color space
+   (both built through `default-color-space`); mismatched inputs would blend
+   coordinates across spaces, which we don't attempt to reconcile here."
+  [^m/Color? a ^m/Color? b ^double t]
+  (cond
+    (nil? b) (when (some? a)
+               (m/Color.from .alpha (* (- 1.0 t) (.-a a))
+                             .red (.-r a) .green (.-g a) .blue (.-b a)
+                             .colorSpace (.-colorSpace a)))
+    (nil? a) (m/Color.from .alpha (* t (.-a b))
+                           .red (.-r b) .green (.-g b) .blue (.-b b)
+                           .colorSpace (.-colorSpace b))
+    :else (m/Color.from .alpha (+ (.-a a) (* (- (.-a b) (.-a a)) t))
+                        .red   (+ (.-r a) (* (- (.-r b) (.-r a)) t))
+                        .green (+ (.-g a) (* (- (.-g b) (.-g a)) t))
+                        .blue  (+ (.-b a) (* (- (.-b b) (.-b a)) t))
+                        .colorSpace (.-colorSpace a))))
+
+(defn- ^m/BoxShadow? lerp-box-shadow
+  "Like `m/BoxShadow.lerp`, but routes the color through `lerp-color` so
+   extendedSRGB shadow colors don't trip the engine's `Color.lerp` assertion.
+   `.scale` (the single-sided path) never touches color, so it stays as-is."
+  [^m/BoxShadow? a ^m/BoxShadow? b ^double t]
+  (cond
+    (nil? a) (some-> b (.scale t))
+    (nil? b) (.scale a (- 1.0 t))
+    :else (m/BoxShadow
+           .color (lerp-color (.-color a) (.-color b) t)
+           .offset (m/Offset.lerp (.-offset a) (.-offset b) t)
+           .blurRadius (+ (.-blurRadius a) (* (- (.-blurRadius b) (.-blurRadius a)) t))
+           .spreadRadius (+ (.-spreadRadius a) (* (- (.-spreadRadius b) (.-spreadRadius a)) t))
+           .blurStyle (if (identical? ui/BlurStyle.normal (.-blurStyle a))
+                        (.-blurStyle b) (.-blurStyle a)))))
+
 (defn- lerp-shadows [as bs ^double t]
   (when (or (seq as) (seq bs))
     (mapv (fn [i]
             (let [a (get as i nil)
                   b (get bs i nil)]
-              {:box (m/BoxShadow.lerp (:box a) (:box b) t)
+              {:box (lerp-box-shadow (:box a) (:box b) t)
                ;; inset? can't interpolate — switch at the midpoint, falling
                ;; back to whichever side exists at the ends
                :inset? (boolean (:inset? (cond (nil? a) b
@@ -669,7 +710,7 @@
 (defn- lerp-smooth-decoration [^SmoothDecoration a ^SmoothDecoration b ^double t]
   (SmoothDecoration
    (lerp-corners (.-corners a) (.-corners b) t)
-   (ui/Color.lerp (.-color a) (.-color b) t)
+   (lerp-color (.-color a) (.-color b) t)
    (m/Gradient.lerp (.-gradient a) (.-gradient b) t)
    (lerp-shadows (.-shadows a) (.-shadows b) t)
    (when (or (some? (.-side a)) (some? (.-side b)))

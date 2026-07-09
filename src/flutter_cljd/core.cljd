@@ -71,11 +71,13 @@
    Some default keys are defined in `flutter-cljd.inherited-keys` namespace"
   ([context key] (get-inherited context key nil))
   ([context key default-value]
-   (cond
-     (and (map? key) (contains? key :key))
-     (f/get-of context (:key key) (?? default-value (:default-value key)))
-
-     :else (f/get-of context key default-value))))
+   (let [[k dflt] (if (and (map? key) (contains? key :key))
+                    [(:key key) (?? default-value (:default-value key))]
+                    [key default-value])]
+     ;; A nil context carries no inherited bindings — return the default rather
+     ;; than dispatching `get-of` on nil (which NPEs). Lets builder-wrapped
+     ;; widgets be exercised without a live element tree.
+     (if (nil? context) dflt (f/get-of context k dflt)))))
 
 (defn ^bool resolve-enabled
   "Effective `enabled` state for a widget: the logical AND of its local value and

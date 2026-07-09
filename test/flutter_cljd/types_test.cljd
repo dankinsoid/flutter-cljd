@@ -1,7 +1,14 @@
 (ns flutter-cljd.types-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [flutter-cljd.types :as t]
             ["package:flutter/material.dart" :as m]))
+
+;; These tests assert structural facts (keyword -> Material color, hex parsing,
+;; etc.). Force plain sRGB so literals map straight to the Flutter constants
+;; instead of being re-interpreted in the default Display P3 space.
+(use-fixtures :each
+  (fn ([] (t/set-default-color-space! :srgb))
+      ([_] (t/set-default-color-space! :display-p3))))
 
 (deftest test-axis
   (testing "Valid axis values"
