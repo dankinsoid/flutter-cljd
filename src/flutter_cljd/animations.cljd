@@ -870,7 +870,8 @@
 (defn ^Motion duration
   "Set the duration of the motion.\\
    `duration` takes a duration and an motion and returns a new motion with the provided duration.\\
-   The duration is applied to the motion.
+   The duration is a proposal offered to the motion as its expected duration: motions without
+   their own duration adopt it, while motions with a fixed own duration keep theirs.
    ```clojure
    (duration 100 (to 10.0))
    ```"
@@ -878,23 +879,10 @@
   (let [motion (motion-to-map motion)]
     (flutter-cljd.animations/motion
      (fn [value _]
-       ;; Capture the requested duration before the child's returned :duration shadows `duration`.
-       (let [duration-mcs (in-mcs duration)
-             {:keys [interpolate duration relative-duration side-effects]} ((:prepare-motion motion) value duration)
-             dur-mcs (in-mcs duration)
-             max-duration (if (and duration-mcs dur-mcs) (max duration-mcs dur-mcs) (or duration-mcs dur-mcs))
-             end (when (and dur-mcs (not= dur-mcs max-duration) (< 0 max-duration)) (/ dur-mcs max-duration))
-             curve (when end (curves/interval nil end :linear))]
-         {:interpolate (if curve
-                         (fn [value t] (interpolate value (.transform curve (double t))))
-                         interpolate)
-          :relative-duration relative-duration
-          :duration (from-mcs max-duration)
-          :side-effects (when side-effects
-                          (if curve
-                            (fn [interval]
-                              (side-effects (map #(.transform curve (double %)) interval)))
-                            side-effects))}))
+       ;; Pass-through: only normalise :duration, which may come back in the raw
+       ;; form the proposal was given in (e.g. milliseconds as int).
+       (update ((:prepare-motion motion) value (t/duration duration))
+               :duration #(some-> % t/duration)))
      (fn [] (str "(duration " duration " " ((:to-string motion)) ")")))))
 
 (defn ^Motion curve
@@ -1002,7 +990,7 @@
    `with` takes a map or key value pairs of options and an motion and returns a new motion with the provided options.\\
    The options are merged with the existing options of the animation.\\
    Options:
-    - `:duration` or `:dur` - Duration of the motion in milliseconds, or Duration object or map.
+    - `:duration` or `:dur` - Duration of the motion in milliseconds, or Duration object or map. Offered as the expected duration; motions with a fixed own duration keep it.
     - `:delay` - Start time of the motion in milliseconds or Duration object or map.
     - `:relative-duration` or `:rel-dur` - Duration of the motion relative to the parent animation.
     - `:relative-delay` or `:rel-delay` - Start time ratio of the motion relative to the duration.

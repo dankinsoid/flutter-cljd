@@ -807,14 +807,16 @@
       (is (= 50 (anim 0.125))))))
 
 ;; @ai-generated(guided)
-(deftest test-duration-wrapper-enforces-requested
-  (testing "requested duration wins over a fixed child and squeezes it"
+(deftest test-duration-wrapper-proposal
+  (testing "a child with a fixed own duration keeps it, unchanged"
     (let [m (a/duration 1000 (a/from-to 0 100 :duration 500))
           {:keys [duration]} ((.-prepare m) nil nil)
-          anim (unwrap nil m 1000)]
-      (is (= 1000 (.-inMilliseconds ^dc/Duration duration)))
-      (is (= 50 (anim 0.25)))
-      (is (= 100 (anim 0.75))))))
+          anim (unwrap nil m nil)]
+      (is (= 500 (.-inMilliseconds ^dc/Duration duration)))
+      (is (= 50 (anim 0.5)))))
+  (testing "a durationless child adopts the proposed duration"
+    (let [{:keys [duration]} ((.-prepare (a/duration 300 (a/to 0 100))) nil nil)]
+      (is (= 300 (.-inMilliseconds ^dc/Duration duration))))))
 
 ;; @ai-generated(guided)
 (deftest test-repeat-boundary-effects
