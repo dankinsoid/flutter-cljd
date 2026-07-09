@@ -708,7 +708,14 @@
                      :sum-rel (+ sum-rel (or relative 0.0))
                      :cnt-any (+ (:cnt-any res) (if (or duration relative) 0 1))
                      :cnt-abs (+ (:cnt-abs res) (if duration 1 0))
-                     :intr-dur (when (and duration relative-duration (< 0 relative-duration)) (/ duration relative-duration))
+                     ;; A child carrying both absolute and relative duration implies the whole
+                     ;; timeline (duration / relative-duration); keep the largest such inference,
+                     ;; as any single child's requirement must fit within the total.
+                     :intr-dur (let [inferred (when (and duration relative-duration (< 0 relative-duration))
+                                                (/ duration relative-duration))]
+                                 (if inferred
+                                   (max inferred (or (:intr-dur res) 0.0))
+                                   (:intr-dur res)))
                      :items (conj (:items res) {:duration duration
                                                 :relative-duration relative
                                                 :interpolate interpolate
@@ -727,8 +734,10 @@
                                  (filter some?))]
                        (when-not (empty? durs) (apply max durs)))
              any-dur (if (> cnt-any 0)
-                       (if (and res-dur min-dur (> res-dur 0))
-                         (/ (- (/ (- res-dur min-dur) res-dur) sum-rel) cnt-any)
+                       (if (and res-dur (> res-dur 0))
+                         ;; Leftover fraction after the absolute (sum-abs/res-dur) and relative
+                         ;; (sum-rel) children, split evenly across unconstrained children.
+                         (max 0.0 (/ (- 1.0 (/ (or sum-abs 0.0) res-dur) sum-rel) cnt-any))
                          (/ (- 1.0 sum-rel) cnt-any))
                        0.0)
              all-cnt (count items)
@@ -809,9 +818,11 @@
              items (if (and full-dur (not= full-dur exp-dur-in-mcs) (< 0 full-dur))
                      (update-vals
                       items
-                      (fn [{:keys [duration interpolate side-effects]}]
+                      (fn [{:keys [duration interpolate rel-dur side-effects]}]
                         {:interpolate interpolate
-                         :rel-dur (if duration (/ duration full-dur) 1.0)
+                         ;; Durationless children keep their own relative-duration; only children
+                         ;; with an absolute duration get rescaled against the resolved full-dur.
+                         :rel-dur (if duration (/ duration full-dur) rel-dur)
                          :side-effects side-effects}))
                      items)]
          {:duration (some-> (or (from-mcs full-dur) exp-dur) t/duration)

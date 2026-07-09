@@ -885,6 +885,48 @@
       (.dispose av))))
 
 ;; @ai-generated(guided)
+(deftest test-seq-mixed-durations
+  (testing "abs + relative + unconstrained children fill the whole timeline"
+    ;; 1000ms total: abs child 200ms (0..0.2), rel 0.5 (0.2..0.7),
+    ;; unconstrained child gets the remaining 0.7..1.0
+    (let [anim (unwrap nil
+                       (a/seq
+                        (a/from-to 0 100 :duration 200)
+                        (a/to 200 :relative-duration 0.5)
+                        (a/to 300))
+                       1000)]
+      ;; halfway through the last child -> 250, not already frozen at 300
+      (is (= 250 (anim 0.85))))))
+
+;; @ai-generated(guided)
+(deftest test-seq-inferred-duration-accumulates
+  (testing "a child with both absolute and relative duration infers the total"
+    ;; 100ms over relative-duration 0.5 implies a 200ms timeline; the inference
+    ;; must survive a later child that carries neither, in any order.
+    (let [both (a/with {:duration 100 :relative-duration 0.5} (a/to 0 50))
+          total (fn [m] (.-inMilliseconds ^dc/Duration
+                         (:duration ((.-prepare m) nil nil))))]
+      (is (= 200 (total (a/seq both (a/to 200)))))
+      (is (= 200 (total (a/seq (a/to 200) both)))))))
+
+;; @ai-generated(guided)
+(deftest test-par-relative-duration-preserved
+  (testing "a relative-duration child keeps its ratio when a sibling sets the par duration"
+    ;; Prepare with nil exp-dur directly: the test `unwrap` would otherwise feed the
+    ;; par's own resolved duration back as exp-dur, skipping the rescale path under test.
+    (let [m (a/par :a (a/with {:duration 500} (a/to 0 100))
+                   :b (a/with {:relative-duration 0.5} (a/to 0 100)))
+          interpolate (:interpolate ((.-prepare m) nil nil))]
+      ;; :b occupies the first half of the 500ms par -> finished at T=0.5
+      (is (= 100 (.round ^double (get (interpolate nil 0.5) :b)))))))
+
+;; @ai-generated(guided)
+(deftest test-nested-duration-proposal
+  (testing "the inner duration proposal outranks the outer one"
+    (let [{:keys [duration]} ((.-prepare (a/duration 1000 (a/duration 100 (a/to 0 100)))) nil nil)]
+      (is (= 100 (.-inMilliseconds ^dc/Duration duration))))))
+
+;; @ai-generated(guided)
 (deftest test-synced-side-effects
   (testing "side-effect ranges pass through untransformed so actions still fire"
     (let [events (atom 0)
