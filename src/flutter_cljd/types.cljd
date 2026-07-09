@@ -1404,10 +1404,11 @@
    - `:colors` (vector of colors, required): one color per grid point, row-major
    - `:points` (vector of [x y], optional): positions in [0,1] space, row-major.
      Defaults to a regular evenly-spaced grid.
-   - `:color-space` (keyword, default: :oklch-mix): `:oklab`, `:oklch`, or `:oklch-mix`
-     (see `linear-gradient` for `:oklch-mix` description)
-   - `:hue` (keyword, default: :shorter): `:shorter`, `:longer`, `:increasing`, `:decreasing`
-     Controls hue traversal direction when `:color-space` is `:oklch` or `:oklch-mix`.
+   - `:color-space` (keyword, default: :oklab): `:oklab`, `:oklch`, or `:oklch-mix`.
+     Unlike the 1D gradients, the mesh patch interpolates OKLCH hue as a raw
+     angle: hue wraparound across the ±180° seam is not handled, `:hue` is
+     ignored, and `:oklch-mix` currently behaves as plain `:oklch`. Prefer
+     `:oklab` (the default) unless the grid's hues stay clear of the seam.
 
    ```clojure
    (mesh-gradient {:width 3 :height 3
@@ -1425,7 +1426,10 @@
       (let [w (int (:width args))
             h (int (:height args))
             n (* w h)
-            cs (:color-space args :oklch-mix)
+            ;; :oklab by default: the bicubic patch interpolates OKLCH hue as a
+            ;; raw angle (no wraparound handling, no mix blending), so OKLCH is
+            ;; only safe when the grid's hues avoid the ±180° seam.
+            cs (:color-space args :oklab)
             hue (:hue args)
             colors (vec (map color (:colors args)))
             points (or (:points args) (default-mesh-points w h))

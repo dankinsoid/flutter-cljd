@@ -192,34 +192,16 @@
 
 ;;; OKLab color space
 
-;; Fast approximations ported from oklab_gradient.frag — avoid math/pow calls.
-;; Max error ~0.001 per channel, well within 8-bit (±1/255) precision.
-
-(defn- srgb->linear ^double [^double c]
-  ;; Degree-3 Horner polynomial replacing pow(x, 2.4) + branch
-  (* c (+ (* c (+ (* c 0.305306011) 0.682171111)) 0.012522878)))
-
-(defn- linear->srgb ^double [^double c]
-  ;; Sqrt-chain approximation replacing pow(x, 1/2.4) + branch.
-  ;; Guard negative inputs (out-of-gamut interpolants clamp to 0).
-  (let [a (max 0.0 c)
-        s1 (math/sqrt a)
-        s2 (math/sqrt s1)
-        s3 (math/sqrt s2)]
-    (+ (* 0.585122381 s1) (* 0.783140355 s2) (* -0.368262736 s3))))
+;; Exact transfer functions and cube root throughout: these run per color at
+;; gradient construction / lerp setup, never per pixel, so exactness is free.
+;; Shader-style fast approximations were used here before and visibly distorted
+;; dark and saturated colors (fast-cbrt error reaches +0.14 near black), so
+;; gradient endpoints didn't match their specified colors.
 
 (defn- cbrt ^double [^double x]
-  ;; Newton-Raphson from sqrt, 2 iterations
-  (if (>= x 0)
-    (let [y (math/sqrt (+ x 1e-10))
-          y (/ (+ (* 2.0 y) (/ x (* y y))) 3.0)
-          y (/ (+ (* 2.0 y) (/ x (* y y))) 3.0)]
-      y)
-    (- (cbrt (- x)))))
-
-;; Exact sRGB transfer functions (pow-based, sign-preserving) — used where
-;; precision defines the palette (color-space re-encoding), unlike the fast
-;; approximations above that only feed gradient interpolation.
+  (if (neg? x)
+    (- (math/pow (- x) (/ 1.0 3.0)))
+    (math/pow x (/ 1.0 3.0))))
 
 (defn srgb-eotf
   "Exact sRGB signal → linear, sign-preserving (extended-range friendly)."
@@ -253,9 +235,6 @@
                    .red (srgb-oetf r') .green (srgb-oetf g') .blue (srgb-oetf b')
                    .colorSpace ui/ColorSpace.extendedSRGB)))
 
-(defn- srgb->linear-signed ^double [^double c]
-  (if (neg? c) (- (srgb->linear (- c))) (srgb->linear c)))
-
 (defn color->oklab
   "Converts a `Color` to OKLab. Returns `[L a b alpha]`.
    Color-space aware: displayP3 components are converted to sRGB first;
@@ -268,9 +247,9 @@
   (let [^ui/Color color (if (identical? ui/ColorSpace.displayP3 (.-colorSpace color))
                           (p3->extended-srgb color)
                           color)
-        r (srgb->linear-signed (.-r color))
-        g (srgb->linear-signed (.-g color))
-        b (srgb->linear-signed (.-b color))
+        r (srgb-eotf (.-r color))
+        g (srgb-eotf (.-g color))
+        b (srgb-eotf (.-b color))
         l (cbrt (+ (* 0.4122214708 r) (* 0.5363325363 g) (* 0.0514459929 b)))
         m (cbrt (+ (* 0.2119034982 r) (* 0.6806995451 g) (* 0.1073969566 b)))
         s (cbrt (+ (* 0.0883024619 r) (* 0.2817188376 g) (* 0.6299787005 b)))]
@@ -301,9 +280,9 @@
          ;; Float extendedSRGB output: keeps precision and lets slightly
          ;; out-of-gamut interpolants through instead of quantizing to 8-bit
          ;; sRGB (which visibly dulled wide gradient stops).
-         r (linear->srgb (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s)))
-         g (linear->srgb (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s)))
-         bl (linear->srgb (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s)))]
+         r (srgb-oetf (+ (* 4.0767416621 l) (* -3.3077115913 m) (* 0.2309699292 s)))
+         g (srgb-oetf (+ (* -1.2684380046 l) (* 2.6097574011 m) (* -0.3413193965 s)))
+         bl (srgb-oetf (+ (* -0.0041960863 l) (* -0.7034186147 m) (* 1.7076147010 s)))]
      (ui/Color.from .alpha (double alpha) .red r .green g .blue bl
                     .colorSpace ui/ColorSpace.extendedSRGB))))
 

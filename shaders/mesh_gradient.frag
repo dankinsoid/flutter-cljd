@@ -20,7 +20,7 @@ uniform vec2 uPositions[64];
 // 135-390
 uniform vec4 uColors[64];
 // 391
-uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
+uniform float uColorSpace; // 0=oklab; >0=oklch raw-angle interpolation (hue modes/mix of the 1D shader are NOT implemented here)
 // 392-393 (texture path only): decode row-1 RGB signal as texel*uDataScale + uDataLo
 uniform float uDataLo;
 uniform float uDataScale;
@@ -31,8 +31,9 @@ out vec4 fragColor;
 
 // --- Fast sRGB <-> Linear (polynomial / sqrt-chain approximation) ---
 
-// Sign-preserving, unclamped: mirrors utils/srgb->linear-signed so texture-decoded
-// wide-gamut signals (components outside 0..1) linearize the same as the uniform path.
+// Sign-preserving, unclamped: approximates utils/srgb-eotf (±0.001) so
+// texture-decoded wide-gamut signals (components outside 0..1) linearize
+// consistently with the CPU-converted uniform path.
 float srgbToLinear(float c) {
     float a = abs(c);
     float l = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);
@@ -44,7 +45,11 @@ float linearToSrgb(float c) {
     float s1 = sqrt(a);
     float s2 = sqrt(s1);
     float s3 = sqrt(s2);
-    float encoded = 0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3;
+    // The chain dips negative for |c| < ~9e-4; without the clamp the sign
+    // restore below flips tiny negative inputs (matrix-roundtrip noise,
+    // out-of-gamut interpolants) into a positive haze of +5..8/255 on
+    // channels that should be ~0.
+    float encoded = max(0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3, 0.0);
     return c < 0.0 ? -encoded : encoded;
 }
 
@@ -56,13 +61,14 @@ vec3 linearToSrgbV(vec3 c) {
     return vec3(linearToSrgb(c.r), linearToSrgb(c.g), linearToSrgb(c.b));
 }
 
-// --- Fast cube root (Newton from sqrt, 2 iterations) ---
+// --- Fast cube root (exp2/log2 seed + 1 Newton step) ---
+// A sqrt seed converges far too slowly for dark inputs (2 Newton steps leave
+// cbrt(0.01) off by +33%, brightening near-black stops ~2x); the exp2/log2
+// seed is near-exact everywhere and one step absorbs hardware exp/log error.
 
 float fastCbrt(float x) {
-    float y = sqrt(x + 1e-10);
-    y = (2.0 * y + x / (y * y)) / 3.0;
-    y = (2.0 * y + x / (y * y)) / 3.0;
-    return y;
+    float y = exp2(log2(x + 1e-10) * (1.0 / 3.0));
+    return (2.0 * y + x / (y * y)) / 3.0;
 }
 
 // --- Linear RGB <-> OKLab ---
@@ -144,7 +150,9 @@ vec4 catmullRomWeights(float t) {
 // Get OKLab or OKLCH + alpha at grid position, clamped to grid bounds
 // Uniform path: colors already preconverted to OKLab or OKLCH on CPU
 // Texture path: convert from sRGB
-// uColorSpace 1-4 and 5-8 both use OKLCH storage (5-8 = mix mode, handled at blend time)
+// uColorSpace 1-8 all use plain OKLCH storage. Unlike the 1D gradient shader,
+// hue is interpolated as a raw angle: no wraparound handling, no hue-direction
+// modes, and no OKLab mix blending — modes 1-8 behave identically here.
 vec4 gridColorLab(int row, int col, int gw, int gh) {
     int r = clamp(row, 0, gh - 1);
     int c = clamp(col, 0, gw - 1);
