@@ -13,6 +13,7 @@
    [flutter-cljd.internal.ignore-pointer :as ip]
    [flutter-cljd.internal.align :as al]
    [flutter-cljd.internal.aspect-ratio :as ar]
+   [flutter-cljd.internal.safe-area :as sa]
    [flutter-cljd.internal.block-semantics :as bs]
    [flutter-cljd.internal.banner :as bn]
    [flutter-cljd.internal.center :as cntr]
@@ -154,6 +155,37 @@ Examples:
    [Flutter docs](https://api.flutter.dev/flutter/widgets/AspectRatio-class.html)"
   [ratio child]
   (ar/aspect-ratio* ratio child))
+
+(defn ^w/Widget safe-area
+  "Insets the child to avoid intrusions of the operating system (notches,
+   status/navigation bars, rounded corners) on the chosen edges.
+
+   Every edge is inset by default; pass options as a leading map or as
+   keyword/value pairs to opt edges out (or, starting from a disabled edge, in):
+
+   ```clojure
+   (safe-area child)                      ;; inset on all four edges
+   (safe-area :bottom false child)        ;; all edges except the bottom
+   (safe-area :vertical false child)      ;; only left/right
+   (safe-area :all false :top true child) ;; only the top
+   (safe-area {:bottom false} child)      ;; map form of the second example
+   ```
+
+   Edge keys accept `:all`, `:vertical`/`:v`, `:horizontal`/`:h` and the physical
+   edges `:top`/`:t`, `:bottom`/`:b`, `:left`/`:l`, `:right`/`:r`. A more specific
+   key wins over a group, which wins over `:all`. Edges are physical (left/right),
+   not directional.
+
+   Other options:
+   - `:insets`  a minimum inset (any `insets` value) enforced even where the
+     system reports no intrusion; maps to Flutter's `minimum`.
+   - `:maintain-bottom-view-inset`  keep space for the on-screen keyboard so the
+     child is not covered by it (default false).
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/SafeArea-class.html)"
+  [& args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (sa/safe-area* opts child)))
 
 (defn ^w/Widget action-listener
   "A helper widget for making sure that listeners on an action are removed properly.

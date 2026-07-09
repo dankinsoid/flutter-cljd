@@ -1,0 +1,40 @@
+(ns flutter-cljd.internal.safe-area
+  (:require
+   [flutter-cljd.types :as t]
+   ["package:flutter/widgets.dart" :as w]))
+
+(defn- resolve-edge
+  "First of `ks` (in precedence order) that the opts map actually contains,
+   coerced to bool; `true` when none are present (Flutter's per-edge default)."
+  [opts ks]
+  (loop [ks ks]
+    (cond
+      (empty? ks) true
+      (contains? opts (first ks)) (boolean (get opts (first ks)))
+      :else (recur (rest ks)))))
+
+;; @ai-generated(guided)
+(defn ^w/Widget safe-area*
+  [opts child]
+  (let [top (resolve-edge opts [:top :t :vertical :v :all])
+        bottom (resolve-edge opts [:bottom :b :vertical :v :all])
+        left (resolve-edge opts [:left :l :horizontal :h :all])
+        right (resolve-edge opts [:right :r :horizontal :h :all])
+        maintain (boolean (:maintain-bottom-view-inset opts))
+        min-insets (:insets opts)]
+    (if (some? min-insets)
+      ;; `minimum` must be a resolved `EdgeInsets`; `t/insets` may yield a
+      ;; directional geometry, so resolve against the ambient text direction.
+      (let [geom (t/insets min-insets)]
+        (w/Builder
+         .builder
+         (fn [^w/BuildContext ctx]
+           (w/SafeArea
+            .left left .top top .right right .bottom bottom
+            .maintainBottomViewPadding maintain
+            .minimum (.resolve geom (or (w/Directionality.maybeOf ctx) w/TextDirection.ltr))
+            .child child))))
+      (w/SafeArea
+       .left left .top top .right right .bottom bottom
+       .maintainBottomViewPadding maintain
+       .child child))))
