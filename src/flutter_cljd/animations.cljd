@@ -462,8 +462,22 @@
      (nil? motion)
      nil
 
+     ;; Any other value animates from the current value to it, mirroring `to`'s
+     ;; single-value behaviour: constant when there is no initial value (duration 0),
+     ;; otherwise a lerp from the initial value over the proposed duration.
      :else
-     (throw (ex-info "Invalid motion" {:motion motion})))))
+     (let [v motion]
+       {:prepare-motion
+        (fn [from exp-dur]
+          {:interpolate (fn [initial T]
+                          (if (some? initial)
+                            (condp = T
+                              0.0 initial
+                              1.0 v
+                              ((ut/lerp initial v) T))
+                            v))
+           :duration (if (some? from) exp-dur (t/duration 0))})
+        :to-string #(str v)}))))
 
 (defn set-motion!
   "Sets the motion of the motion controller.
@@ -579,9 +593,9 @@
                              :scale (-> (to 1.0 1.1 1.0)
                                       (with {:dur 300
                                             :rel-delay 0.25
-                                            :curve :ease-in-out}))
+                                            :curve :ease-in-out})))
                            ;; Trigger taptic feedback
-                           (action! HapticFeedback.selectionClick)))]                 
+                           (action! :haptic HapticFeedback.selectionClick))]
     (->> (text \"Animated Title\")
          (animated (:opacity animation) opacity)
          (animated (:scale animation) scale)
@@ -719,7 +733,11 @@
                      :items (conj (:items res) {:duration duration
                                                 :relative-duration relative
                                                 :interpolate interpolate
-                                                :side-effects side-effects})
+                                                :side-effects side-effects
+                                                ;; Kept for the second prepare pass, once the
+                                                ;; child's real allotted duration is known.
+                                                :value last-value
+                                                :prepare-motion (:prepare-motion motion)})
                      :effects-cnt (+ effects-cnt (if side-effects 1 0))})
                   res))
               {:last-value value :sum-abs nil :sum-rel 0.0 :cnt-any 0 :cnt-abs 0 :items [] :effects-cnt 0}
@@ -743,7 +761,7 @@
              all-cnt (count items)
              all-items (reduce
                         (fn [res item]
-                          (let [{:keys [duration relative-duration]} item
+                          (let [{:keys [duration relative-duration value prepare-motion]} item
                                 relative-duration (when relative-duration (* rel-k relative-duration))
                                 t (if (empty? res) 0.0 (:end (last res)))
                                 rel-dur (or relative-duration
@@ -752,7 +770,17 @@
                                                 (if duration (/ duration res-dur) any-dur)
                                                 (/ all-cnt)))
                                             any-dur)
-                                end (+ t rel-dur)]
+                                end (+ t rel-dur)
+                                ;; Second prepare: with the layout now fixed we know each child's
+                                ;; absolute allotted time, so re-prepare duration-adaptive children
+                                ;; (e.g. `tile`) that measured with nil above. Only interpolate and
+                                ;; side-effects are taken from this pass; the child's :duration is
+                                ;; ignored — the windows (start/end/rel-dur) are already decided.
+                                item (if res-dur
+                                       (let [{:keys [interpolate side-effects]}
+                                             (prepare-motion value (from-mcs (* rel-dur res-dur)))]
+                                         (assoc item :interpolate interpolate :side-effects side-effects))
+                                       item)]
                             (conj res (assoc item :start t :end end :rel-dur rel-dur))))
                         []
                         items)]
@@ -1013,7 +1041,10 @@
     - `:relative-duration` or `:rel-dur` - Duration of the motion relative to the parent animation.
     - `:relative-delay` or `:rel-delay` - Start time ratio of the motion relative to the duration.
     - `:curve` - Curve of the animation.
-   
+
+   In the key-value syntax the option keywords (`:duration`/`:dur`, `:curve`, `:delay`,
+   `:lerp`, `:relative-duration`/`:rel-dur`, `:relative-delay`/`:rel-delay`) are reserved
+   and can't double as animated map keys; animate such a map via an explicit options map argument instead.
    ```clojure
    (with {:duration 100} w/Colors.blue)
    (with :dur 100 :curve :ease-in-out w/Colors.blue)
@@ -1175,8 +1206,9 @@
    (let [motion (motion-to-map motion)]
      (flutter-cljd.animations/motion
       (fn [_ exp-dur]
-        (let [{:keys [duration interpolate side-effects]} ((:prepare-motion motion) from exp-dur)]
+        (let [{:keys [duration relative-duration interpolate side-effects]} ((:prepare-motion motion) from exp-dur)]
           {:duration duration
+           :relative-duration relative-duration
            :interpolate (fn [_ T] (interpolate from T))
            :side-effects side-effects}))
       (fn [] (str "(from " from " " ((:to-string motion)) ")"))))))
@@ -1331,12 +1363,17 @@
    Configuration Options:
   
    par accepts options as either key-value pairs or a map before the motion list:
-  
+
    ```clojure
    (par {:duration 200 :curve :ease-in-out}
      :color (to w/Colors.blue)
      :offset (to 10.0 :duration 100))
    ```
+
+   In the key-value syntax the option keywords (`:duration`/`:dur`, `:curve`, `:delay`,
+   `:lerp`, `:relative-duration`/`:rel-dur`, `:relative-delay`/`:rel-delay`) are reserved
+   and can't be used as animated map keys; to animate a map with such keys, pass an
+   explicit options map as the first argument instead.
   
    Simplification with to:
   
@@ -1527,7 +1564,11 @@
          {:interpolate (if ratio
                          (fn [value t] (interpolate value (transform t)))
                          interpolate)
-          :duration (or exp-dur duration)
+          ;; `tile` fills whatever time the parent gives, so report the proposed
+          ;; duration (nil = unconstrained) rather than the child's own duration.
+          ;; This lets `seq` hand it the leftover share, then re-prepare it (below)
+          ;; with that share so the tiling ratio is finally known.
+          :duration exp-dur
           :side-effects (when side-effects
                           (fn [range]
                             (side-effects (map transform range))))}))

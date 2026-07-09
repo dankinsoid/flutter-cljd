@@ -934,3 +934,36 @@
           {:keys [side-effects]} ((.-prepare m) nil 1000)]
       (doseq [f (side-effects [0.5 1.0])] (f))
       (is (= 1 @events)))))
+
+;; @ai-generated(guided)
+(deftest test-raw-value-motion
+  (testing "a raw value animates from the current value to it"
+    (let [m (a/from 0 (a/with {:duration 100} 100))
+          {:keys [duration]} ((.-prepare m) nil nil)
+          anim (unwrap nil m nil)]
+      (is (= 100 (.-inMilliseconds ^dc/Duration duration)))
+      (is (= 0 (anim 0)))
+      (is (= 50 (anim 0.5)))
+      (is (= 100 (anim 1)))))
+  (testing "a bare map is an initial state at the head of a seq"
+    (let [anim (unwrap (a/seq {:x 0} (a/par :x (a/to 100))))]
+      (is (= {:x 0} (anim 0)))
+      (is (= {:x 100} (anim 1))))))
+
+;; @ai-generated(guided)
+(deftest test-from-relative-duration
+  (testing "from passes the child's relative-duration through"
+    (let [{:keys [relative-duration]}
+          ((.-prepare (a/from 0 (a/with {:relative-duration 0.5} (a/to 100)))) nil nil)]
+      (is (= 0.5 relative-duration)))))
+
+;; @ai-generated(guided)
+(deftest test-seq-tile-fills-parent
+  (testing "tile in a seq is re-prepared with, and fills, the parent's allotted duration"
+    (let [m (a/seq {:duration 2000} (a/tile (a/from-to 0 100 :duration 500)))
+          {:keys [duration]} ((.-prepare m) nil nil)
+          anim (unwrap nil m nil)]
+      (is (= 2000 (.-inMilliseconds ^dc/Duration duration)))
+      (is (= 50 (anim 0.125)))    ; halfway through cycle 1 of 4
+      (is (= 50 (anim 0.375)))    ; halfway through cycle 2
+      (is (= 25 (anim 0.0625)))))) ; quarter through cycle 1
