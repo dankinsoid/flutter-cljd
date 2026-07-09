@@ -436,7 +436,9 @@
     ((.-interpolate this) nil t))
   (^dc/String toString [^Motion this] ((.-toStr this)))
   (^bool == [^Motion this ^dc/Object other]
-    (= (.toString this) (.toString other))))
+    (= (.toString this) (.toString other)))
+  ;; Equality compares toString, so hashCode must agree to honour Object's contract.
+  (^int hashCode [^Motion this] (.-hashCode (.toString this))))
 
 (defn ^Motion motion
   [prepare to-string]
@@ -671,12 +673,6 @@
     (fn [_ _] (const-anim value 0))
     (fn [] (str "(instant " value ")")))))
 
-(defn- time-mod [num div]
-  (if (zero? num)
-    num
-    (let [result (mod num div)]
-      (if (zero? result) 1.0 result))))
-
 (defn- transform-effect-t [t start end rel-dur]
   (if (zero? rel-dur)
     (cond
@@ -882,8 +878,9 @@
   (let [motion (motion-to-map motion)]
     (flutter-cljd.animations/motion
      (fn [value _]
-       (let [{:keys [interpolate duration relative-duration side-effects]} ((:prepare-motion motion) value duration)
-             duration-mcs (in-mcs duration)
+       ;; Capture the requested duration before the child's returned :duration shadows `duration`.
+       (let [duration-mcs (in-mcs duration)
+             {:keys [interpolate duration relative-duration side-effects]} ((:prepare-motion motion) value duration)
              dur-mcs (in-mcs duration)
              max-duration (if (and duration-mcs dur-mcs) (max duration-mcs dur-mcs) (or duration-mcs dur-mcs))
              end (when (and dur-mcs (not= dur-mcs max-duration) (< 0 max-duration)) (/ dur-mcs max-duration))
@@ -1208,20 +1205,20 @@
      (wait) ;; Wait for 400ms
      (with {:duration 100} w/Colors.red))
    ```"
-  ([& {:keys [duration dur relative-duration rel-dur delay relative-delay rel-del] :as options}]
-   (let [result
-         (motion
-          (fn [_ exp-dur] {:duration exp-dur
-                           :interpolate (fn [value _] value)})
-          (constantly "(wait)"))]
-     (if (empty? options) result (with options result))))
-  ([duration & {:keys [relative-duration rel-dur delay relative-delay rel-del] :as options}]
-   (let [result
-         (motion
-          (fn [_ _] {:duration (t/duration duration)
-                     :interpolate (fn [value _] value)})
-          (fn [] (str "(wait " duration ")")))]
-     (if (empty? options) result (with options result)))))
+  ;; A single variadic arity: two variadic arities silently collapse in ClojureDart,
+  ;; so we branch on whether the first arg is a positional duration or an option.
+  [& args]
+  (let [[duration opts]
+        (if (or (empty? args) (keyword? (first args)) (is-options? (first args)))
+          [nil args]
+          [(first args) (rest args)])
+        options (if (and (= 1 (count opts)) (map? (first opts))) (first opts) (apply hash-map opts))
+        result
+        (motion
+         (fn [_ exp-dur] {:duration (if (some? duration) (t/duration duration) exp-dur)
+                          :interpolate (fn [value _] value)})
+         (if (some? duration) (fn [] (str "(wait " duration ")")) (constantly "(wait)")))]
+    (if (empty? options) result (with options result))))
 
 (defn ^Motion seq
   "Sequential Animation of Values.
@@ -1390,9 +1387,19 @@
                                (let [dur (- end start)]
                                  (if (<= relative-duration dur)
                                    (side-effects [0.0 1.0])
-                                   (let [[x y] (map #(int (/ % cnt)) [start end])
-                                         s (transform start)
-                                         e (transform end)
+                                   ;; Work in loop units u = t*cnt in [0, cnt], snapping to a boundary
+                                   ;; when within eps so a tick landing on a loop edge fires that loop's
+                                   ;; end effects rather than the next loop's start.
+                                   (let [eps 1.0e-9
+                                         snap (fn [t] (let [u (* t cnt) r (.round u)]
+                                                        (if (< (.abs (- u r)) eps) (double r) u)))
+                                         us (snap start)
+                                         ue (snap end)
+                                         x (min (dec cnt) (.floor us))
+                                         ;; an end exactly on a boundary belongs to the earlier loop
+                                         y (max x (min (dec cnt) (dec (.ceil ue))))
+                                         s (- us x)
+                                         e (- ue y)
                                          ranges (if (= x y) [[s e]] [[s 1.0] [0.0 e]])]
                                      (apply concat (map side-effects ranges)))))))})))
       (fn [] (str "(repeat " cnt " " ((:to-string motion)) ")"))))))
@@ -1424,7 +1431,10 @@
                                    ranges
                                    (if (or (<= end 0.5) (<= 0.5 start))
                                      [[(min s e) (max s e)]]
-                                     [[s 1.0] [e 1.0]])]
+                                     ;; Apex crossing: the ascending half [s 1.0] owns the touch at 1.0.
+                                     ;; The descending half is emitted reversed [1.0 e] so its 1.0 endpoint
+                                     ;; is a start, not an end, and forward-triggered effects fire only once.
+                                     [[s 1.0] [1.0 e]])]
                                (apply concat (map #(side-effects %) ranges)))))}))
       (fn [] (str "(autoreverse " ((:to-string motion)) ")"))))))
 
@@ -1497,8 +1507,17 @@
        (let [{:keys [duration interpolate side-effects]} ((:prepare-motion motion) value exp-dur)
              dur-mcs (in-mcs duration)
              exp-dur-mcs (in-mcs exp-dur)
-             ratio (when (and exp-dur-mcs (< 0 exp-dur-mcs)) (/ dur-mcs exp-dur-mcs))
-             transform (if ratio #(time-mod % ratio) identity)]
+             ;; A child without its own duration can't be tiled; fall back to identity.
+             ratio (when (and dur-mcs (< 0 dur-mcs) exp-dur-mcs (< 0 exp-dur-mcs)) (/ dur-mcs exp-dur-mcs))
+             ;; Normalise the position within the current cycle to [0,1]:
+             ;; t=0 -> 0.0, exact non-zero cycle ends -> 1.0 (end of cycle, not start of next).
+             transform (if ratio
+                         (fn [t]
+                           (if (zero? t)
+                             0.0
+                             (let [m (mod t ratio)]
+                               (if (zero? m) 1.0 (/ m ratio)))))
+                         identity)]
          {:interpolate (if ratio
                          (fn [value t] (interpolate value (transform t)))
                          interpolate)

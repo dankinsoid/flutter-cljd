@@ -4,6 +4,7 @@
             [flutter-cljd.animations :as a]
             ["package:flutter/animation.dart" :as fa]
             ["package:flutter_test/flutter_test.dart" :as ft]
+            ["dart:core" :as dc]
             [cljd.string :as str]))
 
 (deftest test-map-anim
@@ -784,3 +785,69 @@
       (is (= (.-value controller) 75) "Final segment")
 
       (.dispose controller))))
+
+;; @ai-generated(guided)
+(deftest test-wait-arities
+  (testing "no-arg wait renders as (wait)"
+    (is (= "(wait)" (.toString (a/wait)))))
+  (testing "positional duration is honoured and rendered"
+    (let [{:keys [duration]} ((.-prepare (a/wait 100)) nil nil)]
+      (is (= 100 (.-inMilliseconds ^dc/Duration duration)))
+      (is (= "(wait 100)" (.toString (a/wait 100))))))
+  (testing "keyword-only options form"
+    (let [{:keys [duration]} ((.-prepare (a/wait :dur 100)) nil nil)]
+      (is (= 100 (.-inMilliseconds ^dc/Duration duration)))))
+  (testing "positional duration with trailing option kvs"
+    (is (some? (a/wait 100 :rel-delay 0.1)))))
+
+;; @ai-generated(guided)
+(deftest test-tile-cycle
+  (testing "child is normalised across the whole cycle, not just its ratio"
+    (let [anim (unwrap nil (a/tile (a/from-to 0 100 :duration 500)) 2000)]
+      (is (= 50 (anim 0.125))))))
+
+;; @ai-generated(guided)
+(deftest test-duration-wrapper-enforces-requested
+  (testing "requested duration wins over a fixed child and squeezes it"
+    (let [m (a/duration 1000 (a/from-to 0 100 :duration 500))
+          {:keys [duration]} ((.-prepare m) nil nil)
+          anim (unwrap nil m 1000)]
+      (is (= 1000 (.-inMilliseconds ^dc/Duration duration)))
+      (is (= 50 (anim 0.25)))
+      (is (= 100 (anim 0.75))))))
+
+;; @ai-generated(guided)
+(deftest test-repeat-boundary-effects
+  ;; A durationless seq has no timeline, so drive it with an exp-dur (loop = 1000ms) that its
+  ;; durationless `to` stretches to fill, placing the trailing action at the loop end.
+  (let [fire (fn [range]
+               (let [events (atom 0)
+                     m (a/repeat 3 (a/seq (a/to 0 1) (a/action! :x #(swap! events inc))))
+                     {:keys [side-effects]} ((.-prepare m) nil 3000)]
+                 (doseq [f (side-effects range)] (f))
+                 @events))]
+    (testing "a tick spanning a loop boundary fires the action once"
+      (is (= 1 (fire [0.3 0.4]))))
+    (testing "a tick within the first loop, short of the action, fires nothing"
+      (is (= 0 (fire [0.0 0.2]))))
+    (testing "a tick ending exactly on a boundary fires once"
+      (is (= 1 (fire [0.3 (/ 1.0 3)]))))
+    (testing "a tick inside a middle loop with no crossing fires nothing"
+      (is (= 0 (fire [0.4 0.5]))))))
+
+;; @ai-generated(guided)
+(deftest test-autoreverse-apex-once
+  (testing "an apex-crossing tick fires the end action exactly once"
+    (let [events (atom 0)
+          m (a/autoreverse (a/seq (a/to 0 1) (a/action! :x #(swap! events inc))))
+          {:keys [side-effects]} ((.-prepare m) nil 1000)]
+      (doseq [f (side-effects [0.4 0.6])] (f))
+      (is (= 1 @events)))))
+
+;; @ai-generated(guided)
+(deftest test-motion-hashcode
+  (testing "motions equal by toString share a hash code"
+    (let [m1 (a/wait 100)
+          m2 (a/wait 100)]
+      (is (= (.toString m1) (.toString m2)) "precondition: motions are equal")
+      (is (= (.-hashCode m1) (.-hashCode m2))))))
