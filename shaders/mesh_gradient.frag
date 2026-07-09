@@ -24,6 +24,8 @@ uniform float uColorSpace; // 0=oklab; >0=oklch raw-angle interpolation (hue mod
 // 392-393 (texture path only): decode row-1 RGB signal as texel*uDataScale + uDataLo
 uniform float uDataLo;
 uniform float uDataScale;
+// 394
+uniform float uRegular;   // 1 = evenly spaced grid: map pos directly to (cell, u, v), skip Newton
 
 uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: encoded RGB signal)
 
@@ -108,6 +110,18 @@ vec3 oklchToOklab(vec3 lch) {
     return vec3(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z));
 }
 
+// --- Dither ---
+// Triangular ±1/255 luma noise added before premultiply: the shader shades at
+// float precision, but 8-bit surfaces (Android) band on smooth dark ramps
+// without it. Impeller dithers its built-in gradients the same way.
+
+float ditherNoise() {
+    vec2 p = FlutterFragCoord().xy;
+    float a = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    float b = fract(sin(dot(p + 17.13, vec2(12.9898, 78.233))) * 43758.5453);
+    return (a + b - 1.0) * (1.0 / 255.0);
+}
+
 // --- Data access (uniform or texture) ---
 
 vec2 getPosition(int i) {
@@ -163,6 +177,38 @@ vec4 gridColorLab(int row, int col, int gw, int gh) {
     vec3 lab = linearToOklab(srgbToLinearV(src.rgb));
     if (uColorSpace > 0.5) lab = oklabToOklch(lab);
     return vec4(lab, src.a);
+}
+
+// Bicubic Catmull-Rom color across the 4x4 neighborhood of cell (row,col) at
+// local (u,v); returns the final premultiplied, dithered fragment color.
+// Alpha-weighted accumulation: transparent grid points don't pollute the
+// color of nearby opaque ones.
+vec4 shadeCell(int row, int col, float u, float v, int gw, int gh) {
+    vec4 wu = catmullRomWeights(u);
+    vec4 wv = catmullRomWeights(v);
+
+    vec3 labFinal = vec3(0.0);
+    float alpha = 0.0;
+
+    for (int j = 0; j < 4; j++) {
+        vec3 rowLab = vec3(0.0);
+        float rowA = 0.0;
+        for (int i = 0; i < 4; i++) {
+            vec4 labA = gridColorLab(row + j - 1, col + i - 1, gw, gh);
+            float a = labA.w;
+            rowLab += labA.xyz * a * wu[i];
+            rowA += a * wu[i];
+        }
+        labFinal += rowLab * wv[j];
+        alpha += rowA * wv[j];
+    }
+
+    alpha = clamp(alpha, 0.0, 1.0);
+    vec3 lab = alpha > 0.001 ? labFinal / alpha : labFinal;
+    if (uColorSpace > 0.5) lab = oklchToOklab(lab);
+    // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
+    vec3 rgb = linearToSrgbV(oklabToLinear(lab)) + vec3(ditherNoise());
+    return vec4(rgb * alpha, alpha);
 }
 
 // --- Coons patch (cubic Bezier boundaries) ---
@@ -230,6 +276,16 @@ void main() {
     int gw = int(uGridWidth);
     int gh = int(uGridHeight);
 
+    // Regular-grid fast path: the Coons patch of an evenly spaced grid is the
+    // identity mapping, so (cell, u, v) follow directly from pos — no Newton.
+    if (uRegular > 0.5) {
+        vec2 cellf = clamp(pos, 0.0, 1.0) * vec2(float(gw - 1), float(gh - 1));
+        int col = min(int(cellf.x), gw - 2);
+        int row = min(int(cellf.y), gh - 2);
+        fragColor = shadeCell(row, col, cellf.x - float(col), cellf.y - float(row), gw, gh);
+        return;
+    }
+
     for (int row = 0; row < 15; row++) {
         if (row >= gh - 1) break;
         for (int col = 0; col < 15; col++) {
@@ -241,10 +297,14 @@ void main() {
             vec2 c01 = getPosition((row + 1) * gw + col);
             vec2 c11 = getPosition((row + 1) * gw + col + 1);
 
-            // AABB with margin for Bezier overshoot
+            // AABB with margin for Bezier overshoot. Catmull-Rom control
+            // points sit at most (1/6)|next - prev| — about a third of a
+            // cell — outside the corner hull, so half a cell is conservative.
+            // (A full-cell margin made every pixel Newton-probe ~9 candidate
+            // cells instead of ~4.)
             vec2 lo = min(min(c00, c10), min(c01, c11));
             vec2 hi = max(max(c00, c10), max(c01, c11));
-            vec2 margin = max(hi - lo, vec2(0.05));
+            vec2 margin = max(0.5 * (hi - lo), vec2(0.01));
             lo -= margin;
             hi += margin;
             if (pos.x < lo.x || pos.x > hi.x || pos.y < lo.y || pos.y > hi.y)
@@ -271,12 +331,14 @@ void main() {
                 else if (attempt == 2) { u = 0.25; v = 0.25; }
                 else if (attempt == 3) { u = 0.75; v = 0.75; }
 
+                float errSq = 1e30;
                 for (int iter = 0; iter < 10; iter++) {
                     vec2 dSdu, dSdv;
                     vec2 S = evalCoons(u, v, row, col, gw, gh, dSdu, dSdv);
                     vec2 err = pos - S;
+                    errSq = dot(err, err);
 
-                    if (dot(err, err) < 1e-12) break;
+                    if (errSq < 1e-12) break;
 
                     float det = dSdu.x * dSdv.y - dSdu.y * dSdv.x;
                     if (abs(det) < 1e-12) break;
@@ -309,6 +371,16 @@ void main() {
                     accepted = true;
                     break;
                 }
+
+                // Newton converged onto the surface but at parameters well
+                // outside this cell: the pixel belongs to a neighboring patch,
+                // and further restarts would re-find the same exterior root.
+                // Require one restart to agree (attempt > 0) so a folded cell
+                // whose informed guess escaped still gets a second look;
+                // truly folded grids also keep the bestDist fallback below.
+                if (attempt > 0 && errSq < 1e-8 &&
+                    (u < -0.1 || u > 1.1 || v < -0.1 || v > 1.1))
+                    break;
             }
 
             // Fallback: use best solution if reasonably close
@@ -319,35 +391,7 @@ void main() {
 
             if (!accepted) continue;
 
-            // Bicubic Catmull-Rom color interpolation in OKLab
-            // Premultiplied alpha: multiply color by alpha before interpolation,
-            // so transparent grid points don't pollute the color of nearby opaque ones
-            vec4 wu = catmullRomWeights(u);
-            vec4 wv = catmullRomWeights(v);
-
-            vec3 labFinal = vec3(0.0);
-            float alpha = 0.0;
-
-            for (int j = 0; j < 4; j++) {
-                vec3 rowLab = vec3(0.0);
-                float rowA = 0.0;
-                for (int i = 0; i < 4; i++) {
-                    vec4 labA = gridColorLab(row + j - 1, col + i - 1, gw, gh);
-                    float a = labA.w;
-                    rowLab += labA.xyz * a * wu[i];
-                    rowA += a * wu[i];
-                }
-                labFinal += rowLab * wv[j];
-                alpha += rowA * wv[j];
-            }
-
-            alpha = clamp(alpha, 0.0, 1.0);
-            vec3 lab = alpha > 0.001 ? labFinal / alpha : labFinal;
-            if (uColorSpace > 0.5) lab = oklchToOklab(lab);
-            // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
-            vec3 rgb = linearToSrgbV(oklabToLinear(lab));
-
-            fragColor = vec4(rgb * alpha, alpha);
+            fragColor = shadeCell(row, col, u, v, gw, gh);
             return;
         }
     }

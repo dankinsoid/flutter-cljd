@@ -113,6 +113,18 @@ vec3 oklchToOklab(vec3 lch) {
     return vec3(lch.x, lch.y * cos(lch.z), lch.y * sin(lch.z));
 }
 
+// --- Dither ---
+// Triangular ±1/255 luma noise added before premultiply: the shader shades at
+// float precision, but 8-bit surfaces (Android) band on smooth dark ramps
+// without it. Impeller dithers its built-in gradients the same way.
+
+float ditherNoise() {
+    vec2 p = FlutterFragCoord().xy;
+    float a = fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    float b = fract(sin(dot(p + 17.13, vec2(12.9898, 78.233))) * 43758.5453);
+    return (a + b - 1.0) * (1.0 / 255.0);
+}
+
 // --- Data access (uniform or texture) ---
 
 vec4 getColor(int i) {
@@ -317,7 +329,7 @@ void main() {
     }
 
     // OKLab → linear → extended sRGB (unclamped for wide gamut BGRA10_XR)
-    vec3 rgb = linearToSrgbV(oklabToLinear(labMix));
+    vec3 rgb = linearToSrgbV(oklabToLinear(labMix)) + vec3(ditherNoise());
 
     // Premultiplied alpha output
     fragColor = vec4(rgb * alphaMix, alphaMix);

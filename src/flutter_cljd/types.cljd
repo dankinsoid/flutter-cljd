@@ -976,6 +976,8 @@
     [(.toImageSync (.endRecording recorder) n 2) lo scale]))
 
 (defn- set-gradient-uniforms!
+  "`tex` is the gradient's cached `[image lo scale]` data texture; required
+   (non-nil) when there are more than 32 stops, ignored otherwise."
   [^ui/FragmentShader shader
    ^ui/Rect rect
    ^int gradient-type
@@ -984,7 +986,8 @@
    stops
    ^double p0x ^double p0y
    ^double p1x ^double p1y
-   ^int cs-id]
+   ^int cs-id
+   tex]
   (let [n (count colors)]
     (.setFloat shader 0 (.-width rect))
     (.setFloat shader 1 (.-height rect))
@@ -1041,15 +1044,15 @@
         ;; Dummy sampler — shader declares sampler2D, must be bound
         (.setImageSampler shader 0 -dummy-image))
       ;; Texture path (>32 stops)
-      (let [[img lo scale] (create-gradient-data-texture colors stops)]
+      (let [[img lo scale] tex]
         (.setFloat shader 5 1.0)
-        (.setFloat shader 299 lo)    ; uDataLo:    signal decode offset
-        (.setFloat shader 300 scale) ; uDataScale: signal decode range
+        (.setFloat shader 299 (double lo))    ; uDataLo:    signal decode offset
+        (.setFloat shader 300 (double scale)) ; uDataScale: signal decode range
         (.setImageSampler shader 0 img)))
     (.setFloat shader 170 (double cs-id))
     shader))
 
-(declare ->oklab-gradient)
+(declare ->oklab-gradient lerp-oklab-gradients)
 
 (deftype OkLabGradient
   [colors stops
@@ -1059,38 +1062,47 @@
    center-align
    ^double radius-val
    ^double start-angle ^double end-angle
-   ^int cs-id]
+   ^int cs-id
+   ^:mutable tex-cache]
   :extends (m/Gradient .colors colors .stops stops)
 
   (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
     (let [shader (shader/create-oklab-shader)
           stops (or (.-stops this)
                     (let [n (count colors)]
-                      (mapv #(/ (double %) (dec n)) (range n))))]
+                      (mapv #(/ (double %) (dec n)) (range n))))
+          ;; >32 stops go through a data texture. Build it once per gradient:
+          ;; createShader runs on every repaint, and toImageSync'ing a fresh
+          ;; texture each frame churned GPU memory during animations.
+          tex (when (> (count colors) 32)
+                (or tex-cache
+                    (let [t (create-gradient-data-texture colors stops)]
+                      (set! tex-cache t)
+                      t)))]
       (case gradient-type
         ;; Linear
         0 (let [b (.withinRect (.resolve ^m/AlignmentGeometry begin-align textDirection) rect)
                 e (.withinRect (.resolve ^m/AlignmentGeometry end-align textDirection) rect)]
             (set-gradient-uniforms! shader rect 0 tm-id colors stops
-                                   (.-dx b) (.-dy b) (.-dx e) (.-dy e) cs-id))
+                                   (.-dx b) (.-dy b) (.-dx e) (.-dy e) cs-id tex))
         ;; Radial
         1 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
                 side (.-shortestSide rect)
                 r (* radius-val side)
                 sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 1 tm-id colors stops
-                                   (.-dx c) (.-dy c) r sr cs-id))
+                                   (.-dx c) (.-dy c) r sr cs-id tex))
         ;; Sweep
         2 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)]
             (set-gradient-uniforms! shader rect 2 tm-id colors stops
-                                   (.-dx c) (.-dy c) start-angle end-angle cs-id))
+                                   (.-dx c) (.-dy c) start-angle end-angle cs-id tex))
         ;; Diamond
         3 (let [c (.withinRect (.resolve ^m/AlignmentGeometry center-align textDirection) rect)
                 side (.-shortestSide rect)
                 r (* radius-val side)
                 sr (* start-angle side)]
             (set-gradient-uniforms! shader rect 3 tm-id colors stops
-                                   (.-dx c) (.-dy c) r sr cs-id)))))
+                                   (.-dx c) (.-dy c) r sr cs-id tex)))))
 
   (scale [this ^double factor]
     (->oklab-gradient
@@ -1102,7 +1114,23 @@
     (->oklab-gradient
      (mapv #(.withOpacity ^ui/Color % opacity) colors)
      stops gradient-type tm-id
-     begin-align end-align center-align radius-val start-angle end-angle cs-id)))
+     begin-align end-align center-align radius-val start-angle end-angle cs-id))
+
+  ;; Pairwise OKLab lerp keeps decoration animations (AnimatedContainer,
+  ;; DecorationTween) smooth between two shader gradients of the same shape.
+  ;; Incompatible pairs return nil and Gradient.lerp falls back to its
+  ;; fade-through-transparent default.
+  (lerpFrom [this ^m/Gradient? a ^double t]
+    (cond
+      (nil? a) (.scale this t)
+      (instance? OkLabGradient a) (lerp-oklab-gradients a this t)
+      :else nil))
+
+  (lerpTo [this ^m/Gradient? b ^double t]
+    (cond
+      (nil? b) (.scale this (- 1.0 t))
+      (instance? OkLabGradient b) (lerp-oklab-gradients this b t)
+      :else nil)))
 
 (defn- ->oklab-gradient
   [colors stops gradient-type tm-id
@@ -1111,7 +1139,35 @@
    (.from #/(dc/List ui/Color) colors)
    (when stops (.from #/(dc/List dc/double) (map double stops)))
    gradient-type tm-id
-   begin-align end-align center-align radius-val start-angle end-angle cs-id))
+   begin-align end-align center-align radius-val start-angle end-angle cs-id
+   nil))
+
+(defn- lerp-oklab-gradients
+  "Pairwise lerp of two `OkLabGradient`s: colors in OKLab, stops/geometry
+   linearly. Returns nil when shape, tile mode, color space or stop count
+   differ — the caller then lets `Gradient.lerp` fall back."
+  [^OkLabGradient a ^OkLabGradient b ^double t]
+  (let [ca (.-colors a) cb (.-colors b)
+        n (count ca)]
+    (when (and (= (.-gradient-type a) (.-gradient-type b))
+               (= (.-tm-id a) (.-tm-id b))
+               (= (.-cs-id a) (.-cs-id b))
+               (= n (count cb)))
+      (let [even-stops (fn [^OkLabGradient g]
+                         (or (.-stops g)
+                             (mapv #(/ (double %) (dec n)) (range n))))
+            il (fn ^double [^double x ^double y] (+ x (* (- y x) t)))]
+        (->oklab-gradient
+         (mapv #(ut/oklab-lerp %1 %2 t) ca cb)
+         (mapv #(il (double %1) (double %2)) (even-stops a) (even-stops b))
+         (.-gradient-type a) (.-tm-id a)
+         (m/AlignmentGeometry.lerp (.-begin-align a) (.-begin-align b) t)
+         (m/AlignmentGeometry.lerp (.-end-align a) (.-end-align b) t)
+         (m/AlignmentGeometry.lerp (.-center-align a) (.-center-align b) t)
+         (il (.-radius-val a) (.-radius-val b))
+         (il (.-start-angle a) (.-start-angle b))
+         (il (.-end-angle a) (.-end-angle b))
+         (.-cs-id a))))))
 
 (def ^:private shader-color-spaces
   "Color spaces that use the OKLab/OKLCH shader path (vs native sRGB fallback)."
@@ -1303,11 +1359,15 @@
     [(.toImageSync (.endRecording recorder) n 2) lo scale]))
 
 (defn- set-mesh-uniforms!
+  "`tex` is the gradient's cached `[image lo scale]` data texture; required
+   (non-nil) when the grid has more than 64 points, ignored otherwise."
   [^ui/FragmentShader shader
    ^ui/Rect rect
    ^int grid-w ^int grid-h
    points colors
-   ^int cs-id]
+   ^int cs-id
+   ^bool regular?
+   tex]
   (let [n (* grid-w grid-h)]
     ;; uSize
     (.setFloat shader 0 (.-width rect))
@@ -1353,23 +1413,55 @@
         ;; Dummy sampler — shader declares sampler2D, must be bound
         (.setImageSampler shader 0 -dummy-image))
       ;; Texture path (>64 points)
-      (let [[img lo scale] (create-mesh-data-texture points colors)]
+      (let [[img lo scale] tex]
         (.setFloat shader 6 1.0) ;; uUseTexture
-        (.setFloat shader 392 lo)    ; uDataLo:    signal decode offset
-        (.setFloat shader 393 scale) ; uDataScale: signal decode range
+        (.setFloat shader 392 (double lo))    ; uDataLo:    signal decode offset
+        (.setFloat shader 393 (double scale)) ; uDataScale: signal decode range
         (.setImageSampler shader 0 img)))
     (.setFloat shader 391 (double cs-id))
+    ;; uRegular: evenly spaced grids skip Newton inversion in the shader
+    (.setFloat shader 394 (if regular? 1.0 0.0))
     shader))
 
-(declare ->oklab-mesh-gradient)
+(defn- regular-mesh-points?
+  "True when `points` form the evenly spaced grid. The Coons patch of such a
+   grid is the identity mapping, which lets the shader map a pixel straight to
+   (cell, u, v) and skip Newton inversion entirely — the dominant per-pixel
+   cost for the default (regular) mesh."
+  ^bool [points ^int w ^int h]
+  (let [max-col (double (dec w))
+        max-row (double (dec h))
+        n (* w h)]
+    (loop [i 0]
+      (if (>= i n)
+        true
+        (let [pt (nth points i)
+              ex (/ (double (rem i w)) max-col)
+              ey (/ (double (quot i w)) max-row)]
+          (if (and (< (.abs (- (double (nth pt 0)) ex)) 1e-6)
+                   (< (.abs (- (double (nth pt 1)) ey)) 1e-6))
+            (recur (inc i))
+            false))))))
+
+(declare ->oklab-mesh-gradient lerp-mesh-gradients)
 
 (deftype OkLabMeshGradient
-  [colors ^int grid-w ^int grid-h points ^int cs-id]
+  [colors ^int grid-w ^int grid-h points ^int cs-id
+   ^bool regular?
+   ^:mutable tex-cache]
   :extends (m/Gradient .colors colors .stops nil)
 
   (createShader [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
-    (let [shader (shader/create-mesh-shader)]
-      (set-mesh-uniforms! shader rect grid-w grid-h points colors cs-id)))
+    (let [shader (shader/create-mesh-shader)
+          ;; >64 points go through a data texture. Build it once per gradient:
+          ;; createShader runs on every repaint, and toImageSync'ing a fresh
+          ;; texture each frame churned GPU memory during animations.
+          tex (when (> (* grid-w grid-h) 64)
+                (or tex-cache
+                    (let [t (create-mesh-data-texture points colors)]
+                      (set! tex-cache t)
+                      t)))]
+      (set-mesh-uniforms! shader rect grid-w grid-h points colors cs-id regular? tex)))
 
   (scale [this ^double factor]
     (->oklab-mesh-gradient
@@ -1379,13 +1471,46 @@
   (withOpacity [this ^double opacity]
     (->oklab-mesh-gradient
      (mapv #(.withOpacity ^ui/Color % opacity) colors)
-     grid-w grid-h points cs-id)))
+     grid-w grid-h points cs-id))
+
+  ;; See OkLabGradient.lerpFrom — same contract.
+  (lerpFrom [this ^m/Gradient? a ^double t]
+    (cond
+      (nil? a) (.scale this t)
+      (instance? OkLabMeshGradient a) (lerp-mesh-gradients a this t)
+      :else nil))
+
+  (lerpTo [this ^m/Gradient? b ^double t]
+    (cond
+      (nil? b) (.scale this (- 1.0 t))
+      (instance? OkLabMeshGradient b) (lerp-mesh-gradients this b t)
+      :else nil)))
 
 (defn- ->oklab-mesh-gradient
   [colors grid-w grid-h points cs-id]
   (OkLabMeshGradient
    (.from #/(dc/List ui/Color) colors)
-   grid-w grid-h points cs-id))
+   grid-w grid-h points cs-id
+   (regular-mesh-points? points grid-w grid-h)
+   nil))
+
+(defn- lerp-mesh-gradients
+  "Pairwise lerp of two `OkLabMeshGradient`s: colors in OKLab, points linearly.
+   Returns nil when grid size or color space differ — the caller then lets
+   `Gradient.lerp` fall back."
+  [^OkLabMeshGradient a ^OkLabMeshGradient b ^double t]
+  (when (and (= (.-grid-w a) (.-grid-w b))
+             (= (.-grid-h a) (.-grid-h b))
+             (= (.-cs-id a) (.-cs-id b)))
+    (let [il (fn ^double [^double x ^double y] (+ x (* (- y x) t)))]
+      (->oklab-mesh-gradient
+       (mapv #(ut/oklab-lerp %1 %2 t) (.-colors a) (.-colors b))
+       (.-grid-w a) (.-grid-h a)
+       (mapv (fn [p q]
+               [(il (double (nth p 0)) (double (nth q 0)))
+                (il (double (nth p 1)) (double (nth q 1)))])
+             (.-points a) (.-points b))
+       (.-cs-id a)))))
 
 (defn- default-mesh-points [^int w ^int h]
   (let [max-col (dec w)
