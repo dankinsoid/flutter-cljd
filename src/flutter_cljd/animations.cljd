@@ -59,17 +59,18 @@
     (c/-contains-key? (.-value this) key)))
 
 (defn- set-value [this new-value]
-  (let [old-value (-> this .-tween .-end)
-        tween (.-tween this)
-        controller (.-controller this)]
+  (let [tween (.-tween this)
+        old-value (.-end tween)
+        controller (.-controller this)
+        parent (.-parent this)]
     (when-not (= new-value old-value)
-      (.-begin! tween (.evaluate tween this))
+      ;; Re-anchor against the curved parent, whose value feeds the tween's lerp;
+      ;; `this`'s value is already the lerped output, so evaluating it double-lerps.
+      (.-begin! tween (.evaluate tween parent))
       (.-end! tween new-value)
-      (if-not (.-isAnimating controller)
-        (.forward controller .from 0.0)
-        (let [progress (.-value controller)]
-          (.forward controller .from 0.0)
-          (.-value! controller progress)))
+      ;; Always restart from 0 after re-anchoring (matches TweenAnimationBuilder);
+      ;; begin is now the currently displayed value, so restoring progress would jump.
+      (.forward controller .from 0.0)
       nil)))
 
 (defn- get-state [this]
@@ -81,7 +82,7 @@
           ^a/Animation parent]
   :extends (a/Animation)
   (value [^AnimatedValue this]
-    (-> this .-tween (.lerp (-> this .-controller .-value))))
+    (-> this .-tween (.lerp (-> this .-parent .-value))))
   c/IEquiv
   (-equiv [o other] (identical? o other))
   c/IDeref
@@ -94,6 +95,7 @@
   c/IReset
   (-reset! [^AnimatedValue this new-value] (set-value this new-value))
   (dispose [^AnimatedValue this]
+    (.dispose (.-parent this))
     (.dispose (.-controller this)))
   ^:mixin a/AnimationWithParentMixin)
 
@@ -478,10 +480,15 @@
    ```"
   [^MotionController controller motion]
   (let [motion-map (motion-to-map motion)
-        string ((:to-string motion-map))]
+        string ((:to-string motion-map))
+        changed (not= string (.-motionString controller))]
     (.-motion! controller motion-map)
-    (.-needCompute! controller (not= string (.-motionString controller)))
+    (.-needCompute! controller changed)
     (.-motionString! controller string)
+    ;; Drop the cached value so an idle controller recomputes against the new
+    ;; motion instead of returning the previous motion's value at the same progress.
+    (when changed
+      (reset-cached-value controller))
     (when (.-isAnimating controller)
       (compute-motion controller))
     controller))
@@ -1453,10 +1460,10 @@
                          (fn [value t] (interpolate value (transform t)))
                          interpolate)
           :duration duration
-          :side-effects (when side-effects
-                          (if dur-ms
-                            (fn [range] (side-effects (map transform range)))
-                            side-effects))}))
+          ;; The controller still sweeps the real timeline; only the displayed value
+          ;; is remapped to wall-clock phase. Side-effect ranges must pass through
+          ;; untransformed, otherwise both endpoints collapse to "now" and never fire.
+          :side-effects side-effects}))
      (fn [] (str "(synced " ((:to-string motion)) ")")))))
 
 (defn ^Motion tile

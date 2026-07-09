@@ -853,3 +853,42 @@
           m2 (a/wait 100)]
       (is (= (.toString m1) (.toString m2)) "precondition: motions are equal")
       (is (= (.-hashCode m1) (.-hashCode m2))))))
+
+;; @ai-generated(guided)
+(deftest test-set-motion-stale-cache
+  (testing "set-motion! on an idle controller refreshes .value"
+    (let [c (a/motion-controller (ft/TestVSync) (a/from-to 0 100))]
+      (a/progress! c 1.0)
+      (is (= 100 (.-value c)))
+      (a/set-motion! c (a/from-to 0 200))
+      (is (= 200 (.-value c)))
+      (.dispose c))))
+
+;; @ai-generated(guided)
+(deftest test-animated-value
+  ;; set-value calls AnimationController.forward, which needs an initialized binding.
+  (ft/TestWidgetsFlutterBinding.ensureInitialized)
+  (testing "curve option affects the output value"
+    (let [av (a/animated-value 0.0 (ft/TestVSync) {:duration 100 :curve :ease-in})]
+      (swap! av + 10.0)
+      (.-value! (.-controller av) 0.5)
+      ;; ease-in at 0.5 is ~0.32 -> value ~3.2, linear would be 5.0
+      (is (< (.-value av) 4.5))
+      (.dispose av)))
+  (testing "retargeting mid-animation restarts from the displayed value"
+    (let [av (a/animated-value 0.0 (ft/TestVSync) {:duration 100})]
+      (reset! av 10.0)
+      (.-value! (.-controller av) 0.5) ;; displayed: 5.0
+      (reset! av 20.0)                 ;; tween begin should become 5.0
+      (.-value! (.-controller av) 0.0)
+      (is (= 5.0 (.-value av)))
+      (.dispose av))))
+
+;; @ai-generated(guided)
+(deftest test-synced-side-effects
+  (testing "side-effect ranges pass through untransformed so actions still fire"
+    (let [events (atom 0)
+          m (a/synced (a/seq (a/to 0 1) (a/action! :x #(swap! events inc))))
+          {:keys [side-effects]} ((.-prepare m) nil 1000)]
+      (doseq [f (side-effects [0.5 1.0])] (f))
+      (is (= 1 @events)))))
