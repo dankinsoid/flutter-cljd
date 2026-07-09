@@ -26,15 +26,22 @@ uniform float uStops[32];
 uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
 // 171-298 (only populated for oklch-mix uniform path, cs 5-8)
 uniform vec4 uLabColors[32]; // OKLab (L,a,b,_) — avoids per-pixel oklchToOklab in mix path
+// 299-300 (texture path only): decode row-0 RGB signal as texel*uDataScale + uDataLo
+uniform float uDataLo;
+uniform float uDataScale;
 
-uniform sampler2D uData;   // Nx2 data texture (row 0: RGB+A=255, row 1: stop+alpha+A=255)
+uniform sampler2D uData;   // Nx2 data texture (row 0: encoded RGB signal, row 1: 16-bit stop + alpha)
 
 out vec4 fragColor;
 
 // --- Fast sRGB <-> Linear (polynomial / sqrt-chain approximation) ---
 
+// Sign-preserving, unclamped: mirrors utils/srgb->linear-signed so texture-decoded
+// wide-gamut signals (components outside 0..1) linearize the same as the uniform path.
 float srgbToLinear(float c) {
-    return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878);
+    float a = abs(c);
+    float l = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);
+    return c < 0.0 ? -l : l;
 }
 
 float linearToSrgb(float c) {
@@ -107,10 +114,10 @@ vec4 getColor(int i) {
         return uColors[i];
     }
     float u = (float(i) + 0.5) / uColorCount;
-    // Row 0: RGB color (A=255 in texture to avoid premul issues)
-    vec3 rgb = texture(uData, vec2(u, 0.25)).rgb;
-    // Row 1: R=stop, G=alpha
-    float alpha = texture(uData, vec2(u, 0.75)).g;
+    // Row 0: encoded RGB signal → decode to (wide) sRGB signal
+    vec3 rgb = texture(uData, vec2(u, 0.25)).rgb * uDataScale + uDataLo;
+    // Row 1 B channel = alpha
+    float alpha = texture(uData, vec2(u, 0.75)).b;
     return vec4(rgb, alpha);
 }
 
@@ -119,7 +126,12 @@ float getStop(int i) {
         return uStops[i];
     }
     float u = (float(i) + 0.5) / uColorCount;
-    return texture(uData, vec2(u, 0.75)).r;
+    // Row 1 R/G = 16-bit stop (high byte, low byte). Sampled at the texel centre,
+    // so filtering returns the exact byte; round before recombining.
+    vec2 s = texture(uData, vec2(u, 0.75)).rg;
+    float hi = floor(s.r * 255.0 + 0.5);
+    float lo = floor(s.g * 255.0 + 0.5);
+    return (hi * 256.0 + lo) / 65535.0;
 }
 
 // --- Gradient position ---

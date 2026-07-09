@@ -920,24 +920,60 @@
     (.drawRect canvas (ui/Rect.fromLTWH 0.0 0.0 1.0 1.0) paint)
     (.toImageSync (.endRecording recorder) 1 1)))
 
+(defn- ^ui/Color color->signal
+  "Normalizes `c` so its `.r/.g/.b` read as sRGB-signal components: displayP3 is
+   re-encoded to extendedSRGB (same physical color, components may leave 0..1);
+   sRGB and extendedSRGB pass through unchanged."
+  [^ui/Color c]
+  (if (identical? ui/ColorSpace.displayP3 (.-colorSpace c))
+    (ut/p3->extended-srgb c)
+    c))
+
+;; @ai-generated(solo)
+(defn- signal-range
+  "`[lo scale]` mapping the RGB signal of `colors` (already `color->signal`-normalized)
+   into the 8-bit data texture's [0,1] via `enc = (signal - lo) / scale`.
+
+   Seeded with [0,1], so a fully in-gamut gradient yields `[0.0 1.0]` and encodes
+   byte-identically to a plain sRGB texture (no regression). The range expands only
+   for wide-gamut (out-of-0..1) components, keeping quantization as fine as the actual
+   content allows. `scale` is therefore always >= 1, so decode never divides by zero."
+  [colors]
+  (loop [i 0 lo 0.0 hi 1.0]
+    (if (< i (count colors))
+      (let [^ui/Color c (nth colors i)
+            r (.-r c) g (.-g c) b (.-b c)]
+        (recur (inc i)
+               (min lo r g b)
+               (max hi r g b)))
+      [lo (- hi lo)])))
+
 (defn- create-gradient-data-texture
-  "Nx2 data texture: row 0 = RGB (A=255), row 1 = (stop, alpha, 0, A=255)."
+  "Nx2 wide-gamut data texture. Returns `[image lo scale]`.
+   Row 0: RGB sRGB-signal, offset/scale-encoded into [0,1] (shader decodes
+   `texel * uDataScale + uDataLo`), so extendedSRGB/P3-derived components survive
+   instead of being clamped to 0..1. Row 1: 16-bit stop location (R = high byte,
+   G = low byte) + 8-bit alpha (B)."
   [colors stops]
   (let [n (count colors)
+        colors (mapv color->signal colors)
+        [lo scale] (signal-range colors)
         recorder (ui/PictureRecorder)
         canvas (ui/Canvas recorder)
-        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)]
+        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)
+        enc (fn ^int [^double s]
+              (-> (/ (- s lo) scale) (* 255.0) .round (max 0) (min 255)))]
     (dotimes [i n]
       (let [^ui/Color c (nth colors i)]
-        ;; Row 0: color RGB (A=255 to avoid premul)
-        (set! (.-color paint) (ui/Color.fromARGB 255 (.-red c) (.-green c) (.-blue c)))
+        ;; Row 0: encoded RGB signal (A=255 to avoid premul)
+        (set! (.-color paint) (ui/Color.fromARGB 255 (enc (.-r c)) (enc (.-g c)) (enc (.-b c))))
         (.drawRect canvas (ui/Rect.fromLTWH (double i) 0.0 1.0 1.0) paint)
-        ;; Row 1: R=stop, G=alpha (A=255 to avoid premul)
-        (let [stop-byte (-> (double (nth stops i)) (* 255.0) .round (max 0) (min 255))
-              alpha-byte (-> (.-opacity c) (* 255.0) .round (max 0) (min 255))]
-          (set! (.-color paint) (ui/Color.fromARGB 255 stop-byte alpha-byte 0))
+        ;; Row 1: R/G = 16-bit stop, B = alpha (A=255 to avoid premul)
+        (let [q (-> (double (nth stops i)) (max 0.0) (min 1.0) (* 65535.0) .round (max 0) (min 65535))
+              alpha-byte (-> (.-a c) (* 255.0) .round (max 0) (min 255))]
+          (set! (.-color paint) (ui/Color.fromARGB 255 (quot q 256) (rem q 256) alpha-byte))
           (.drawRect canvas (ui/Rect.fromLTWH (double i) 1.0 1.0 1.0) paint))))
-    (.toImageSync (.endRecording recorder) n 2)))
+    [(.toImageSync (.endRecording recorder) n 2) lo scale]))
 
 (defn- set-gradient-uniforms!
   [^ui/FragmentShader shader
@@ -1005,9 +1041,11 @@
         ;; Dummy sampler — shader declares sampler2D, must be bound
         (.setImageSampler shader 0 -dummy-image))
       ;; Texture path (>32 stops)
-      (do
+      (let [[img lo scale] (create-gradient-data-texture colors stops)]
         (.setFloat shader 5 1.0)
-        (.setImageSampler shader 0 (create-gradient-data-texture colors stops))))
+        (.setFloat shader 299 lo)    ; uDataLo:    signal decode offset
+        (.setFloat shader 300 scale) ; uDataScale: signal decode range
+        (.setImageSampler shader 0 img)))
     (.setFloat shader 170 (double cs-id))
     shader))
 
@@ -1237,25 +1275,32 @@
       (throw (Exception. (str "Invalid RadialGradient: " args))))))
 
 (defn- create-mesh-data-texture
-  "Nx2 data texture: row 0 = (x, y, alpha, A=255), row 1 = (r, g, b, A=255)."
+  "Nx2 wide-gamut data texture. Returns `[image lo scale]`.
+   Row 0: (x, y, alpha, A=255) — positions are normalized grid coords in [0,1].
+   Row 1: RGB sRGB-signal, offset/scale-encoded into [0,1] (shader decodes
+   `texel * uDataScale + uDataLo`), so extendedSRGB/P3-derived components survive."
   [points colors]
   (let [n (count points)
+        colors (mapv color->signal colors)
+        [lo scale] (signal-range colors)
         recorder (ui/PictureRecorder)
         canvas (ui/Canvas recorder)
-        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)]
+        paint (let [p (ui/Paint)] (set! (.-blendMode p) ui/BlendMode.src) p)
+        enc (fn ^int [^double s]
+              (-> (/ (- s lo) scale) (* 255.0) .round (max 0) (min 255)))]
     (dotimes [i n]
       (let [pt (nth points i)
             x-byte (-> (double (nth pt 0)) (* 255.0) .round (max 0) (min 255))
             y-byte (-> (double (nth pt 1)) (* 255.0) .round (max 0) (min 255))
             ^ui/Color c (nth colors i)
-            alpha-byte (-> (.-opacity c) (* 255.0) .round (max 0) (min 255))]
+            alpha-byte (-> (.-a c) (* 255.0) .round (max 0) (min 255))]
         ;; Row 0: R=x, G=y, B=alpha (A=255 to avoid premul)
         (set! (.-color paint) (ui/Color.fromARGB 255 x-byte y-byte alpha-byte))
         (.drawRect canvas (ui/Rect.fromLTWH (double i) 0.0 1.0 1.0) paint)
-        ;; Row 1: color RGB (A=255 to avoid premul)
-        (set! (.-color paint) (ui/Color.fromARGB 255 (.-red c) (.-green c) (.-blue c)))
+        ;; Row 1: encoded RGB signal (A=255 to avoid premul)
+        (set! (.-color paint) (ui/Color.fromARGB 255 (enc (.-r c)) (enc (.-g c)) (enc (.-b c))))
         (.drawRect canvas (ui/Rect.fromLTWH (double i) 1.0 1.0 1.0) paint)))
-    (.toImageSync (.endRecording recorder) n 2)))
+    [(.toImageSync (.endRecording recorder) n 2) lo scale]))
 
 (defn- set-mesh-uniforms!
   [^ui/FragmentShader shader
@@ -1308,9 +1353,11 @@
         ;; Dummy sampler — shader declares sampler2D, must be bound
         (.setImageSampler shader 0 -dummy-image))
       ;; Texture path (>64 points)
-      (do
+      (let [[img lo scale] (create-mesh-data-texture points colors)]
         (.setFloat shader 6 1.0) ;; uUseTexture
-        (.setImageSampler shader 0 (create-mesh-data-texture points colors))))
+        (.setFloat shader 392 lo)    ; uDataLo:    signal decode offset
+        (.setFloat shader 393 scale) ; uDataScale: signal decode range
+        (.setImageSampler shader 0 img)))
     (.setFloat shader 391 (double cs-id))
     shader))
 

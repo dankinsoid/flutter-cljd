@@ -21,15 +21,22 @@ uniform vec2 uPositions[64];
 uniform vec4 uColors[64];
 // 391
 uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
+// 392-393 (texture path only): decode row-1 RGB signal as texel*uDataScale + uDataLo
+uniform float uDataLo;
+uniform float uDataScale;
 
-uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: RGB)
+uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: encoded RGB signal)
 
 out vec4 fragColor;
 
 // --- Fast sRGB <-> Linear (polynomial / sqrt-chain approximation) ---
 
+// Sign-preserving, unclamped: mirrors utils/srgb->linear-signed so texture-decoded
+// wide-gamut signals (components outside 0..1) linearize the same as the uniform path.
 float srgbToLinear(float c) {
-    return c * (c * (c * 0.305306011 + 0.682171111) + 0.012522878);
+    float a = abs(c);
+    float l = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);
+    return c < 0.0 ? -l : l;
 }
 
 float linearToSrgb(float c) {
@@ -115,8 +122,8 @@ vec4 getMeshColor(int i) {
     float u = (float(i) + 0.5) / n;
     // Row 0 B channel = alpha
     float alpha = texture(uData, vec2(u, 0.25)).b;
-    // Row 1: RGB color
-    vec3 rgb = texture(uData, vec2(u, 0.75)).rgb;
+    // Row 1: encoded RGB signal → decode to (wide) sRGB signal
+    vec3 rgb = texture(uData, vec2(u, 0.75)).rgb * uDataScale + uDataLo;
     return vec4(rgb, alpha);
 }
 
