@@ -71,7 +71,7 @@ You can access this context in child widgets:
 
 ```clojure
 (widget->>
-  :get {:button-context ctx}
+  :get {ctx :button-context}
   :let [pressed? (contains? (:state ctx) :pressed)]
   (text "Click me!")
   (opacity (if pressed? 0.8 1.0)))

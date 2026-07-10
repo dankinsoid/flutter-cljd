@@ -604,7 +604,7 @@ Button Context:
 The `:button-context` provides state information as a map with:
 
 - `:context` — The BuildContext of the button widget
-- `:state` — Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
+- `:state` — Set of current button state values. Possible values in the set are `:disabled, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
 - `:prev-state` — Set of previous button state values
 - `:local-offset` — Local coordinates of touch (Offset?)
 - `:global-offset` — Global coordinates of touch (Offset?)
@@ -636,7 +636,7 @@ Examples:
 
 (defn ^w/Widget custom-style [button btn-ctx]
   (let [state (:state btn-ctx)
-        disabled? (state :disable)
+        disabled? (state :disabled)
         pressed? (state :pressed)]
     (opacity
      (if disabled? 0.5 (if pressed? 0.8 1.0))
@@ -653,7 +653,7 @@ Examples:
 (defn ^w/Widget my-button [title on-tap]
    (->>
      (widget->>
-       :get {:button-context btn-ctx}
+       :get {btn-ctx :button-context}
        :let [state (:state btn-ctx)]
        (text title)
        (opacity (if (state :pressed) 0.8 1)))
@@ -688,7 +688,7 @@ Button Context:
 The button context provides state information as a map with:
 
 - `:context` — The BuildContext of the button widget
-- `:state` — Set of current button state values. Possible values in the set are `:disable`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
+- `:state` — Set of current button state values. Possible values in the set are `:disabled`, `:pressed`, `:hovered`, `:focused`. For example: `#{:hovered :pressed}`
 - `:prev-state` — Set of previous button state values
 - `:local-offset` — Local coordinates of touch (Offset?)
 - `:global-offset` — Global coordinates of touch (Offset?)
