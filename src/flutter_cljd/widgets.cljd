@@ -67,6 +67,7 @@
    [flutter-cljd.internal.hero :as hr]
    [flutter-cljd.internal.draggable :as drg]
    [flutter-cljd.internal.scroll :as scrl]
+   [flutter-cljd.internal.sliver-collection :as scol]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -2730,4 +2731,157 @@ Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/scrollbar* args child)))
 
-;; Sliver widgets — moved to `flutter-cljd.slivers`.
+;; ---- Slivers ----
+
+(defn ^w/Widget sliver-list
+  "Sliver that displays children in a list. Use inside `custom-scroll-view`.
+
+Examples:
+
+```clojure
+(sliver-list (text \"A\") (text \"B\"))
+(sliver-list items (fn [ctx item] (text (:name item))))
+(sliver-list 100 (fn [ctx i] (text (str i))))
+```"
+  [& args]
+  (scrl/sliver-list* args))
+
+(defn ^w/Widget sliver-grid
+  "Sliver that displays children in a flexible grid. Use inside
+`custom-scroll-view`. Same option language as `grid-view` (see there for the
+full reference), minus the scroll options.
+
+A bare sliver cannot reverse its scroll view, so upward/leftward `:flow`
+stacking and `:anchor :end` are `grid-view`-only — here either use a forward
+`:flow` or reverse the enclosing `custom-scroll-view` yourself. For the same
+reason the stack direction here is in SCROLL order, not screen order: in a
+horizontal scroll view under RTL the viewport itself runs right-to-left.
+
+Examples:
+
+```clojure
+(sliver-grid :columns 2 (text \"A\") (text \"B\"))
+(sliver-grid items :columns {:count 3 :gap 8} :rows {:size 96}
+             (fn [ctx item] (tile item)))
+```"
+  [& args]
+  (scrl/sliver-grid* args))
+
+(defn ^w/Widget sliver-to-box-adapter
+  "Wraps a regular (box) widget so it can be used inside `custom-scroll-view`."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/sliver-to-box-adapter* args child)))
+
+(defn ^w/Widget sliver-padding
+  "Adds padding around a sliver. Use inside `custom-scroll-view`.
+
+Examples:
+
+```clojure
+(sliver-padding 16 (sliver-list ...))
+(sliver-padding {:left 8 :right 8} (sliver-list ...))
+```"
+  [padding sliver]
+  (scrl/sliver-padding* {:padding padding} sliver))
+
+(defn ^w/Widget sliver-fill-remaining
+  "Sliver that fills the remaining space in the viewport. Use inside `custom-scroll-view`.
+
+Options: `:has-scroll-body` (default `true`), `:fill-overscroll`."
+  [& args]
+  (let [[args [child]] (ut/key-values-args-and-children args)]
+    (scrl/sliver-fill-remaining* args child)))
+
+(defn ^w/Widget sliver-app-bar
+  "Material sliver app bar for use inside `custom-scroll-view`.
+
+Examples:
+
+```clojure
+(sliver-app-bar :title (text \"Title\") :floating true :snap true)
+(sliver-app-bar :title (text \"Title\") :pinned true :expanded-height 200
+                :flexible-space (m/FlexibleSpaceBar .background image))
+```
+
+Options: `:title`, `:leading`, `:actions`, `:flexible-space`, `:floating`, `:pinned`,
+`:snap`, `:stretch`, `:expanded-height`, `:collapsed-height`, `:background-color`,
+`:foreground-color`, `:elevation`, `:toolbar-height`, `:center-title`, `:bottom`."
+  [& {:as args}]
+  (scrl/sliver-app-bar* args))
+
+(defn ^w/Widget sliver-collection
+  "Data-driven sliver with pluggable lazy layouts — a UICollectionView-style
+building block for `custom-scroll-view`. Supports custom layouts, diffable
+insert/remove animations, position-based move animations, drag-to-reorder,
+prefetching, and auto keep-alive.
+
+Data source (first positional arg, optional):
+
+- Collection: builder receives `(fn [ctx item] Widget)`
+- Integer count: builder receives `(fn [ctx index] Widget)`
+- Omitted: builder receives `(fn [ctx index] Widget)`; with no `:item-count`
+  the collection is infinite
+
+Last positional arg must be the builder function.
+
+Examples:
+
+```clojure
+(sliver-collection items (fn [ctx item] (text (:name item))))
+(sliver-collection 1000 :item-extent 48 (fn [ctx i] (text (str i))))
+(sliver-collection (fn [ctx i] (text (str i))))              ;; infinite
+(sliver-collection items :layout :grid :columns {:count 3 :gap 8}
+  :rows {:size {:aspect 1} :gap 8}
+  (fn [ctx item] (card (:title item))))
+(sliver-collection items :layout :masonry :cross-axis-count 2
+  (fn [ctx item] (photo-card item)))
+(sliver-collection items :key-fn :id :animate true
+  (fn [ctx item] (my-card item)))
+```
+
+Layout (default `:list`):
+
+- `:layout` — `:list` | `:grid` | `:wrap` | `:masonry` | `SliverGridDelegate`
+  (interop) | a custom layout map (see below)
+- `:list` options: `:item-extent` (fixed main-axis size), `:spacing`
+- `:grid` options: the flexible-grid language — `:columns`, `:rows`, `:flow`,
+  `:line-align` (see `grid-view`; forward `:flow` stacking only — a bare
+  sliver cannot reverse its scroll view)
+- `:wrap` options: `:spacing`, `:run-spacing`
+- `:masonry` options: `:cross-axis-count`, `:cross-axis-spacing`,
+  `:main-axis-spacing`
+
+Custom layouts: pass a map of pure geometry functions — virtualization,
+geometry caching, garbage collection and scroll corrections are handled by
+the engine. Flow layouts (children measured, then placed sequentially)
+provide `:id :init :measure :place :flow-end :anchor`; indexed layouts
+(geometry is O(1) math from the index) provide `:id :geometry :first-index
+:last-index :max-extent`. See `flutter-cljd.internal.collection.layout` for
+the full contract and the built-ins as examples (wrap is ~25 lines).
+
+Animations (off by default, require `:key-fn`):
+
+- `:key-fn` — `(fn [item] identity-key)`
+- `:animate` — `true` | `{:duration :curve :insert :remove :move}`; each
+  section may be `false` to disable or `{:duration :curve :builder}`
+- Inserts grow in, removals collapse out, and any item whose position
+  changed (insert/remove/shuffle around it) glides to its new place — in
+  any layout and scroll axis
+- `:item-extent` is ignored while `:animate` is on (collapse animations
+  need self-sizing children)
+
+Reorder (list layout only):
+
+- `:reorderable` `true` — enables drag-to-reorder
+- `:on-reorder` `(fn [old-index new-index])` — called on drop
+- `:proxy-decorator` `(fn [child index animation])` — customize drag proxy
+
+Prefetch:
+
+- `:on-prefetch` `(fn [item-or-index])` — called ahead of the viewport
+- `:prefetch-distance` — items ahead to prefetch (default 5)
+
+Keep-alive: `:auto-keep-alive` (default `true`)"
+  [& args]
+  (scol/sliver-collection* args))
