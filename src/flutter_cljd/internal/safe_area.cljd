@@ -3,38 +3,128 @@
    [flutter-cljd.types :as t]
    ["package:flutter/widgets.dart" :as w]))
 
-(defn- resolve-edge
-  "First of `ks` (in precedence order) that the opts map actually contains,
-   coerced to bool; `true` when none are present (Flutter's per-edge default)."
-  [opts ks]
-  (loop [ks ks]
-    (cond
-      (empty? ks) true
-      (contains? opts (first ks)) (boolean (get opts (first ks)))
-      :else (recur (rest ks)))))
-
 ;; @ai-generated(guided)
+
+(def ^:private edge-groups
+  {:all #{:left :top :right :bottom}
+   :vertical #{:top :bottom} :v #{:top :bottom}
+   :horizontal #{:left :right} :h #{:left :right}
+   :top #{:top} :t #{:top}
+   :bottom #{:bottom} :b #{:bottom}
+   :left #{:left} :l #{:left}
+   :right #{:right} :r #{:right}})
+
+(def ^:private all-edges #{:left :top :right :bottom})
+
+(defn- edges-of
+  "Physical edges named by keyword `k`; asserts on an unknown edge key."
+  [k]
+  (let [es (get edge-groups k)]
+    (assert (some? es) (str "safe-area: unknown edge " k))
+    es))
+
+(defn- ^double fmax [^double a ^double b] (if (> a b) a b))
+
+(defn parse-args
+  "Parses `(side… [:minimum v] child)` into `[edges keyboard? minimum child]`.
+
+   Side tokens are edge keywords (`:top`/`:t`, `:bottom`/`:b`, `:left`/`:l`,
+   `:right`/`:r`; groups `:all`, `:vertical`/`:v`, `:horizontal`/`:h`) or a single
+   vector of them. With no edge token the default is all four physical edges; any
+   edge keyword or an explicit (even empty) vector pins the set. `:keyboard` is an
+   orthogonal flag and does not count as pinning the set. `:minimum` consumes the
+   following value."
+  [args]
+  (loop [vs args, edges #{}, edges? false, keyboard? false, minimum nil]
+    (let [a (first vs)]
+      (cond
+        (empty? vs)
+        [(if edges? edges all-edges) keyboard? minimum nil]
+
+        (= :minimum a)
+        (do (assert (next vs) "safe-area: :minimum requires a value")
+            (recur (nnext vs) edges edges? keyboard? (second vs)))
+
+        (= :keyboard a)
+        (recur (next vs) edges edges? true minimum)
+
+        (keyword? a)
+        (recur (next vs) (into edges (edges-of a)) true keyboard? minimum)
+
+        (vector? a)
+        (let [[es kb] (reduce (fn [[es kb] k]
+                                (if (= :keyboard k)
+                                  [es true]
+                                  [(into es (edges-of k)) kb]))
+                              [edges keyboard?]
+                              a)]
+          (recur (next vs) es true kb minimum))
+
+        :else
+        (do (assert (empty? (next vs))
+                    (str "safe-area: child must be the final argument, got extra " (vec (next vs))))
+            [(if edges? edges all-edges) keyboard? minimum a])))))
+
 (defn ^w/Widget safe-area*
-  [opts child]
-  (let [top (resolve-edge opts [:top :t :vertical :v :all])
-        bottom (resolve-edge opts [:bottom :b :vertical :v :all])
-        left (resolve-edge opts [:left :l :horizontal :h :all])
-        right (resolve-edge opts [:right :r :horizontal :h :all])
-        maintain (boolean (:maintain-bottom-view-inset opts))
-        min-insets (:insets opts)]
-    (if (some? min-insets)
-      ;; `minimum` must be a resolved `EdgeInsets`; `t/insets` may yield a
-      ;; directional geometry, so resolve against the ambient text direction.
-      (let [geom (t/insets min-insets)]
-        (w/Builder
-         .builder
-         (fn [^w/BuildContext ctx]
-           (w/SafeArea
-            .left left .top top .right right .bottom bottom
-            .maintainBottomViewPadding maintain
-            .minimum (.resolve geom (or (w/Directionality.maybeOf ctx) w/TextDirection.ltr))
-            .child child))))
-      (w/SafeArea
-       .left left .top top .right right .bottom bottom
-       .maintainBottomViewPadding maintain
-       .child child))))
+  "See `flutter-cljd.widgets/safe-area`. Each edge is inset by
+   `max(chrome, keyboard, minimum)` and removed from the `MediaQuery` handed to
+   descendants so a nested safe-area does not double it."
+  [edges keyboard? minimum child]
+  (w/Builder
+   .builder
+   (fn [^w/BuildContext ctx]
+     (let [^w/MediaQueryData mq (w/MediaQuery.of ctx)
+           ^w/EdgeInsets pad (.-padding mq)
+           dir (or (w/Directionality.maybeOf ctx) w/TextDirection.ltr)
+           ^w/EdgeInsets mn (if (some? minimum)
+                              (.resolve (t/insets minimum) dir)
+                              w/EdgeInsets.zero)
+           kb (if keyboard? (.-bottom (.-viewInsets mq)) 0.0)
+           l (fmax (if (contains? edges :left) (.-left pad) 0.0) (.-left mn))
+           t (fmax (if (contains? edges :top) (.-top pad) 0.0) (.-top mn))
+           r (fmax (if (contains? edges :right) (.-right pad) 0.0) (.-right mn))
+           b (fmax (fmax (if (contains? edges :bottom) (.-bottom pad) 0.0) kb) (.-bottom mn))
+           data (cond-> (.removePadding mq
+                                        .removeLeft (contains? edges :left)
+                                        .removeTop (contains? edges :top)
+                                        .removeRight (contains? edges :right)
+                                        .removeBottom (contains? edges :bottom))
+                  keyboard? (.removeViewInsets .removeBottom true))]
+       (w/Padding
+        .padding (w/EdgeInsets.only .left l .top t .right r .bottom b)
+        .child (w/MediaQuery .data data .child child))))))
+
+(defn parse-sides
+  "Parses `(side… child)` into `[edges child]` using the same edge keys as
+   `parse-args`, defaulting to all four edges."
+  [args]
+  (loop [vs args, edges #{}, edges? false]
+    (let [a (first vs)]
+      (cond
+        (empty? vs)
+        [(if edges? edges all-edges) nil]
+
+        (keyword? a)
+        (recur (next vs) (into edges (edges-of a)) true)
+
+        (vector? a)
+        (recur (next vs) (reduce #(into %1 (edges-of %2)) edges a) true)
+
+        :else
+        (do (assert (empty? (next vs))
+                    (str "remove-padding: child must be the final argument, got extra " (vec (next vs))))
+            [(if edges? edges all-edges) a])))))
+
+(defn ^w/Widget remove-padding*
+  "See `flutter-cljd.widgets/remove-padding`."
+  [edges child]
+  (w/Builder
+   .builder
+   (fn [^w/BuildContext ctx]
+     (w/MediaQuery.removePadding
+      .context ctx
+      .removeLeft (contains? edges :left)
+      .removeTop (contains? edges :top)
+      .removeRight (contains? edges :right)
+      .removeBottom (contains? edges :bottom)
+      .child child))))

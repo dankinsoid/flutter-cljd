@@ -158,35 +158,57 @@ Examples:
   (ar/aspect-ratio* ratio child))
 
 (defn ^w/Widget safe-area
-  "Insets the child to avoid intrusions of the operating system (notches,
-   status/navigation bars, rounded corners) on the chosen edges.
+  "Insets the child away from operating-system intrusions (notches, status/
+   navigation bars, rounded corners, the on-screen keyboard) on the chosen edges.
 
-   Every edge is inset by default; pass options as a leading map or as
-   keyword/value pairs to opt edges out (or, starting from a disabled edge, in):
+   Edges are a set of sides to inset — all four by default. Pass sides as
+   individual keywords or one vector; omit them for all edges, or pass an explicit
+   (possibly empty) vector to pin the set:
 
    ```clojure
-   (safe-area child)                      ;; inset on all four edges
-   (safe-area :bottom false child)        ;; all edges except the bottom
-   (safe-area :vertical false child)      ;; only left/right
-   (safe-area :all false :top true child) ;; only the top
-   (safe-area {:bottom false} child)      ;; map form of the second example
+   (safe-area child)                 ;; all four edges
+   (safe-area :bottom child)         ;; only the bottom
+   (safe-area :top :bottom child)    ;; = (safe-area :vertical child)
+   (safe-area [:bottom :left] child) ;; vector form
+   (safe-area [] child)              ;; no edges (rarely useful)
    ```
 
-   Edge keys accept `:all`, `:vertical`/`:v`, `:horizontal`/`:h` and the physical
-   edges `:top`/`:t`, `:bottom`/`:b`, `:left`/`:l`, `:right`/`:r`. A more specific
-   key wins over a group, which wins over `:all`. Edges are physical (left/right),
-   not directional.
+   Edge keys: `:top`/`:t`, `:bottom`/`:b`, `:left`/`:l`, `:right`/`:r`, plus the
+   groups `:all`, `:vertical`/`:v` and `:horizontal`/`:h`. Edges are physical
+   (left/right), not directional.
 
    Other options:
-   - `:insets`  a minimum inset (any `insets` value) enforced even where the
-     system reports no intrusion; maps to Flutter's `minimum`.
-   - `:maintain-bottom-view-inset`  keep space for the on-screen keyboard so the
-     child is not covered by it (default false).
+   - `:keyboard`  an orthogonal flag that also keeps the child above the on-screen
+     keyboard. It does not change the physical-edge set, so `(safe-area :keyboard
+     child)` still insets all four edges; pair it with an empty set —
+     `(safe-area [] :keyboard child)` — to inset the keyboard only. Use it only
+     when no ancestor already resizes for the keyboard (e.g. a `Scaffold` with
+     `resizeToAvoidBottomInset`), otherwise the inset is applied twice.
+   - `:minimum`  a per-edge floor (any `insets` value) applied even where the
+     system reports no intrusion, so every edge is inset by at least this. It is
+     only a floor measured from the screen edge, never a gap above the keyboard.
 
    [Flutter docs](https://api.flutter.dev/flutter/widgets/SafeArea-class.html)"
   [& args]
-  (let [[opts child] (ut/key-values-and-child args)]
-    (sa/safe-area* opts child)))
+  (let [[edges keyboard? minimum child] (sa/parse-args args)]
+    (sa/safe-area* edges keyboard? minimum child)))
+
+;; @ai-generated(guided)
+(defn ^w/Widget remove-padding
+  "Wraps `child` in a `MediaQuery` reporting no padding on the chosen edges, so
+   descendants (e.g. a nested `safe-area`) do not re-apply it. Sides use the same
+   keys as `safe-area`; all four edges are cleared by default.
+
+   ```clojure
+   (remove-padding child)                ;; clear padding on all edges
+   (remove-padding :bottom child)        ;; only the bottom
+   (remove-padding [:top :bottom] child)
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/MediaQuery/removePadding.html)"
+  [& args]
+  (let [[edges child] (sa/parse-sides args)]
+    (sa/remove-padding* edges child)))
 
 (defn ^w/Widget scaffold
   "Implements the basic Material Design visual layout structure: an optional
