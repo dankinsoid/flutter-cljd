@@ -1,0 +1,196 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.box
+  "Box host for collection layouts — the eager, non-scrolling counterpart of
+   the sliver engine (collection.render). One RenderBox drives any layout map
+   (see collection.layout): every child is measured and placed in one pass,
+   and the box sizes itself to the content.
+
+   Rather than making layouts host-aware, the box synthesizes SliverConstraints
+   (scroll offset 0, infinite window) — to a layout, a box is just a sliver
+   universe that never scrolls. This keeps the layout contract single-flavored:
+   anything written for sliver-collection works here unchanged, including
+   SliverGridDelegate interop.
+
+   No virtualization by design: a box must measure all children to know its own
+   size, so laziness has nothing to cut. Large or infinite collections belong
+   to the sliver host."
+  (:require
+   ["dart:math" :as math]
+   ["dart:ui" :as ui]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]
+   [flutter-cljd.internal.collection.layout :as lay]))
+
+(deftype CollectionBoxParentData []
+  :extends #/(r/ContainerBoxParentData r/RenderBox))
+
+(defn- ^r/SliverConstraints synth-constraints
+  "SliverConstraints a box pretends to be under: nothing scrolled away, the
+   whole (possibly unbounded) main axis remains."
+  [axis ^double cross ^double main-max]
+  (let [vertical? (= :vertical axis)]
+    (r/SliverConstraints
+     .axisDirection (if vertical? r/AxisDirection.down r/AxisDirection.right)
+     .growthDirection r/GrowthDirection.forward
+     .userScrollDirection r/ScrollDirection.idle
+     .scrollOffset 0.0
+     .precedingScrollExtent 0.0
+     .overlap 0.0
+     .remainingPaintExtent main-max
+     .crossAxisExtent cross
+     .crossAxisDirection (if vertical? r/AxisDirection.right r/AxisDirection.down)
+     .viewportMainAxisExtent main-max
+     .remainingCacheExtent main-max
+     .cacheOrigin 0.0)))
+
+(defn- ^r/BoxConstraints tight-constraints
+  "Tight constraints for an indexed-layout cell geometry."
+  [env gm]
+  (let [^double me (double (:main-extent gm))
+        ^double ce (double (:cross-extent gm))]
+    (if (= :vertical (:axis env))
+      (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
+      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
+
+(declare content-size)
+
+(deftype RenderCollectionBox
+  [^:mutable layoutModel  ;; layout map (see collection.layout)
+   ^:mutable axis]        ;; :vertical | :horizontal — the layout's main axis
+  :extends r/RenderBox
+
+  (setupParentData [_this ^r/RenderObject child]
+    (when-not (instance? CollectionBoxParentData (.-parentData child))
+      (.-parentData! child (CollectionBoxParentData)))
+    nil)
+
+  (performLayout [this]
+    (.-size! this (content-size this ^r/BoxConstraints (.-constraints this) false))
+    nil)
+
+  (^ui/Size computeDryLayout [this ^r/BoxConstraints c]
+    (content-size this c true))
+
+  (paint [this ^r/PaintingContext ctx ^ui/Offset offset]
+    (.defaultPaint this ctx offset))
+
+  (^bool hitTestChildren [this ^r/BoxHitTestResult result ^ui/Offset .position]
+    (.defaultHitTestChildren this result .position position))
+
+  ^:mixin #/(r/ContainerRenderObjectMixin r/RenderBox CollectionBoxParentData)
+  ^:mixin #/(r/RenderBoxContainerDefaultsMixin r/RenderBox CollectionBoxParentData))
+
+(defn- flow-pass!
+  "Measures and places every child through the flow model. Returns
+   [main-end cross-end] content extents. `dry?` sizes via getDryLayout and
+   leaves children and parent data untouched."
+  [^RenderCollectionBox rb layout env dry?]
+  (let [measure-fn (:measure layout)
+        place-fn (:place layout)
+        vertical? (= :vertical (:axis env))]
+    (loop [child (.-firstChild rb)
+           ^int i 0
+           state ((:init layout) env)
+           ^double main-end 0.0
+           ^double cross-end 0.0]
+      (if (nil? child)
+        [main-end cross-end]
+        (let [^r/BoxConstraints bc (measure-fn env i)
+              ^ui/Size size (if dry?
+                              (.getDryLayout ^r/RenderBox child bc)
+                              (do (.layout ^r/RenderBox child bc .parentUsesSize true)
+                                  (.-size ^r/RenderBox child)))
+              [gm next-state] (place-fn env i size state)
+              ^double off (double (:offset gm))
+              ^double cross (double (or (:cross gm) 0.0))
+              ^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)]
+          (when-not dry?
+            (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross))))
+          (recur (.-nextSibling pd) (inc i) next-state
+                 (double (math/max main-end (+ off ^double (lay/size-main env size))))
+                 (double (math/max cross-end (+ cross ^double (lay/size-cross env size))))))))))
+
+(defn- indexed-pass!
+  "Places every child at its indexed-layout cell. Returns [main-end cross-end];
+   the main extent comes from :max-extent (exact math), cross from the cells."
+  [^RenderCollectionBox rb layout env dry?]
+  (let [geo-fn (:geometry layout)
+        vertical? (= :vertical (:axis env))
+        ^int n (int (or (:item-count env) 0))
+        ^double main-end (if (pos? n)
+                           (double ((:max-extent layout) env n))
+                           0.0)]
+    (loop [child (.-firstChild rb)
+           ^int i 0
+           ^double cross-end 0.0]
+      (if (nil? child)
+        [main-end cross-end]
+        (let [gm (geo-fn env i)
+              ^r/BoxConstraints bc (tight-constraints env gm)
+              ^double off (double (:offset gm))
+              ^double cross (double (:cross gm))
+              ^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)]
+          (when-not dry?
+            (.layout ^r/RenderBox child bc)
+            (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross))))
+          (recur (.-nextSibling pd) (inc i)
+                 (double (math/max cross-end (+ cross ^double (:cross-extent gm))))))))))
+
+(defn- ^ui/Size content-size
+  "Runs the layout over all children and returns the constrained box size."
+  [^RenderCollectionBox rb ^r/BoxConstraints c dry?]
+  (let [axis (.-axis rb)
+        vertical? (= :vertical axis)
+        ^double cross-max (if vertical? (.-maxWidth c) (.-maxHeight c))
+        ^double main-max (if vertical? (.-maxHeight c) (.-maxWidth c))]
+    (when-not (.-isFinite cross-max)
+      (throw (Exception.
+              (str "collection: the cross axis ("
+                   (if vertical? "width" "height")
+                   " for :axis " axis ") must be bounded — wrap the collection "
+                   "in a sized or constrained box"))))
+    (let [layout (.-layoutModel rb)
+          env (lay/make-env (synth-constraints axis cross-max main-max)
+                            (.-childCount rb))
+          env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+          [^double main-end ^double cross-end]
+          (if (:geometry layout)
+            (indexed-pass! rb layout env dry?)
+            (flow-pass! rb layout env dry?))]
+      (.constrain c (if vertical?
+                      (ui/Size cross-end main-end)
+                      (ui/Size main-end cross-end))))))
+
+(defn update-box!
+  "Applies a new layout / axis from updateRenderObject. Same :id means same
+   geometry, but the fns are swapped anyway for fresher closures."
+  [^RenderCollectionBox rb new-layout axis]
+  (let [changed (or (nil? (:id new-layout))
+                    (not= (:id (.-layoutModel rb)) (:id new-layout))
+                    (not= axis (.-axis rb)))]
+    (.-layoutModel! rb new-layout)
+    (.-axis! rb axis)
+    (when changed (.markNeedsLayout rb))))
+
+(deftype CollectionBoxWidget
+  [^w/Key? k
+   childWidgets  ;; List<Widget>
+   layoutImpl    ;; layout map
+   axisKw]       ;; :vertical | :horizontal
+  :extends (w/MultiChildRenderObjectWidget .key k .children childWidgets)
+
+  (createRenderObject [_this ^w/BuildContext _context]
+    (RenderCollectionBox layoutImpl axisKw))
+
+  (updateRenderObject [_this ^w/BuildContext _context render-object]
+    (update-box! render-object layoutImpl axisKw)))
+
+(defn ^w/Widget collection-box
+  "Eager box over already-built children driven by a collection layout map.
+   Opts: :key, :axis (:vertical default). See `flutter-cljd.widgets/collection`."
+  [layout-impl opts children]
+  (let [axis (or (:axis opts) :vertical)]
+    (when-not (contains? #{:vertical :horizontal} axis)
+      (throw (Exception. (str "collection: :axis must be :vertical or :horizontal, got " axis))))
+    (CollectionBoxWidget (t/widget-key (:key opts)) (vec children) layout-impl axis)))

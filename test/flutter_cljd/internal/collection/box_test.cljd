@@ -1,0 +1,112 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.box-test
+  (:require [clojure.test :refer [deftest is testing]]
+            ["dart:ui" :as ui]
+            ["package:flutter/rendering.dart" :as r]
+            [flutter-cljd.layouts :as l]
+            [flutter-cljd.internal.collection.box :as box]))
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- fixed-child
+  "Render box that sizes itself to w×h under loose constraints."
+  [w h]
+  (r/RenderConstrainedBox
+   .additionalConstraints (r/BoxConstraints.tight (ui/Size (double w) (double h)))))
+
+(defn- laid-out
+  "Builds a RenderCollectionBox over fixed-size children and lays it out
+   detached. Returns the render box."
+  [layout axis children ^double max-w ^double max-h]
+  (let [rb (box/RenderCollectionBox layout axis)]
+    (doseq [c children] (.add rb c))
+    (.layout rb (r/BoxConstraints .maxWidth max-w .maxHeight max-h))
+    rb))
+
+(defn- child-offsets [^box/RenderCollectionBox rb]
+  (loop [c (.-firstChild rb) acc []]
+    (if (nil? c)
+      acc
+      (let [^box/CollectionBoxParentData pd (.-parentData c)
+            ^ui/Offset o (.-offset pd)]
+        (recur (.-nextSibling pd) (conj acc [(.-dx o) (.-dy o)]))))))
+
+(defn- size? [^box/RenderCollectionBox rb w h]
+  (let [^ui/Size s (.-size rb)]
+    (and (close? (.-width s) w) (close? (.-height s) h))))
+
+;; --- flow: list ---
+
+(deftest list-in-box
+  (let [rb (laid-out (l/list :spacing 5) :vertical
+                     [(fixed-child 100 10) (fixed-child 100 20) (fixed-child 100 30)]
+                     100.0 500.0)]
+    (testing "children stack with spacing"
+      (is (= [[0.0 0.0] [0.0 15.0] [0.0 40.0]] (child-offsets rb))))
+    (testing "main axis hugs content (no trailing spacing), cross spans"
+      (is (size? rb 100 70)))))
+
+(deftest list-in-box-horizontal
+  (let [rb (laid-out (l/list :spacing 5) :horizontal
+                     [(fixed-child 10 50) (fixed-child 20 50)]
+                     500.0 50.0)]
+    (testing "axis :horizontal maps offset to x"
+      (is (= [[0.0 0.0] [15.0 0.0]] (child-offsets rb))))
+    (is (size? rb 35 50))))
+
+(deftest list-in-box-unbounded-main
+  (let [rb (laid-out (l/list) :vertical
+                     [(fixed-child 100 10) (fixed-child 100 20)]
+                     100.0 ##Inf)]
+    (testing "unbounded main axis shrink-wraps"
+      (is (size? rb 100 30)))))
+
+;; --- flow: wrap ---
+
+(deftest wrap-in-box
+  ;; cross 100: 40+10+40 fits, third wraps below the 20-tall run + 6
+  (let [rb (laid-out (l/wrap :spacing 10 :run-spacing 6) :vertical
+                     [(fixed-child 40 20) (fixed-child 40 20) (fixed-child 40 30)]
+                     100.0 500.0)]
+    (is (= [[0.0 0.0] [50.0 0.0] [0.0 26.0]] (child-offsets rb)))
+    (testing "hugs the widest run and the total run height"
+      (is (size? rb 90 56)))))
+
+;; --- flow: masonry ---
+
+(deftest masonry-in-box
+  ;; 2 cols, cross 90, gap 10 → col width 40; heights 30/10 → third joins col 1
+  (let [rb (laid-out (l/masonry :cross-axis-count 2 :cross-axis-spacing 10) :vertical
+                     [(fixed-child 40 30) (fixed-child 40 10) (fixed-child 40 25)]
+                     90.0 500.0)]
+    (is (= [[0.0 0.0] [50.0 0.0] [50.0 10.0]] (child-offsets rb)))
+    (is (size? rb 90 35))))
+
+;; --- indexed: grid ---
+
+(deftest grid-in-box
+  ;; 3 columns over 300 → 100-wide cells, 50-high rows
+  (let [rb (laid-out (l/grid :columns 3 :rows {:size 50}) :vertical
+                     (repeatedly 5 #(fixed-child 1 1))
+                     300.0 500.0)]
+    (is (= [[0.0 0.0] [100.0 0.0] [200.0 0.0] [0.0 50.0] [100.0 50.0]]
+           (child-offsets rb)))
+    (testing "main extent is exact math from :max-extent"
+      (is (size? rb 300 100)))))
+
+;; --- guards ---
+
+;; via getDryLayout — RenderObject.layout swallows performLayout exceptions
+;; into FlutterError.reportError, the dry path propagates them
+(deftest unbounded-cross-throws
+  (let [rb (box/RenderCollectionBox (l/list) :vertical)]
+    (.add rb (fixed-child 10 10))
+    (is (thrown? Exception
+                 (.getDryLayout rb (r/BoxConstraints .maxWidth ##Inf .maxHeight 100.0))))))
+
+(deftest dry-layout-matches
+  (let [layout (l/wrap :spacing 10)
+        children [(fixed-child 40 20) (fixed-child 40 30)]
+        rb (laid-out layout :vertical children 100.0 500.0)
+        dry (.getDryLayout rb (r/BoxConstraints .maxWidth 100.0 .maxHeight 500.0))]
+    (is (= (.-size rb) dry))))

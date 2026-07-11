@@ -1,0 +1,54 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.layouts
+  "Collection layouts — pure-geometry maps pluggable into both hosts:
+   `sliver-collection` (lazy, scrolling) and `collection` (eager box).
+
+   A layout is plain data: a map of pure functions answering where child N
+   goes. Flow layouts (children measure themselves, placed sequentially)
+   provide `:id :init :measure :place :flow-end :anchor`; indexed layouts
+   (geometry is O(1) math over the index) provide `:id :prepare :geometry
+   :first-index :last-index :max-extent`. See
+   `flutter-cljd.internal.collection.layout` for the full contract — a custom
+   layout is just such a map, no wrapper needed (wrap is ~25 lines).
+
+   Options follow the house convention: kv pairs, an options map, or a leading
+   map merged with trailing kv pairs."
+  (:refer-clojure :exclude [list])
+  (:require
+   ["package:flutter/rendering.dart" :as r]
+   [flutter-cljd.utils :as ut]
+   [flutter-cljd.internal.collection.layout :as lay]))
+
+(defn list
+  "Children stacked along the main axis.
+   Options: `:item-extent` (fixed main-axis size — skips per-child sizing and
+   makes the total extent exact), `:spacing`."
+  [& opts]
+  (lay/list-layout (ut/key-values-map opts)))
+
+(defn wrap
+  "Runs of self-sized children, packed until the cross axis runs out —
+   rows for a vertical main axis, columns for a horizontal one.
+   Options: `:spacing` (between items in a run), `:run-spacing` (between runs)."
+  [& opts]
+  (lay/wrap-layout (ut/key-values-map opts)))
+
+(defn masonry
+  "Staggered tracks: each child lands in the currently shortest one.
+   Options: `:cross-axis-count` (default 2), `:cross-axis-spacing`,
+   `:main-axis-spacing`."
+  [& opts]
+  (lay/masonry-layout (ut/key-values-map opts)))
+
+(defn grid
+  "Indexed flexible grid — the `grid-view` option language (`:columns`/`:rows`/
+   `:flow`/`:line-align`), forward-stacking flows only: the layout cannot
+   reverse its host, so `[:.. :up]`/`[:.. :left]` and `:anchor :end` belong to
+   `grid-view`. Also accepts a `SliverGridDelegate` instance (interop).
+
+   For grids in a box prefer the `grid` widget — it resolves `:fit`/`:align`
+   on both axes and supports all 8 flows."
+  [& args]
+  (if (instance? r/SliverGridDelegate (first args))
+    (lay/resolve-layout (first args) nil)
+    (lay/resolve-layout :grid (ut/key-values-map args))))

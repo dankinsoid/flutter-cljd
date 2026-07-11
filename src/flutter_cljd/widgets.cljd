@@ -68,6 +68,8 @@
    [flutter-cljd.internal.draggable :as drg]
    [flutter-cljd.internal.scroll :as scrl]
    [flutter-cljd.internal.sliver-collection :as scol]
+   [flutter-cljd.internal.collection.layout :as clay]
+   [flutter-cljd.internal.collection.box :as cbox]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -2668,6 +2670,44 @@ See `grid-view` for the axis-spec/sizer/align reference."
                    (first children)
                    children)]
     (grid-box/box-grid opts children)))
+
+(defn ^w/Widget collection
+  "Bounded, non-scrolling widget driven by a collection layout — the box
+counterpart of `sliver-collection`. Same pluggable layouts, no virtualization:
+every child is measured and placed in one pass and the box sizes itself to
+the content (like `grid` next to `grid-view`).
+
+First argument picks the layout: `:list` | `:wrap` | `:masonry` | `:grid` |
+`SliverGridDelegate` (interop) | a layout map — e.g. from
+`flutter-cljd.layouts` (`l/wrap`, `l/masonry`, …) or your own (see
+`sliver-collection` for the contract). Layout options follow as kv pairs.
+Children are widgets you build yourself (varargs or a seq).
+
+Examples:
+
+```clojure
+;; tag cloud — the box counterpart of a Wrap
+(collection :wrap :spacing 8 :run-spacing 4 (for [t tags] (chip t)))
+;; bounded masonry, no scroll
+(collection (l/masonry :cross-axis-count 3) (map photo-card photos))
+;; horizontal flow
+(collection :wrap :axis :horizontal :spacing 6 (map chip tags))
+```
+
+Options:
+
+- `:axis` — the layout's main axis, `:vertical` (default) or `:horizontal`
+- `:key` — widget key
+
+The cross axis must be bounded (a layout packs against it); the main axis may
+be unbounded — the box shrink-wraps to its content either way, and content
+overflowing a bounded main axis just overflows (no clipping, no scrolling —
+that's `sliver-collection`'s job). For grids prefer `grid`/`grid-view`: this
+host runs `:grid` with forward flows and stack-axis `:fit` only, while `grid`
+resolves `:fit`/`:align` on both axes and supports all 8 flows."
+  [layout & args]
+  (let [[opts children] (ut/key-values-args-and-children args)]
+    (cbox/collection-box (clay/resolve-layout layout opts) opts children)))
 
 (defn ^w/Widget custom-scroll-view
   "Scroll view composed of slivers.
