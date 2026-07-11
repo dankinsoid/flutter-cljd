@@ -22,15 +22,35 @@
                                       {:value value})))
     :else (throw (ex-info (str "Invalid positioned args: " value) {:value value}))))
 
+(defn- directional? [m]
+  (some #(contains? m %) [:start :s :end :e]))
+
+;; When directional edges are used, resolve start/end against the ambient
+;; Directionality. A Builder is safe here: it's a StatelessWidget, so the path
+;; from the (still direct-child) Positioned up to its Stack stays RenderObject-free.
 (defn ^w/Widget positioned*
   [value child]
   (let [m (positioned-args value)]
-    (w/Positioned
-     .key (t/widget-key (:key m))
-     .left   (edge m [:left :l :horizontal :all])
-     .top    (edge m [:top :t :vertical :all])
-     .right  (edge m [:right :r :horizontal :all])
-     .bottom (edge m [:bottom :b :vertical :all])
-     .width  (edge m [:width :w])
-     .height (edge m [:height :h])
-     .child child)))
+    (if (directional? m)
+      (w/Builder
+       .builder
+       (fn [ctx]
+         (w/Positioned.directional
+          .textDirection (or (w/Directionality.maybeOf ctx) w/TextDirection.ltr)
+          .key (t/widget-key (:key m))
+          .start  (edge m [:start :s :horizontal :all])
+          .top    (edge m [:top :t :vertical :all])
+          .end    (edge m [:end :e :horizontal :all])
+          .bottom (edge m [:bottom :b :vertical :all])
+          .width  (edge m [:width :w])
+          .height (edge m [:height :h])
+          .child child)))
+      (w/Positioned
+       .key (t/widget-key (:key m))
+       .left   (edge m [:left :l :horizontal :all])
+       .top    (edge m [:top :t :vertical :all])
+       .right  (edge m [:right :r :horizontal :all])
+       .bottom (edge m [:bottom :b :vertical :all])
+       .width  (edge m [:width :w])
+       .height (edge m [:height :h])
+       .child child))))

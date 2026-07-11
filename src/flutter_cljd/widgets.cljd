@@ -1413,7 +1413,8 @@ Args (a map, inline key-value pairs, or a shorthand value):
 
 - `:key` — An identifier for the positioned widget.
 - `:left` / `:l`, `:top` / `:t`, `:right` / `:r`, `:bottom` / `:b` — number, default: `nil`. The distance of the child's edge from the corresponding edge of the stack.
-- `:horizontal` — number. Sets both `:left` and `:right`.
+- `:start` / `:s`, `:end` / `:e` — number, default: `nil`. Directional horizontal edges resolved against the ambient `Directionality` (RTL-aware). Using any of these switches the widget to `Positioned.directional`; do not mix with `:left`/`:right`.
+- `:horizontal` — number. Sets both horizontal edges (`:left`+`:right`, or `:start`+`:end` in directional mode).
 - `:vertical` — number. Sets both `:top` and `:bottom`.
 - `:all` — number. Default for any edge not otherwise specified.
 - `:width` / `:w` — number, default: `nil`. The child's width. Only two of `:left`, `:right`, `:width` may be set.
