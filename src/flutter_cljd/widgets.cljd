@@ -2646,17 +2646,26 @@ feature — `:key-fn`/`:animate`/`:reorderable`/`:on-prefetch` — works here.
 First positional arg is an optional data source (collection or int count), the
 last is the builder fn; keyword/value options sit between.
 
+`:layout` accepts a keyword shortcut (`:list`/`:wrap`/`:masonry`/`:grid`), a
+layout map from `flutter-cljd.layouts` (`l/wrap`, `l/masonry`, …) or your own,
+or a `SliverGridDelegate` (interop). The keyword form reads its layout options
+straight from the arg stream (`:spacing`, `:cross-axis-count`, …); the map form
+packs them inside, keeping the stream clean — both are equivalent.
+
 Examples:
 
 ```clojure
-;; wrap layout, scrollable
+;; wrap layout via keyword shortcut — options in the arg stream
 (collection-view tags :layout :wrap :spacing 8 :run-spacing 4
   (fn [ctx tag] (chip tag)))
+;; same, but layout options packed in a layouts map
+(collection-view tags :layout (l/wrap :spacing 8 :run-spacing 4)
+  (fn [ctx tag] (chip tag)))
 ;; masonry with insert/remove animations
-(collection-view photos :layout :masonry :cross-axis-count 2
+(collection-view photos :layout (l/masonry :cross-axis-count 2)
   :key-fn :id :animate true
   (fn [ctx photo] (photo-card photo)))
-;; a plain list with padding and reorder
+;; a plain list (default layout) with padding and reorder
 (collection-view items :padding 16 :reorderable true
   :on-reorder (fn [from to] (swap! ...))
   (fn [ctx item] (row-tile item)))
@@ -2923,8 +2932,11 @@ Examples:
 
 Layout (default `:list`):
 
-- `:layout` — `:list` | `:grid` | `:wrap` | `:masonry` | `SliverGridDelegate`
-  (interop) | a custom layout map (see below)
+- `:layout` — a keyword shortcut (`:list` | `:grid` | `:wrap` | `:masonry`), a
+  layout map from `flutter-cljd.layouts` (`l/wrap`, `l/masonry`, …) or your own
+  (see below), or a `SliverGridDelegate` (interop). The keyword form reads its
+  layout options from the arg stream; the map form packs them inside — same
+  result.
 - `:list` options: `:item-extent` (fixed main-axis size), `:spacing`
 - `:grid` options: the flexible-grid language — `:columns`, `:rows`, `:flow`,
   `:line-align` (see `grid-view`; forward `:flow` stacking only — a bare
