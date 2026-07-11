@@ -14,6 +14,7 @@
    [flutter-cljd.internal.align :as al]
    [flutter-cljd.internal.aspect-ratio :as ar]
    [flutter-cljd.internal.safe-area :as sa]
+   [flutter-cljd.internal.scaffold :as scf]
    [flutter-cljd.internal.block-semantics :as bs]
    [flutter-cljd.internal.banner :as bn]
    [flutter-cljd.internal.center :as cntr]
@@ -186,6 +187,55 @@ Examples:
   [& args]
   (let [[opts child] (ut/key-values-and-child args)]
     (sa/safe-area* opts child)))
+
+(defn ^w/Widget scaffold
+  "Implements the basic Material Design visual layout structure: an optional
+   app bar, a body, a floating action button, drawers, a bottom navigation
+   bar, and a bottom sheet.
+
+   The trailing child (if any) becomes the `:body`; everything else is passed
+   as a leading options map or as keyword/value pairs:
+
+   ```clojure
+   (scaffold (text \"Hello, World!\"))                    ;; body only
+   (scaffold :app-bar (m/AppBar) (text \"Hello\"))        ;; app bar + body
+   (scaffold {:background-color :black} (text \"Hello\")) ;; map form
+   ```
+
+   Options (all optional):
+   - `:key`
+   - `:app-bar` — a `PreferredSizeWidget` shown at the top (e.g. `m/AppBar`).
+   - `:floating-action-button` — a button displayed floating above the body.
+   - `:floating-action-button-location` — a `FloatingActionButtonLocation`.
+   - `:floating-action-button-animator` — a `FloatingActionButtonAnimator`.
+   - `:persistent-footer-buttons` — a collection of widgets pinned to the bottom,
+     above any bottom navigation bar (nested collections are flattened).
+   - `:persistent-footer-alignment` — alignment of the footer buttons; must be a
+     *directional* alignment (accepts any `alignment-geometry` value, default
+     `:center-end`).
+   - `:drawer` / `:end-drawer` — panels revealed from the leading/trailing edge.
+   - `:on-drawer-changed` / `:on-end-drawer-changed` — `(fn [open?] ...)` called
+     when the respective drawer opens or closes.
+   - `:bottom-navigation-bar` — a widget shown at the bottom of the scaffold.
+   - `:bottom-sheet` — a persistent bottom sheet.
+   - `:background-color` — any `color` value for the scaffold background.
+   - `:resize-to-avoid-bottom-inset` — when true, resize the body to avoid the
+     on-screen keyboard (defaults to Flutter's behaviour when omitted).
+   - `:primary` — whether the scaffold is shown at the top of the screen, under
+     the status bar (default true).
+   - `:drawer-drag-start-behavior` — `:start` or `:down` (default `:start`).
+   - `:extend-body` — extend the body behind the bottom bar/footer (default false).
+   - `:extend-body-behind-app-bar` — extend the body behind the app bar (default false).
+   - `:drawer-scrim-color` — color of the modal barrier behind an open drawer.
+   - `:drawer-edge-drag-width` — width of the edge area that opens a drawer by drag.
+   - `:drawer-enable-open-drag-gesture` / `:end-drawer-enable-open-drag-gesture` —
+     whether an edge drag can open the respective drawer (default true).
+   - `:restoration-id` — id for state restoration.
+
+   [Flutter docs](https://api.flutter.dev/flutter/material/Scaffold-class.html)"
+  [& args]
+  (let [[opts body] (ut/key-values-and-child args)]
+    (scf/scaffold* opts body)))
 
 (defn ^w/Widget action-listener
   "A helper widget for making sure that listeners on an action are removed properly.

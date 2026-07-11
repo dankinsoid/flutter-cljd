@@ -1,0 +1,39 @@
+(ns flutter-cljd.internal.scaffold
+  (:require
+   ["package:flutter/material.dart" :as m]
+   [flutter-cljd.types :as t]
+   [flutter-cljd.utils :as ut]))
+
+;; @ai-generated(guided)
+(defn ^m/Scaffold scaffold*
+  [opts body]
+  (m/Scaffold
+   .key (t/widget-key (:key opts))
+   .appBar (:app-bar opts)
+   .body body
+   .floatingActionButton (:floating-action-button opts)
+   .floatingActionButtonLocation (:floating-action-button-location opts)
+   .floatingActionButtonAnimator (:floating-action-button-animator opts)
+   .persistentFooterButtons (some-> (:persistent-footer-buttons opts) ut/flatten-children)
+   ;; `persistentFooterAlignment` is typed `AlignmentDirectional`, so callers must
+   ;; give a directional value (e.g. `:center-end`); a physical one throws at runtime.
+   .persistentFooterAlignment (if-some [a (:persistent-footer-alignment opts)]
+                                (t/alignment-geometry a)
+                                m/AlignmentDirectional.centerEnd)
+   .drawer (:drawer opts)
+   .onDrawerChanged (:on-drawer-changed opts)
+   .endDrawer (:end-drawer opts)
+   .onEndDrawerChanged (:on-end-drawer-changed opts)
+   .bottomNavigationBar (:bottom-navigation-bar opts)
+   .bottomSheet (:bottom-sheet opts)
+   .backgroundColor (some-> (:background-color opts) t/color)
+   .resizeToAvoidBottomInset (some-> (:resize-to-avoid-bottom-inset opts) boolean)
+   .primary (boolean (:primary opts true))
+   .drawerDragStartBehavior (t/drag-start-behavior (:drawer-drag-start-behavior opts :start))
+   .extendBody (boolean (:extend-body opts))
+   .extendBodyBehindAppBar (boolean (:extend-body-behind-app-bar opts))
+   .drawerScrimColor (some-> (:drawer-scrim-color opts) t/color)
+   .drawerEdgeDragWidth (some-> (:drawer-edge-drag-width opts) double)
+   .drawerEnableOpenDragGesture (boolean (:drawer-enable-open-drag-gesture opts true))
+   .endDrawerEnableOpenDragGesture (boolean (:end-drawer-enable-open-drag-gesture opts true))
+   .restorationId (:restoration-id opts)))

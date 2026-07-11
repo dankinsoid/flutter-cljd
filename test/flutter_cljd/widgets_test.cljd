@@ -3,7 +3,8 @@
             [flutter-cljd.types :as t]
             [flutter-cljd.widgets :as f]
             ["package:flutter/material.dart" :as m]
-            ["package:flutter/services.dart" :as s]))
+            ["package:flutter/services.dart" :as s]
+            ["package:flutter/gestures.dart" :as g]))
 
 (deftest test-absorb-pointer
   (testing "Absorb pointer with absorbing set to true"
@@ -168,6 +169,53 @@
           widget (f/block-semantics child)]
       (is (= (.-blocking widget) true))
       (is (instance? m/Text (.-child widget))))))
+
+(deftest test-scaffold
+  (testing "Scaffold with body only"
+    (let [body (m/Text "Body")
+          widget (f/scaffold body)]
+      (is (instance? m/Scaffold widget))
+      (is (instance? m/Text (.-body widget)))
+      (is (= (.-primary widget) true))
+      (is (= (.-extendBody widget) false))
+      (is (= (.-extendBodyBehindAppBar widget) false))
+      (is (= (.-drawerEnableOpenDragGesture widget) true))
+      (is (= (.-endDrawerEnableOpenDragGesture widget) true))
+      (is (= (.-drawerDragStartBehavior widget) g/DragStartBehavior.start))
+      (is (= (.-persistentFooterAlignment widget) m/AlignmentDirectional.centerEnd))))
+
+  (testing "Scaffold options via keyword pairs"
+    (let [app-bar (m/AppBar)
+          body (m/Text "Body")
+          widget (f/scaffold
+                  :key "scaffold-key"
+                  :app-bar app-bar
+                  :background-color :black
+                  :extend-body true
+                  :extend-body-behind-app-bar true
+                  :primary false
+                  :resize-to-avoid-bottom-inset false
+                  :drawer-drag-start-behavior :down
+                  :drawer-enable-open-drag-gesture false
+                  body)]
+      (is (= (.-value (.-key widget)) "scaffold-key"))
+      (is (instance? m/AppBar (.-appBar widget)))
+      (is (instance? m/Text (.-body widget)))
+      (is (= (.-backgroundColor widget) (t/color :black)))
+      (is (= (.-extendBody widget) true))
+      (is (= (.-extendBodyBehindAppBar widget) true))
+      (is (= (.-primary widget) false))
+      (is (= (.-resizeToAvoidBottomInset widget) false))
+      (is (= (.-drawerDragStartBehavior widget) g/DragStartBehavior.down))
+      (is (= (.-drawerEnableOpenDragGesture widget) false))))
+
+  (testing "Scaffold options via leading map, no body"
+    (let [nav-bar (m/Text "Nav")
+          widget (f/scaffold {:bottom-navigation-bar nav-bar
+                              :persistent-footer-buttons [(m/Text "A") (m/Text "B")]})]
+      (is (nil? (.-body widget)))
+      (is (instance? m/Text (.-bottomNavigationBar widget)))
+      (is (= (count (.-persistentFooterButtons widget)) 2)))))
 
 (deftest test-bottom-navigation-bar-item
   (testing "Bottom navigation bar item with basic properties"
