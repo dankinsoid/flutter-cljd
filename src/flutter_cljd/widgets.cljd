@@ -2560,9 +2560,14 @@ Axis options (`:columns` / `:rows` — a number is shorthand for `{:count n}`):
 
 Grid options:
 
-- `:flow` — `[fill stack]`, two orthogonal directions; default `[:right :down]`.
-  `[:left :down]` RTL, `[:right :up]` bottom-up, `[:down :right]` fills columns
-  and scrolls horizontally. Scroll axis = the stack direction's axis.
+- `:flow` — `[fill stack]`, two orthogonal directions. `[:right :up]`
+  bottom-up, `[:down :right]` fills columns and scrolls horizontally. Scroll
+  axis = the stack direction's axis. When omitted, the horizontal side follows
+  the ambient `Directionality`: `[:right :down]` under LTR, `[:left :down]`
+  under RTL. An explicit `:flow` is screen-absolute — it renders the same
+  regardless of `Directionality` (grid-view compensates the horizontal
+  viewport flip Flutter applies under RTL; a bare `sliver-grid` can't — its
+  stack direction is in scroll order, set by the enclosing scroll view).
 - `:line-align` — justify a partial line's items within the track block (same
   vocabulary as `:align` along the fill axis; full lines are unaffected)
 - `:item-align` — child within its cell: `:stretch` (default) or an alignment
@@ -2700,7 +2705,9 @@ full reference), minus the scroll options.
 
 A bare sliver cannot reverse its scroll view, so upward/leftward `:flow`
 stacking and `:anchor :end` are `grid-view`-only — here either use a forward
-`:flow` or reverse the enclosing `custom-scroll-view` yourself.
+`:flow` or reverse the enclosing `custom-scroll-view` yourself. For the same
+reason the stack direction here is in SCROLL order, not screen order: in a
+horizontal scroll view under RTL the viewport itself runs right-to-left.
 
 Examples:
 

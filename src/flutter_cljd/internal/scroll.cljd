@@ -194,7 +194,14 @@
                      (assoc :stack-fit :fill)
                      ;; a shrink-wrapping viewport is content-sized by definition
                      ;; — a :fill stack would ask it for space it doesn't have
-                     (:shrink-wrap args) (assoc :stack-fit :content))
+                     (:shrink-wrap args) (assoc :stack-fit :content)
+                     ;; a horizontal viewport reads its axisDirection from the
+                     ;; ambient Directionality (RTL flips it), but :flow promises
+                     ;; screen sides — XOR the flip back so the final direction
+                     ;; matches the LTR layout in every reverse/anchor combination
+                     (and (= :horizontal (:scroll-axis normalized))
+                          (= :rtl text-dir))
+                     (update :reverse not))
         item-count (cond
                      (int? source) (int source)
                      source (count source)
