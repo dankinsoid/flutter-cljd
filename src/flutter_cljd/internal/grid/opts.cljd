@@ -78,13 +78,19 @@
   "Validate and normalize the shared public opts. Returns
    {:columns :rows :fill-dir :stack-dir :fill-axis :stack-axis
     :fill-spec :stack-spec :line-align :item-align} — specs still carry
-   absolute aligns; the host adapters finish the mapping."
-  [opts]
+   absolute aligns; the host adapters finish the mapping.
+
+   `text-direction` (:ltr/:rtl/nil) only picks the horizontal side of the
+   DEFAULT flow when `:flow` is omitted: LTR/nil → [:right :down], RTL →
+   [:left :down]. An explicit `:flow` is always taken verbatim (screen-
+   absolute) — the grid never silently re-reads direction under it."
+  ([opts] (parse opts nil))
+  ([opts text-direction]
   (when-let [k (first (filter legacy-keys (keys opts)))]
     (throw (Exception. (str "grid: " k " is gone — the grid speaks :columns/:rows/:flow now, see flutter-cljd.widgets/grid-view"))))
   (let [columns (axis-spec (:columns opts) ":columns")
         rows (axis-spec (:rows opts) ":rows")
-        flow (or (:flow opts) [:right :down])
+        flow (or (:flow opts) [(if (= :rtl text-direction) :left :right) :down])
         _ (when-not (and (sequential? flow) (= 2 (count flow))
                          (axis-of (first flow)) (axis-of (second flow))
                          (not= (axis-of (first flow)) (axis-of (second flow))))
@@ -97,7 +103,7 @@
      :fill-spec (if (= :x fill-axis) columns rows)
      :stack-spec (if (= :x fill-axis) rows columns)
      :line-align (:line-align opts)
-     :item-align (:item-align opts :stretch)}))
+     :item-align (:item-align opts :stretch)})))
 
 (defn- geometry-opts
   "Common geometry opts from parsed specs and finished internal aligns."

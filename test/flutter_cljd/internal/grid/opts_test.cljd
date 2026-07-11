@@ -19,7 +19,14 @@
     (let [p (o/parse {:columns {:count 3} :rows {:size 50} :flow [:down :right]})]
       (is (= :y (:fill-axis p)))
       (is (= {:size 50} (:fill-spec p)))
-      (is (= {:count 3} (:stack-spec p))))))
+      (is (= {:count 3} (:stack-spec p)))))
+  (testing "text-direction only picks the default flow's horizontal side"
+    (is (= :right (:fill-dir (o/parse {}))))
+    (is (= :right (:fill-dir (o/parse {} :ltr))))
+    (is (= :left (:fill-dir (o/parse {} :rtl))))
+    (is (= :down (:stack-dir (o/parse {} :rtl)))))
+  (testing "explicit flow is screen-absolute, ignores text-direction"
+    (is (= :right (:fill-dir (o/parse {:flow [:right :down]} :rtl))))))
 
 (deftest align-vocabulary-is-absolute
   (testing "sides are validated per axis"

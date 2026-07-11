@@ -174,8 +174,15 @@
              [builder]))))
 
 (defn ^m/Widget grid-view* [raw-args]
-  (let [[args source builder children] (parse-grid-args raw-args)
-        parsed (grid-opts/parse args)
+  (let [[args source builder children] (parse-grid-args raw-args)]
+    ;; Builder reads the ambient Directionality: an omitted :flow defaults to
+    ;; RTL where appropriate (only the default [:right :down] vertical-scroll
+    ;; case is affected; explicit flows stay screen-absolute).
+    (m/Builder
+     .builder
+     (fn [^m/BuildContext ctx]
+      (let [text-dir (when (= m/TextDirection.rtl (m/Directionality.maybeOf ctx)) :rtl)
+        parsed (grid-opts/parse args text-dir)
         normalized (grid-opts/scroll-normalize parsed (:anchor args))
         ;; grid-view owns its whole viewport (single sliver), so an explicit
         ;; stack-axis :align means "distribute the leftover" — lift :fit to
@@ -208,7 +215,7 @@
      .shrinkWrap (boolean (:shrink-wrap args))
      .clipBehavior (t/clip (or (:clip args) :hard-edge))
      .cacheExtent (some-> (:cache-extent args) double)
-     .slivers [sliver])))
+     .slivers [sliver]))))))
 
 ;; --- custom-scroll-view ---
 
@@ -298,16 +305,22 @@
 
 (defn ^w/Widget sliver-grid* [raw-args]
   (let [[args source builder children] (parse-grid-args raw-args)
-        normalized (grid-opts/scroll-normalize (grid-opts/parse args) (:anchor args))
-        _ (when (or (:reverse normalized) (:remap normalized))
-            (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view, or reverse your custom-scroll-view and use a forward :flow")))
         item-count (cond
                      (int? source) (int source)
                      source (count source)
                      children (count children)
                      (:item-count args) (int (:item-count args))
                      :else (throw (Exception. "sliver-grid needs a finite item count — pass a data source, static children, or :item-count")))]
-    (grid-collection-sliver args normalized item-count source builder children)))
+    ;; Builder gives a context to read Directionality; it's a StatelessWidget,
+    ;; so it composes transparently to the sliver a Viewport expects.
+    (w/Builder
+     .builder
+     (fn [^w/BuildContext ctx]
+       (let [text-dir (when (= w/TextDirection.rtl (w/Directionality.maybeOf ctx)) :rtl)
+             normalized (grid-opts/scroll-normalize (grid-opts/parse args text-dir) (:anchor args))]
+         (when (or (:reverse normalized) (:remap normalized))
+           (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view, or reverse your custom-scroll-view and use a forward :flow")))
+         (grid-collection-sliver args normalized item-count source builder children))))))
 
 (defn ^w/Widget sliver-to-box-adapter* [args child]
   (w/SliverToBoxAdapter

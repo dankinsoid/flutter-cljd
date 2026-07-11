@@ -100,14 +100,20 @@
   "Bounded, non-scrolling flexible grid over `children` (already-built widgets).
    See `flutter-cljd.widgets/grid` for the option list."
   [options children]
-  (let [normalized (opts/box-normalize (opts/parse options))
-        item-align (:item-align normalized)
-        children (vec children)
-        delegate (FlexGridDelegate
-                  (dissoc normalized :item-align)
-                  (int (count children))
-                  (when (not= :stretch item-align) (t/alignment item-align)))]
-    (m/CustomMultiChildLayout
-     .key (t/widget-key (:key options))
-     .delegate delegate
-     .children (into [] (map-indexed (fn [i c] (m/LayoutId .id i .child c)) children)))))
+  ;; Builder reads the ambient Directionality so an omitted :flow defaults to
+  ;; RTL where appropriate; an explicit :flow stays screen-absolute.
+  (m/Builder
+   .builder
+   (fn [^m/BuildContext ctx]
+     (let [text-dir (when (= m/TextDirection.rtl (m/Directionality.maybeOf ctx)) :rtl)
+           normalized (opts/box-normalize (opts/parse options text-dir))
+           item-align (:item-align normalized)
+           children (vec children)
+           delegate (FlexGridDelegate
+                     (dissoc normalized :item-align)
+                     (int (count children))
+                     (when (not= :stretch item-align) (t/alignment item-align)))]
+       (m/CustomMultiChildLayout
+        .key (t/widget-key (:key options))
+        .delegate delegate
+        .children (into [] (map-indexed (fn [i c] (m/LayoutId .id i .child c)) children)))))))
