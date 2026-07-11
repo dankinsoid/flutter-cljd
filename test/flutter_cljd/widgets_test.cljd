@@ -335,6 +335,13 @@
       (is (instance? m/Row widget))
       (is (= (count (.-children widget)) 1))))
 
+  (testing "Row leaves textDirection nil so it inherits Directionality"
+    (is (nil? (.-textDirection (f/row (m/Text "Child"))))))
+
+  (testing "Explicit :text-direction overrides the inherited direction"
+    (is (= m/TextDirection.rtl
+           (.-textDirection (f/row {:text-direction :rtl} (m/Text "Child"))))))
+
   (testing "Row with spacing and alignment"
     (let [widget (f/row
                   {:spacing 15
@@ -346,6 +353,21 @@
       (is (= (.-mainAxisAlignment widget) m/MainAxisAlignment.end))
       (is (= (.-crossAxisAlignment widget) m/CrossAxisAlignment.center))
       (is (= (count (.-children widget)) 2)))))
+
+(deftest test-directionality
+  (testing "Direction as a bare keyword"
+    (let [widget (f/directionality :rtl (m/Text "Child"))]
+      (is (instance? m/Directionality widget))
+      (is (= (.-textDirection widget) m/TextDirection.rtl))))
+
+  (testing "Direction and key via a leading map"
+    (let [widget (f/directionality {:direction :ltr :key (m/ValueKey "d")} (m/Text "Child"))]
+      (is (= (.-textDirection widget) m/TextDirection.ltr))
+      (is (= (.-key widget) (m/ValueKey "d")))))
+
+  (testing ":text-direction is an accepted alias"
+    (is (= m/TextDirection.rtl
+           (.-textDirection (f/directionality {:text-direction :rtl} (m/Text "Child")))))))
 
 (deftest test-sized
   (testing "Sized with single number"
@@ -446,7 +468,13 @@
       (is (= (.-left widget) 10.0))
       (is (= (.-top widget) 20.0))
       (is (= (.-right widget) 30.0))
-      (is (= (.-bottom widget) 40.0)))))
+      (is (= (.-bottom widget) 40.0))))
+
+  ;; directional edges resolve against Directionality at build, so the widget
+  ;; is a Builder wrapping a Positioned.directional rather than a bare Positioned
+  (testing "Positioned :start/:end takes the directional branch"
+    (is (instance? m/Builder (f/positioned {:start 10 :top 20} (m/Text "Child"))))
+    (is (instance? m/Positioned (f/positioned {:left 10 :top 20} (m/Text "Child"))))))
 
 ;; `popup-menu-button` wraps its PopupMenuButton in a Builder so it can resolve
 ;; the inherited `enabled` from context. Unwrap it with a nil context (which

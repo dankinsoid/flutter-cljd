@@ -922,6 +922,32 @@ Args:
   ([radius child]
    (cc/clip-corners* radius child)))
 
+(defn ^w/Widget directionality
+  "Sets the text direction for `child` and its subtree.
+
+   Everything directional below resolves against this: text layout and
+   alignment, `EdgeInsetsDirectional`/`AlignmentDirectional`, the `:start`/`:end`
+   options on `row`/`column`, `positioned`, `border`, `border-radius` and smooth
+   corners, and the grid's default `:flow`. Use it to force a subtree `:rtl`/`:ltr`
+   regardless of the app-wide direction, or to supply one where none is inherited
+   (e.g. an isolated tree under a bare `WidgetsApp`, or in tests).
+
+   The direction is `:ltr`/`:rtl` (or a `TextDirection`), passed directly or as
+   `:direction`/`:text-direction` in a leading map (which may also carry `:key`).
+
+   ```clojure
+   (directionality :rtl (row ...))
+   (directionality {:direction :rtl :key k} child)
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/Directionality-class.html)"
+  [dir-or-args child]
+  (let [args (if (map? dir-or-args) dir-or-args {:direction dir-or-args})]
+    (w/Directionality
+     .key (t/widget-key (:key args))
+     .textDirection (t/text-direction (or (:direction args) (:text-direction args)))
+     .child child)))
+
 (defn ^w/Widget colored
   "A widget that paints its child with a specified color.
 
