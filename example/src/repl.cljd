@@ -2,6 +2,7 @@
   (:require
    [data.examples :as ex]
    [flutter-cljd.widgets :as ui]
+   [flutter-cljd.slivers :as sv]
    [flutter-cljd.utils :as ut]
    [flutter-cljd.shader :as shader]
    [flutter-cljd.internal.collection.layout :as clay]
@@ -29,7 +30,7 @@
 (defn- action-bar
   "Row of buttons wrapped in sliver-to-box-adapter for use in custom-scroll-view."
   [& buttons]
-  (ui/sliver-to-box-adapter
+  (sv/sliver-to-box-adapter
    (->> (apply ui/row
                :main-axis-alignment :space-evenly
                buttons)
@@ -46,7 +47,7 @@
 
 (defn list-layout-preview []
   (ui/custom-scroll-view
-   (ui/sliver-collection
+   (sv/sliver-collection
     50 :item-extent 56
     (fn [_ i]
       (color-tile (str "Item " i) (nth colors (mod i (count colors))) 56)))))
@@ -55,7 +56,7 @@
 
 (defn grid-layout-preview []
   (ui/custom-scroll-view
-   (ui/sliver-collection
+   (sv/sliver-collection
     60
     :layout :grid
     :columns {:count 3 :gap 4}
@@ -97,8 +98,8 @@
               (reset! $items initial-anim-items)
               (reset! $next-id (count initial-anim-items)))))
       ;; Collection with animations
-      (ui/sliver-padding 8
-       (ui/sliver-collection
+      (sv/sliver-padding 8
+       (sv/sliver-collection
         items
         :key-fn :id
         :animate {:duration 400
@@ -141,8 +142,8 @@
             (fn []
               (reset! $items initial-grid-items)
               (reset! $next-id (count initial-grid-items)))))
-      (ui/sliver-padding 8
-       (ui/sliver-collection
+      (sv/sliver-padding 8
+       (sv/sliver-collection
         items
         :key-fn :id
         :animate true
@@ -173,7 +174,7 @@
            (ui/padding 8)
            (ui/sized :h 60))
       (->> (ui/custom-scroll-view
-            (ui/sliver-collection
+            (sv/sliver-collection
              200
              :item-extent 60
              :on-prefetch (fn [i]
@@ -196,8 +197,8 @@
       (action-bar
        (btn "Reset" (fn [] (reset! $items initial-reorder-items)))
        (btn "Shuffle" (fn [] (swap! $items shuffle))))
-      (ui/sliver-padding 8
-       (ui/sliver-collection
+      (sv/sliver-padding 8
+       (sv/sliver-collection
         items
         :key-fn :id
         :reorderable true
@@ -249,7 +250,7 @@
                    (reset! $next-id 30))))
            (ui/padding {:v 4}))
       (->> (ui/custom-scroll-view
-            (ui/sliver-collection
+            (sv/sliver-collection
              items
              :key-fn :id
              :item-extent 56
@@ -267,21 +268,21 @@
 (defn mixed-layouts-preview []
   (ui/custom-scroll-view
    ;; Header
-   (ui/sliver-to-box-adapter
+   (sv/sliver-to-box-adapter
     (->> (ui/text "List Section" {:size 18 :weight :bold})
          (ui/padding {:l 12 :t 12 :b 4})))
    ;; List section
-   (ui/sliver-collection
+   (sv/sliver-collection
     8 :item-extent 48
     (fn [_ i]
       (color-tile (str "List " i) (nth colors (mod i (count colors))) 48)))
    ;; Header
-   (ui/sliver-to-box-adapter
+   (sv/sliver-to-box-adapter
     (->> (ui/text "Grid Section" {:size 18 :weight :bold})
          (ui/padding {:l 12 :t 12 :b 4})))
    ;; Grid section
-   (ui/sliver-padding 8
-    (ui/sliver-collection
+   (sv/sliver-padding 8
+    (sv/sliver-collection
      12
      :layout :grid
      :columns {:count 3 :gap 4}
@@ -289,11 +290,11 @@
      (fn [_ i]
        (color-tile i (nth colors (mod i (count colors))) 80))))
    ;; Header
-   (ui/sliver-to-box-adapter
+   (sv/sliver-to-box-adapter
     (->> (ui/text "Another List" {:size 18 :weight :bold})
          (ui/padding {:l 12 :t 12 :b 4})))
    ;; Another list
-   (ui/sliver-collection
+   (sv/sliver-collection
     20
     (fn [_ i]
       (color-tile (str "More " i) (nth colors (mod (+ i 3) (count colors))) 64)))))
@@ -306,8 +307,8 @@
 
 (defn wrap-layout-preview []
   (ui/custom-scroll-view
-   (ui/sliver-padding 8
-    (ui/sliver-collection
+   (sv/sliver-padding 8
+    (sv/sliver-collection
      120
      :layout :wrap
      :spacing 8
@@ -323,8 +324,8 @@
 
 (defn masonry-layout-preview []
   (ui/custom-scroll-view
-   (ui/sliver-padding 8
-    (ui/sliver-collection
+   (sv/sliver-padding 8
+    (sv/sliver-collection
      100
      :layout :masonry
      :cross-axis-count 3
@@ -355,12 +356,12 @@
 
 (defn custom-layout-preview []
   (ui/custom-scroll-view
-   (ui/sliver-to-box-adapter
+   (sv/sliver-to-box-adapter
     (->> (ui/text "Custom :layout map — staircase flow with overlap"
                   {:size 12 :color :grey})
          (ui/padding 8)))
-   (ui/sliver-padding 8
-    (ui/sliver-collection
+   (sv/sliver-padding 8
+    (sv/sliver-collection
      60
      :layout stair-layout
      (fn [_ i]
@@ -407,8 +408,8 @@
            (ui/padding 8))
       (->> (ui/custom-scroll-view
             :controller controller
-            (ui/sliver-padding 8
-             (apply ui/sliver-collection
+            (sv/sliver-padding 8
+             (apply sv/sliver-collection
               items
               :key-fn :id
               :animate true
