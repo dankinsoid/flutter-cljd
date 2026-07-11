@@ -1,0 +1,82 @@
+(ns flutter-cljd.utils-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.utils :as ut]
+            ["package:flutter/material.dart" :as m]))
+
+(deftest test-key-values-map
+  (testing "keyword/value pairs only"
+    (is (= {:size 23 :color :white} (ut/key-values-map [:size 23 :color :white]))))
+
+  (testing "single map only"
+    (is (= {:size 23} (ut/key-values-map [{:size 23}]))))
+
+  (testing "leading map merged with trailing pairs"
+    (is (= {:size 23 :color :white} (ut/key-values-map [{:size 23} :color :white]))))
+
+  (testing "trailing pairs override the base map"
+    (is (= {:color :white} (ut/key-values-map [{:color :black} :color :white]))))
+
+  (testing "falsy tail element from short-circuited and/or is ignored"
+    (is (= {:size 23} (ut/key-values-map [{:size 23} nil])))
+    (is (= {:size 23} (ut/key-values-map [:size 23 false])))))
+
+(deftest test-key-values-and-rest
+  (testing "pairs then positional tail"
+    (is (= [{:gap 8} ["a" "b"]] (ut/key-values-and-rest [:gap 8 "a" "b"]))))
+
+  (testing "leading map then tail"
+    (is (= [{:gap 8} ["a"]] (ut/key-values-and-rest [{:gap 8} "a"]))))
+
+  (testing "leading map merged with subsequent pairs"
+    (is (= [{:gap 8 :color :white} ["a"]]
+           (ut/key-values-and-rest [{:gap 8} :color :white "a"]))))
+
+  (testing "pairs after the map override it"
+    (is (= [{:color :white} ["a"]]
+           (ut/key-values-and-rest [{:color :black} :color :white "a"]))))
+
+  (testing "no options at all"
+    (is (= [{} ["a" "b"]] (ut/key-values-and-rest ["a" "b"]))))
+
+  (testing "empty input"
+    (is (= [{} []] (ut/key-values-and-rest []))))
+
+  (testing "trailing option key without a value asserts"
+    (is (thrown? AssertionError (ut/key-values-and-rest [:gap 8 :color])))
+    (is (thrown? AssertionError (ut/key-values-and-rest [{:gap 8} :color])))))
+
+(deftest test-key-values-and-child
+  ;; The child is left raw (may be any value), so plain strings work as children
+  ;; and keep the assertions free of widget identity concerns.
+  (testing "pairs then child"
+    (is (= [{:gap 8} "child"] (ut/key-values-and-child [:gap 8 "child"]))))
+
+  (testing "leading map then child"
+    (is (= [{:gap 8} "child"] (ut/key-values-and-child [{:gap 8} "child"]))))
+
+  (testing "leading map merged with subsequent pairs"
+    (is (= [{:gap 8 :color :white} "child"]
+           (ut/key-values-and-child [{:gap 8} :color :white "child"]))))
+
+  (testing "pairs after the map override it"
+    (is (= [{:color :white} "child"]
+           (ut/key-values-and-child [{:color :black} :color :white "child"]))))
+
+  (testing "child may be a builder function"
+    (let [f (fn [_] nil)]
+      (is (= [{:gap 8} f] (ut/key-values-and-child [{:gap 8} :gap 8 f]))))))
+
+(deftest test-key-values-args-and-children
+  ;; Children must be Widgets here. Build them through a runtime call so the
+  ;; compiler can't const-fold the binding into per-use-site instances —
+  ;; `flutter test` runs with --track-widget-creation, which breaks const
+  ;; canonicalization of widgets and would make identity comparisons fail.
+  (let [a (m/Text (str :a))
+        b (m/Text (str :b))]
+    (testing "leading map merged with pairs, children flattened"
+      (is (= [{:gap 8 :color :white} [a b]]
+             (ut/key-values-args-and-children [{:gap 8} :color :white [a [b]]]))))
+
+    (testing "pairs only"
+      (is (= [{:gap 8} [a b]]
+             (ut/key-values-args-and-children [:gap 8 a b]))))))

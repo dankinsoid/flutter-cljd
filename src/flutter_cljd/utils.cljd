@@ -701,41 +701,45 @@
     (flatten-children (if (map? args) children (cons args children)))]))
 
 (defn key-values-and-rest
-  "Splits leading keyword/value option pairs (or a single leading map) from the
-   trailing positional values. Returns `[opts-map trailing-vec]` with the tail
-   left raw — neither flattened nor widget-validated, so callers can decide how
-   to interpret trailing functions/children."
+  "Splits an optional leading map and subsequent keyword/value option pairs from
+   the trailing positional values. Returns `[opts-map trailing-vec]`. The leading
+   map is the base; pairs after it override, so `(f style :color :red child)`
+   merges `:color` onto `style`. The tail is left raw — neither flattened nor
+   widget-validated, so callers can decide how to interpret trailing
+   functions/children."
   [values]
-  (if (map? (first values))
-    [(first values) (vec (rest values))]
-    (let [{:keys [args i key]} (reduce
-                                (fn [{:keys [args key i]} v]
-                                  (cond
-                                    (and (even? i) (keyword? v))
-                                    {:args args :key v :i (inc i)}
-                                    (and (odd? i) (some? key))
-                                    {:args (assoc args key v) :i (inc i)}
-                                    :else
-                                    (reduced {:args args :i i})))
-                                {:args {} :i 0}
-                                values)]
-      ;; A leftover `key` means a trailing keyword with no value — silently swallowed otherwise.
-      (assert (nil? key)
-              (str "key-values-and-rest: option key " key " has no value"))
-      [args (vec (drop i values))])))
+  (let [has-base (map? (first values))
+        base (if has-base (first values) {})
+        vs (if has-base (rest values) values)
+        {:keys [args i key]} (reduce
+                              (fn [{:keys [args key i]} v]
+                                (cond
+                                  (and (even? i) (keyword? v))
+                                  {:args args :key v :i (inc i)}
+                                  (and (odd? i) (some? key))
+                                  {:args (assoc args key v) :i (inc i)}
+                                  :else
+                                  (reduced {:args args :i i})))
+                              {:args base :i 0}
+                              vs)]
+    ;; A leftover `key` means a trailing keyword with no value — silently swallowed otherwise.
+    (assert (nil? key)
+            (str "key-values-and-rest: option key " key " has no value"))
+    [args (vec (drop i vs))]))
 
 (defn key-values-args-and-children [values]
   (let [[args tail] (key-values-and-rest values)]
     (args-children args tail)))
 
 (defn key-values-and-child
-  "Splits leading keyword/value pairs (or a single leading map) from one trailing
-   child, returning `[opts child]`. Unlike `key-values-args-and-children`, it does
-   not flatten or widget-validate the child — it may be a builder function."
+  "Splits an optional leading map and subsequent keyword/value pairs from one
+   trailing child, returning `[opts child]`. The leading map is the base; pairs
+   after it override. Unlike `key-values-args-and-children`, it does not flatten
+   or widget-validate the child — it may be a builder function."
   [values]
-  (if (map? (first values))
-    [(first values) (last (rest values))]
-    (loop [m {} vs values]
+  (let [has-base (map? (first values))
+        base (if has-base (first values) {})]
+    (loop [m base vs (if has-base (rest values) values)]
       (let [[a b] vs]
         (if (and (keyword? a) (next vs))
           (recur (assoc m a b) (nnext vs))
