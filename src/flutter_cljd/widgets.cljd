@@ -2636,6 +2636,47 @@ covers both.)"
   [& args]
   (scrl/grid-view* args))
 
+(defn ^w/Widget collection-view
+  "Scrollable host for a collection layout — a `custom-scroll-view` wrapping one
+`sliver-collection`, with the scroll options split out. The generalization of
+`list-view`: `:layout` is free (`:list`/`:wrap`/`:masonry`/`:grid`, a layout map
+from `flutter-cljd.layouts`, or a `SliverGridDelegate`) and every collection
+feature — `:key-fn`/`:animate`/`:reorderable`/`:on-prefetch` — works here.
+
+First positional arg is an optional data source (collection or int count), the
+last is the builder fn; keyword/value options sit between.
+
+Examples:
+
+```clojure
+;; wrap layout, scrollable
+(collection-view tags :layout :wrap :spacing 8 :run-spacing 4
+  (fn [ctx tag] (chip tag)))
+;; masonry with insert/remove animations
+(collection-view photos :layout :masonry :cross-axis-count 2
+  :key-fn :id :animate true
+  (fn [ctx photo] (photo-card photo)))
+;; a plain list with padding and reorder
+(collection-view items :padding 16 :reorderable true
+  :on-reorder (fn [from to] (swap! ...))
+  (fn [ctx item] (row-tile item)))
+```
+
+Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
+`:primary`, `:physics`, `:shrink-wrap`, `:padding` (wraps the sliver in a
+`SliverPadding`), `:clip`, `:cache-extent`.
+
+Everything else — `:layout` and its options, `:item-count`, `:key-fn`,
+`:animate`, `:reorderable`, `:on-reorder`, `:on-prefetch`, `:prefetch-distance`,
+`:auto-keep-alive` — flows to `sliver-collection` (see there for the layout
+contract and the full option reference).
+
+`:layout :grid` behaves as in a bare `sliver-collection` (forward `:flow`
+stacking only); for grids prefer `grid-view`, which owns the scroll view and so
+handles reversed flows, `:anchor :end`, and RTL compensation."
+  [& args]
+  (scrl/collection-view* args))
+
 (defn ^w/Widget grid
   "Bounded, non-scrolling flexible grid — the box counterpart of `grid-view`,
 same option language (`:columns`/`:rows`/`:flow`/`:line-align`/`:item-align`),

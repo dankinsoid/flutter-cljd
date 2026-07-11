@@ -224,6 +224,52 @@
      .cacheExtent (some-> (:cache-extent args) double)
      .slivers [sliver]))))))
 
+;; --- collection-view ---
+
+(defn- parse-collection-view-args
+  "Splits collection-view args into [opts source builder]. First positional is
+   an optional data source (collection or int count), last is the required
+   builder fn, keyword/value pairs sit between (a leading opts map is merged).
+   The source stays raw so sliver-collection can diff it (:key-fn, :animate)."
+  [raw-args]
+  (let [f (first raw-args)
+        [source rst] (if (or (int? f) (sequential? f))
+                       [f (rest raw-args)]
+                       [nil raw-args])
+        l (last rst)]
+    (when-not (fn? l)
+      (throw (Exception. "collection-view requires a builder function as the last argument")))
+    (let [args (ut/key-values-map (butlast rst))]
+      [(if (map? args) args {}) source l])))
+
+;; scroll opts routed to the CustomScrollView; :padding wraps the sliver in a
+;; SliverPadding; everything else flows to sliver-collection.
+(def ^:private collection-scroll-keys
+  #{:key :axis :reverse :controller :primary :physics :shrink-wrap :clip
+    :cache-extent :padding})
+
+(defn ^m/Widget collection-view* [raw-args]
+  (let [[args source builder] (parse-collection-view-args raw-args)
+        sliver-opts (apply dissoc args collection-scroll-keys)
+        sliver-args (concat (when source [source])
+                            (mapcat identity sliver-opts)
+                            [builder])
+        sliver (scol/sliver-collection* sliver-args)
+        sliver (if-let [padding (:padding args)]
+                 (w/SliverPadding .padding (t/insets padding) .sliver sliver)
+                 sliver)]
+    (m/CustomScrollView
+     .key (t/widget-key (:key args))
+     .scrollDirection (t/axis (or (:axis args) :vertical))
+     .reverse (boolean (:reverse args))
+     .controller (:controller args)
+     .primary (:primary args)
+     .physics (some-> (:physics args) t/scroll-physics)
+     .shrinkWrap (boolean (:shrink-wrap args))
+     .clipBehavior (t/clip (or (:clip args) :hard-edge))
+     .cacheExtent (some-> (:cache-extent args) double)
+     .slivers [sliver])))
+
 ;; --- custom-scroll-view ---
 
 (defn ^m/Widget custom-scroll-view* [args slivers]
