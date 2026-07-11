@@ -56,6 +56,11 @@
 (defn- all-corners [corner]
   {:top-left corner :top-right corner :bottom-right corner :bottom-left corner})
 
+(def ^:private directional-spec-keys
+  #{:top-start :start-top :top-end :end-top
+    :bottom-start :start-bottom :bottom-end :end-bottom
+    :start :end :s :e})
+
 (defn corners
   "Normalizes a corner-radius spec into a map of
    {:top-left {:radius r :smoothing s} :top-right ... :bottom-right ... :bottom-left ...}.
@@ -67,21 +72,46 @@
    - `{:rel f}` — radius as a fraction of the rect's shorter side
      (0.5 = capsule), resolved at paint/clip time; may be negative
 
-   Directional keys (:start/:end etc.) are resolved as LTR: paths have no
-   text direction, unlike BorderRadiusDirectional."
+   Directional keys (:start/:end etc.) parse as LTR, and when they make the
+   result horizontally asymmetric the map is marked `:directional? true` —
+   consumers resolve it against a text direction with `resolve-direction`
+   (the decoration/border do this at paint; `clip-corners` at build).
+   Raw `smooth-path` takes the corners as given: paths have no direction."
   [value]
   (if (and (map? value)
            (nil? (:radius value))
            (nil? (:rel value))
            (nil? (some value [:x :y])))
     (let [fallback (double (or (:smoothing value) @default-smoothing))
-          pick (fn [ks] (corner-value (some value ks) fallback))]
-      {:top-left (pick [:top-left :left-top :top-start :start-top :top :left :start :l :t :s :all])
-       :top-right (pick [:top-right :right-top :top-end :end-top :top :right :end :r :t :e :all])
-       :bottom-right (pick [:bottom-right :right-bottom :bottom-end :end-bottom :bottom :right :end :r :b :e :all])
-       :bottom-left (pick [:bottom-left :left-bottom :bottom-start :start-bottom :bottom :left :start :l :b :s :all])})
+          pick (fn [ks] (corner-value (some value ks) fallback))
+          result {:top-left (pick [:top-left :left-top :top-start :start-top :top :left :start :l :t :s :all])
+                  :top-right (pick [:top-right :right-top :top-end :end-top :top :right :end :r :t :e :all])
+                  :bottom-right (pick [:bottom-right :right-bottom :bottom-end :end-bottom :bottom :right :end :r :b :e :all])
+                  :bottom-left (pick [:bottom-left :left-bottom :bottom-start :start-bottom :bottom :left :start :l :b :s :all])}]
+      ;; mark only when an RTL swap would actually change something
+      (if (and (some directional-spec-keys (keys value))
+               (or (not= (:top-left result) (:top-right result))
+                   (not= (:bottom-left result) (:bottom-right result))))
+        (assoc result :directional? true)
+        result))
     (all-corners (corner-value value (double (or (when (map? value) (:smoothing value))
                                                  @default-smoothing))))))
+
+(defn resolve-direction
+  "Resolves `:directional?` corners against a text direction: under RTL the
+   horizontal corner pairs swap. Idempotent — the flag is dropped either way;
+   unmarked corners pass through untouched. nil direction reads as LTR."
+  [corners ^m/TextDirection? dir]
+  (if (:directional? corners)
+    (let [resolved (dissoc corners :directional?)]
+      (if (= dir m/TextDirection.rtl)
+        (assoc resolved
+               :top-left (:top-right resolved)
+               :top-right (:top-left resolved)
+               :bottom-left (:bottom-right resolved)
+               :bottom-right (:bottom-left resolved))
+        resolved))
+    corners))
 
 (defn needs-smooth-path?
   "True when the corners can't be represented by a plain RRect:
@@ -92,24 +122,27 @@
                    (or (neg? radius)
                        (and (pos? radius)
                             (or (pos? smoothing) (true? relative?)))))
-                 (vals corners))))
+                 (map corners corner-keys))))
 
+;; walk corner-keys only (not all entries): the map may carry a :directional?
+;; marker that must pass through untouched
 (defn- map-radii [corners f]
-  (into {} (map (fn [[k v]] [k (update v :radius f)])) corners))
+  (reduce (fn [m k] (update-in m [k :radius] f)) corners corner-keys))
 
 (defn- resolve-corners
   "Resolves relative radii (fractions of the shorter side) into pixels.
    Idempotent: resolved corners lose their `:relative?` flag."
   [corners ^double w ^double h]
   (let [base (min w h)]
-    (into {}
-          (map (fn [[k {:keys [^double radius relative?] :as corner}]]
-                 [k (if relative?
-                      (-> corner
-                          (assoc :radius (* radius base))
-                          (dissoc :relative?))
-                      corner)]))
-          corners)))
+    (reduce (fn [m k]
+              (let [{:keys [^double radius relative?] :as corner} (m k)]
+                (if relative?
+                  (assoc m k (-> corner
+                                 (assoc :radius (* radius base))
+                                 (dissoc :relative?)))
+                  m)))
+            corners
+            corner-keys)))
 
 (defn- inset-radius ^double [^double r ^double inset]
   ;; concave arcs grow inward, convex ones shrink
@@ -121,18 +154,24 @@
   (map-radii corners #(inset-radius % inset)))
 
 (defn- lerp-corners [from to ^double t]
-  (into {}
-        (map (fn [k]
-               (let [a (from k) b (to k)]
-                 [k (if (= (boolean (:relative? a)) (boolean (:relative? b)))
-                      (cond->
-                       {:radius (+ (:radius a) (* (- ^double (:radius b) ^double (:radius a)) t))
-                        :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}
-                        (:relative? a) (assoc :relative? true))
-                      ;; relative ↔ absolute can't interpolate without a size —
-                      ;; switch halfway, like Flutter does for incompatible decorations
-                      (if (< t 0.5) a b))])))
-        corner-keys))
+  (cond->
+   (into {}
+         (map (fn [k]
+                (let [a (from k) b (to k)]
+                  [k (if (= (boolean (:relative? a)) (boolean (:relative? b)))
+                       (cond->
+                        {:radius (+ (:radius a) (* (- ^double (:radius b) ^double (:radius a)) t))
+                         :smoothing (+ (:smoothing a) (* (- ^double (:smoothing b) ^double (:smoothing a)) t))}
+                         (:relative? a) (assoc :relative? true))
+                       ;; relative ↔ absolute can't interpolate without a size —
+                       ;; switch halfway, like Flutter does for incompatible decorations
+                       (if (< t 0.5) a b))])))
+         corner-keys)
+    ;; directional × absolute endpoints can't be blended exactly (the swap
+    ;; applies to the whole map) — marking the blend directional misplaces the
+    ;; absolute endpoint's asymmetry under RTL mid-animation, an accepted
+    ;; approximation for a rare mix
+    (or (:directional? from) (:directional? to)) (assoc :directional? true)))
 
 (defn fit-corners
   "Fits corners into a w×h rect with RRect-compatible semantics
@@ -390,20 +429,22 @@
     (SmoothRectangleBorder (map-radii corners #(* ^double % t)) (.scale side t)))
 
   (getOuterPath [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
-    (smooth-path rect corners))
+    (smooth-path rect (resolve-direction corners textDirection)))
 
   ;; The inner path approximates concave corners by keeping the arc center at
   ;; the deflated rect's corner instead of the outer one — the error is at most
   ;; the border width, invisible at typical widths.
   (getInnerPath [this ^ui/Rect rect ^ui/TextDirection? .textDirection]
-    (let [w (.-width side)]
+    (let [w (.-width side)
+          corners (resolve-direction corners textDirection)]
       ;; relative radii refer to the outer rect, so resolve before insetting
       (smooth-path (.deflate rect w)
                    (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) w))))
 
   (paint [this ^ui/Canvas canvas ^ui/Rect rect ^ui/TextDirection? .textDirection]
     (when (and (pos? (.-width side)) (= (.-style side) m/BorderStyle.solid))
-      (let [hw (/ (.-width side) 2.0)]
+      (let [hw (/ (.-width side) 2.0)
+            corners (resolve-direction corners textDirection)]
         (.drawPath canvas
                    (smooth-path (.deflate rect hw)
                                 (inset-corners (resolve-corners corners (.-width rect) (.-height rect)) hw))
@@ -536,6 +577,7 @@
                            ^m/Gradient? border-gradient ^bool assert-square?
                            ^m/DecorationImage? image ^m/BlendMode? blend-mode ^dc/Function? on-changed
                            ^:mutable ^ui/Rect? cached-rect
+                           ^:mutable ^m/TextDirection? cached-dir
                            ^:mutable ^ui/Path? cached-path
                            ^:mutable ^m/DecorationImagePainter? image-painter]
   :extends (m/BoxPainter)
@@ -546,11 +588,13 @@
           ;; need a text direction to resolve start/end into a shader — the native
           ;; BoxDecoration painter forwards it from the configuration, so we do too
           ^m/TextDirection? text-direction (.-textDirection configuration)
+          corners (resolve-direction corners text-direction)
           rect (ui/Rect.fromLTWH (.-dx offset) (.-dy offset) (.-width size) (.-height size))
-          path (if (= rect cached-rect)
+          path (if (and (= rect cached-rect) (= text-direction cached-dir))
                  cached-path
                  (let [p (smooth-path rect corners)]
                    (set! cached-rect rect)
+                   (set! cached-dir text-direction)
                    (set! cached-path p)
                    p))
           fill-paint (fn ^ui/Paint []
@@ -674,14 +718,15 @@
   ;; VoidCallback is a typedef the cljd analyzer can't resolve, so Function? is
   ;; the closest expressible type for the parameter
   (createBoxPainter [this ... ^dc/Function? on-changed]
-    (SmoothBoxPainter corners color gradient shadows side border-gradient assert-square? image blend-mode on-changed nil nil nil))
+    (SmoothBoxPainter corners color gradient shadows side border-gradient assert-square? image blend-mode on-changed nil nil nil nil))
 
   (hitTest [this ^ui/Size size ^ui/Offset position ^ui/TextDirection? .textDirection]
-    (.contains (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size)) corners)
+    (.contains (smooth-path (ui/Rect.fromLTWH 0 0 (.-width size) (.-height size))
+                            (resolve-direction corners textDirection))
                position))
 
   (getClipPath [this ^ui/Rect rect ^ui/TextDirection textDirection]
-    (smooth-path rect corners))
+    (smooth-path rect (resolve-direction corners textDirection)))
 
   (lerpFrom [this a ^double t]
     (if (instance? SmoothDecoration a)

@@ -48,6 +48,42 @@
       (is (true? (get-in corners [:top-left :relative?])))
       (is (nil? (get-in corners [:top-right :relative?]))))))
 
+(deftest test-directional-corners
+  (testing "Asymmetric directional spec is marked"
+    (is (true? (:directional? (sc/corners {:top-start 4 :top-end 8}))))
+    (is (true? (:directional? (sc/corners {:start 4 :end 8}))))
+    (is (true? (:directional? (sc/corners {:s 4 :e 8})))))
+
+  (testing "Symmetric or absolute specs are not marked"
+    (is (nil? (:directional? (sc/corners {:start 8 :end 8}))))
+    (is (nil? (:directional? (sc/corners {:top-left 4 :top-right 8}))))
+    (is (nil? (:directional? (sc/corners 8)))))
+
+  (testing "resolve-direction swaps horizontal pairs under RTL and drops the flag"
+    (let [corners (sc/corners {:top-start 4 :top-end 8 :bottom-start 2 :bottom-end 6})
+          ltr (sc/resolve-direction corners m/TextDirection.ltr)
+          rtl (sc/resolve-direction corners m/TextDirection.rtl)]
+      (is (nil? (:directional? ltr)))
+      (is (nil? (:directional? rtl)))
+      (is (approx? 4.0 (get-in ltr [:top-left :radius])))
+      (is (approx? 8.0 (get-in rtl [:top-left :radius])))
+      (is (approx? 4.0 (get-in rtl [:top-right :radius])))
+      (is (approx? 6.0 (get-in rtl [:bottom-left :radius])))
+      (is (approx? 2.0 (get-in rtl [:bottom-right :radius])))))
+
+  (testing "resolve-direction reads nil direction as LTR and passes unmarked corners through"
+    (let [corners (sc/corners {:top-start 4 :top-end 8})]
+      (is (approx? 4.0 (get-in (sc/resolve-direction corners nil) [:top-left :radius]))))
+    (let [corners (sc/corners {:top-left 4 :top-right 8})]
+      (is (identical? corners (sc/resolve-direction corners m/TextDirection.rtl)))))
+
+  (testing "flag survives border lerp"
+    (let [a (sc/smooth-rectangle-border {:start 4 :end 16})
+          b (sc/smooth-rectangle-border {:start 8 :end 24})
+          ^sc/SmoothRectangleBorder mid (.lerpFrom ^m/ShapeBorder b a 0.5)]
+      (is (true? (:directional? (.-corners mid))))
+      (is (approx? 6.0 (get-in (.-corners mid) [:top-left :radius]))))))
+
 (deftest test-needs-smooth-path
   (testing "Zero smoothing and non-negative radii fit an RRect"
     (is (not (sc/needs-smooth-path? (sc/corners {:all 8 :smoothing 0}))))

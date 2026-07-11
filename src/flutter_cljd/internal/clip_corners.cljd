@@ -11,9 +11,18 @@
   (let [corners (when-not (instance? m/BorderRadiusGeometry radius)
                   (sc/corners radius))]
     (if (and (some? corners) (sc/needs-smooth-path? corners))
-      (m/ClipPath
-       .clipper (sc/smooth-clipper corners)
-       .child child)
+      ;; CustomClipper never learns the text direction, so directional corners
+      ;; are resolved here at build, against the ambient Directionality
+      (if (:directional? corners)
+        (m/Builder
+         .builder
+         (fn [^m/BuildContext ctx]
+           (m/ClipPath
+            .clipper (sc/smooth-clipper (sc/resolve-direction corners (m/Directionality.maybeOf ctx)))
+            .child child)))
+        (m/ClipPath
+         .clipper (sc/smooth-clipper corners)
+         .child child))
       (m/ClipRRect
        .borderRadius (t/border-radius radius)
        .child child))))
