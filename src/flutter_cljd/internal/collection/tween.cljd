@@ -236,3 +236,48 @@
                      (lerp (double (or (from-ext env (:from-ctx ctx) n) 0.0))
                            (double (or (to-ext env (:to-ctx ctx) n) 0.0))
                            (double (:t ctx)))))}))
+
+;; @ai-generated(solo)
+(defn keyed-tween-layout
+  "The v2 morph as an indexed layout map, with a KEYED `from` side. Unlike
+   `tween-layout` (index-addressed on both endpoints), the `from` rect of each
+   cell is looked up by the cell's key, so a cell's history follows its data
+   identity across shuffles/inserts rather than its index.
+
+   `to-src` is a frame source (the live/captured target). `committed` is the
+   frozen `from` side: {key -> rect} in content space, rect =
+   {:offset :cross :main-extent :cross-extent}; a key absent from the map has no
+   history. `from-extent` is the total scroll extent at segment start (the `from`
+   side is one number, not per-key). `key-of` maps an index to its key.
+   `progress` is a 0..1 thunk (already curved) read fresh every pass.
+
+   Geometry is exact at both endpoints: t=0 with a committed rect ≡ that rect,
+   t=1 ≡ the target. A key with no committed rect appears settled at its target
+   at every t (no glide). Windowing passes through to-src only — the committed
+   side is key-addressed with no cheap index inverse, so the driver, not this
+   map, unions in overlapping committed cells."
+  [id to-src committed ^double from-extent key-of progress]
+  (let [to-frame (:frame to-src)  to-first (:first-index to-src)
+        to-last (:last-index to-src) to-ext (:extent to-src)
+        to-prep (:prepare to-src)]
+    {:id id
+     :prepare (fn [env]
+                {:t (double (progress))
+                 :to-ctx (to-prep env)})
+     :geometry (fn [env ^int i]
+                 (let [ctx (:ctx env)]
+                   (or (lerp-frame (get committed (key-of i))
+                                   (to-frame env (:to-ctx ctx) i)
+                                   (double (:t ctx)))
+                       (zero-frame env))))
+     :first-index (fn [env ^double off]
+                    (let [ctx (:ctx env)]
+                      (int (or (to-first env (:to-ctx ctx) off) 0))))
+     :last-index (fn [env ^double off]
+                   (let [ctx (:ctx env)]
+                     (int (or (to-last env (:to-ctx ctx) off) 0))))
+     :max-extent (fn [env ^int n]
+                   (let [ctx (:ctx env)]
+                     (lerp from-extent
+                           (double (or (to-ext env (:to-ctx ctx) n) 0.0))
+                           (double (:t ctx)))))}))

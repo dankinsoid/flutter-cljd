@@ -215,6 +215,75 @@
     (is (nil? (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off 10.0}]
                                100.0)))))
 
+;; --- keyed combinator (v2): the `from` side is key-addressed ---
+
+(defn- keyed-geo [to-src committed ^double from-extent key-of ^double t ^int i]
+  (let [tl (tw/keyed-tween-layout [:k t] to-src committed from-extent key-of (fn [] t))]
+    ((:geometry tl) (with-ctx tl base-env) i)))
+
+(deftest keyed-tween-geometry-endpoints-exact
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0
+             :frames [(fr 0 0 60 100) (fr 60 100 60 100) (fr 120 0 60 100)]})
+        committed {:x (fr 100 0 100 200)}
+        key-of (fn [^int _i] :x)]
+    (testing "t=0 is exactly the committed rect for the key"
+      (is (frame= (fr 100 0 100 200) (keyed-geo to committed 300.0 key-of 0.0 1))))
+    (testing "t=1 is exactly the to frame"
+      (is (frame= (fr 60 100 60 100) (keyed-geo to committed 300.0 key-of 1.0 1))))
+    (testing "t=0.5 lerps committed -> to together"
+      (is (frame= (fr 80 50 80 150) (keyed-geo to committed 300.0 key-of 0.5 1))))))
+
+(deftest keyed-tween-no-history-appears-at-target
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0
+             :frames [(fr 0 0 60 100) (fr 60 100 60 100) (fr 120 0 60 100)]})
+        committed {}                        ; key :y has no committed rect
+        key-of (fn [^int _i] :y)]
+    (testing "a key with no history sits at its target at every t (no glide)"
+      (is (frame= (fr 60 100 60 100) (keyed-geo to committed 200.0 key-of 0.0 1)))
+      (is (frame= (fr 60 100 60 100) (keyed-geo to committed 200.0 key-of 0.4 1)))
+      (is (frame= (fr 60 100 60 100) (keyed-geo to committed 200.0 key-of 1.0 1))))))
+
+(deftest keyed-tween-from-follows-key-not-index
+  ;; the shuffle property: two indices carry keys whose committed rects differ;
+  ;; each index must lerp from ITS OWN key's rect, not from a per-index `from`.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0
+             :frames [(fr 0 0 60 100) (fr 60 0 60 100)]})
+        committed {:a (fr 200 0 100 200) :b (fr 400 0 40 80)}
+        key-of (fn [^int i] (if (zero? i) :a :b))]
+    (testing "index 0 lerps from key :a's rect"
+      (is (frame= (fr 200 0 100 200) (keyed-geo to committed 300.0 key-of 0.0 0)))
+      (is (frame= (fr 100 0 80 150) (keyed-geo to committed 300.0 key-of 0.5 0))))
+    (testing "index 1 lerps from key :b's rect (different `from`)"
+      (is (frame= (fr 400 0 40 80) (keyed-geo to committed 300.0 key-of 0.0 1)))
+      (is (frame= (fr 230 0 50 90) (keyed-geo to committed 300.0 key-of 0.5 1))))))
+
+(deftest keyed-tween-extent-lerps
+  (let [to (tw/frozen-frame-source {:base 0 :extent 180.0 :frames [(fr 0 0 60 200)]})
+        ext (fn [^double t]
+              (let [tl (tw/keyed-tween-layout [:e t] to {} 400.0 (fn [^int _i] :z) (fn [] t))]
+                ((:max-extent tl) (with-ctx tl base-env) 10)))]
+    (testing "max-extent lerps from-extent -> to-src extent"
+      (is (close? 400.0 (ext 0.0)))
+      (is (close? 180.0 (ext 1.0)))
+      (is (close? 290.0 (ext 0.5))))))
+
+(deftest keyed-tween-windowing-passes-through-to-src
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 400.0
+             :frames [(fr 0 0 100 200) (fr 100 0 100 200)
+                      (fr 200 0 100 200) (fr 300 0 100 200)]})
+        ;; committed rects far from the window must NOT widen it — windowing is to-src only
+        committed {:a (fr 0 0 100 200) :b (fr 900 0 100 200)}
+        key-of (fn [^int i] (if (even? i) :a :b))
+        tl (tw/keyed-tween-layout [:w 0.5] to committed 300.0 key-of (fn [] 0.5))
+        env (with-ctx tl base-env)]
+    (testing "first/last-index equal the to-src's own window"
+      (is (= 1 ((:first-index tl) env 150.0)))
+      (is (= 2 ((:last-index tl) env 250.0))))))
+
 (deftest tween-between-two-grids-endpoints-exact
   (let [g2 (lay/resolve-layout :grid {:columns 2 :rows {:size 50}})
         g3 (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})
