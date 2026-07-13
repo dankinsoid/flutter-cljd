@@ -38,7 +38,7 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare flow-layout! indexed-layout! commit-pass!)
+(declare flow-layout! indexed-layout! commit-pass! segment-start!)
 
 ;; --- Render object ---
 
@@ -54,7 +54,15 @@
    ^:mutable tweenListener            ;; the listener registered on tweenAnim (for removal)
    ^:mutable keyOf         ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
    ^:mutable committed     ;; {key -> rect+ :seen} content-space; persists across child GC
-   ^:mutable ^int passTick] ;; monotonic layout-pass counter (drives committed pruning)
+   ^:mutable ^int passTick  ;; monotonic layout-pass counter (drives committed pruning)
+   ;; --- segment state (v2 keyed rect animator, see docs/CollectionRectAnimator.md) ---
+   ^:mutable ^int curGen    ;; host's current segment gen (set by update-render!)
+   ^:mutable ^int segGen    ;; gen the engine last BUILT segTween for; -1 = none built
+   ^:mutable fromRects      ;; {key -> rect} OLD committed rects frozen at segment start
+   ^:mutable ^double fromExtent ;; scroll extent frozen at segment start
+   ^:mutable entering       ;; set of keys wiping open this segment
+   ^:mutable exiting        ;; set of keys wiping shut this segment
+   ^:mutable segTween]      ;; the built keyed-tween-layout for the current segment, or nil
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -73,9 +81,20 @@
         (.-crossCached! this (.-crossAxisExtent c))
         (.-cache! this [])
         (.-baseState! this nil))
-      (if (:geometry (.-layoutModel this))
-        (indexed-layout! this (.-layoutModel this) c)
-        (flow-layout! this (.-layoutModel this) c))
+      (cond
+        ;; RESTING: no animation — run the plain target through its natural driver.
+        (nil? (.-tweenAnim this))
+        (if (:geometry (.-layoutModel this))
+          (indexed-layout! this (.-layoutModel this) c)
+          (flow-layout! this (.-layoutModel this) c))
+
+        ;; SEGMENT START: host bumped gen — capture the target from the new tree.
+        (not= (.-curGen this) (.-segGen this))
+        (segment-start! this c)
+
+        ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
+        :else
+        (indexed-layout! this (.-segTween this) c))
       (.-passTick! this (inc (.-passTick this)))
       (commit-pass! this (lay/make-env c (.-itemCount this)))))
 
@@ -210,22 +229,35 @@
       (.-tweenListener! rs nil))))
 
 (defn update-render!
-  "Applies a new layout / item count / morph animation from updateRenderObject.
-   A changed layout :id invalidates the flow geometry cache."
-  [^CollectionRenderSliver rs new-layout item-count ^a/Animation? tween-anim key-of]
+  "Applies a segment from updateRenderObject. The host passes the PLAIN target
+   layout (never a pre-built tween), the segment `tween-anim`, an int `gen` bumped
+   once per segment, the `entering`/`exiting` key sets and `key-of`. The engine
+   builds the segment tween itself on the first pass whose `gen` differs from the
+   one it last built for (see `segment-start!`); when `tween-anim` is nil the
+   sliver rests on `target-layout` and all segment state is cleared. A changed
+   layout :id invalidates the flow geometry cache."
+  [^CollectionRenderSliver rs target-layout item-count ^a/Animation? tween-anim
+   ^int gen entering exiting key-of]
   (let [old (.-layoutModel rs)
-        layout-changed (or (nil? (:id new-layout))
-                           (not= (:id old) (:id new-layout)))
-        count-changed (not= item-count (.-itemCount rs))]
+        layout-changed (or (nil? (:id target-layout))
+                           (not= (:id old) (:id target-layout)))
+        count-changed (not= item-count (.-itemCount rs))
+        seg-start (and tween-anim (not= gen (.-segGen rs)))]
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
     ;; always swap the fns — same :id means same behavior, fresher closures
-    (.-layoutModel! rs new-layout)
+    (.-layoutModel! rs target-layout)
     (.-itemCount! rs item-count)
     (.-keyOf! rs key-of)
+    (.-curGen! rs gen)
+    (.-entering! rs (or entering #{}))
+    (.-exiting! rs (or exiting #{}))
     (set-tween-anim! rs tween-anim)
-    (when (or layout-changed count-changed)
+    (when-not tween-anim  ;; back to resting — forget the segment
+      (.-segGen! rs -1)
+      (.-segTween! rs nil))
+    (when (or layout-changed count-changed seg-start)
       (.markNeedsLayout rs))))
 
 ;; --- layout-morph snapshots (read by the host at tween start / retarget) ---
@@ -760,31 +792,120 @@
                 (.didFinishLayout mgr)))))))))
 
 ;; ============================================================
+;; Segment start (v2 keyed rect animator)
+;; ============================================================
+
+;; @ai-generated(solo)
+(defn- from-relay!
+  "Re-lays every currently attached child at `layout`'s indexed geometry and
+   writes sliver geometry — WITHOUT a childManager create/GC cycle, so it triggers
+   no didStartLayout/didFinishLayout. Used to display a FLOW segment's first pass
+   at its `from` rects (t≈0) after the flow capture walk already ran one lifecycle
+   cycle; a second full driver would double it. Only the target window flow just
+   materialized is relaid — at t≈0 that is exactly the visible set."
+  [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (let [env (lay/make-env c (.-itemCount rs))
+        env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+        geo-fn (:geometry layout)
+        item-count (:item-count env)
+        ^r/RenderBox fc (.-firstChild rs)
+        ^double lead-off (if fc (double (:offset (geo-fn env (.indexOf rs fc)))) 0.0)
+        ^double trail-end
+        (loop [child fc ^double trail lead-off]
+          (if child
+            (let [^r/RenderBox ch child
+                  ^int i (.indexOf rs ch)
+                  gm (geo-fn env i)]
+              (.layout ch (geo-constraints env gm))
+              (set-layout-offset! ch (double (:offset gm)))
+              (set-cross-axis-offset! ch (double (:cross gm)))
+              (recur (.childAfter rs ch)
+                     (double (math/max trail (+ (double (:offset gm))
+                                                (double (:main-extent gm)))))))
+            trail))
+        ^double total (if item-count
+                        (double ((:max-extent layout) env (int item-count)))
+                        trail-end)
+        ^double paint-extent (.calculatePaintOffset rs c
+                              .from (math/min (.-scrollOffset c) lead-off) .to trail-end)
+        ^double cache-extent (.calculateCacheOffset rs c .from lead-off .to trail-end)]
+    (.-geometry! rs
+      (r/SliverGeometry
+       .scrollExtent total
+       .paintExtent paint-extent
+       .maxPaintExtent total
+       .cacheExtent cache-extent
+       .hasVisualOverflow (or (> total paint-extent) (pos? (.-scrollOffset c)))))))
+
+;; @ai-generated(solo)
+(defn- segment-start!
+  "First pass of a new segment (docs §4.1/§6). Freezes the OLD committed rects as
+   the `from` side, captures the target from the NEW tree, builds the keyed
+   segment tween and displays THIS pass at `from` (t≈0) so nothing jumps to target:
+     a. fromRects := the OLD committed rects (this pass has not committed yet).
+     b. fromExtent := the scroll extent reported last pass (read before overwrite).
+     c. to-src := exact indexed math for an indexed target; for a flow target,
+        run the flow driver so the inserted cells are created/measured at their
+        natural target, then freeze that window as an index-addressed source.
+     d. build the keyed tween; record segGen := curGen.
+     e. display at `from`: the indexed driver over the tween (which also creates
+        the new target window) for an indexed target; a manager-free relay for a
+        flow target (its capture walk already drove the lifecycle once)."
+  [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  (let [layout (.-layoutModel rs)
+        indexed (some? (:geometry layout))
+        from-rects (committed-rects rs)                                   ; (a)
+        ^double from-extent (if-let [^r/SliverGeometry g (.-geometry rs)] ; (b)
+                              (.-scrollExtent g) 0.0)
+        to-src (if indexed                                               ; (c)
+                 (tw/indexed-frame-source layout)
+                 (do (flow-layout! rs layout c)
+                     (tw/frozen-frame-source (snapshot-window rs))))
+        seg-tween (tw/keyed-tween-layout                                 ; (d)
+                   [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
+                   (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
+                   {:entering (.-entering rs) :exiting (.-exiting rs)})]
+    (.-fromRects! rs from-rects)
+    (.-fromExtent! rs from-extent)
+    (.-segTween! rs seg-tween)
+    (.-segGen! rs (.-curGen rs))
+    (if indexed                                                          ; (e)
+      (indexed-layout! rs seg-tween c)
+      (from-relay! rs seg-tween c))))
+
+;; ============================================================
 ;; Widget
 ;; ============================================================
 
 (deftype CollectionSliverWidget
   [^w/SliverChildDelegate del
    ^w/Key? k
-   layoutImpl   ;; layout map
+   layoutImpl   ;; PLAIN target layout map (never a pre-built tween)
    itemCount    ;; int? — nil = infinite
-   ^a/Animation? tweenAnim  ;; non-nil while a layout morph plays
+   ^a/Animation? tweenAnim  ;; non-nil while a segment plays
+   ^int segGen  ;; host's segment generation, bumped once per segment
+   entering     ;; set of keys wiping open this segment
+   exiting      ;; set of keys wiping shut this segment
    keyOf]       ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
-          rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0)]
+          rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-render! render-object layoutImpl itemCount tweenAnim keyOf)))
+    (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf)))
 
 (defn ^w/Widget collection-sliver-widget
   "Creates the collection sliver from a builder, item count (nil = infinite),
-   a layout map and options {:key :find-child-index :auto-keep-alive
-   :repaint-boundaries :semantic-indexes :tween-anim :key-of}."
+   the PLAIN target layout map and options {:key :find-child-index :auto-keep-alive
+   :repaint-boundaries :semantic-indexes :tween-anim :seg-gen :entering :exiting
+   :key-of}. The engine builds the segment tween itself (see update-render!):
+   :tween-anim is the segment Animation, :seg-gen an int bumped once per segment
+   (default 0), :entering/:exiting the enter/exit key sets (default empty)."
   [item-builder item-count layout-impl opts]
   (CollectionSliverWidget
    (w/SliverChildBuilderDelegate
@@ -798,4 +919,7 @@
    layout-impl
    item-count
    (:tween-anim opts)
+   (int (:seg-gen opts 0))
+   (:entering opts #{})
+   (:exiting opts #{})
    (:key-of opts)))
