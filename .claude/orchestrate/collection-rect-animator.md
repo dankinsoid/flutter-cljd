@@ -64,6 +64,19 @@ non-goal; box shares the core minus windowing+correction). Every subagent reads 
 - 2026-07-13: enter/exit realized in the combinator via `entering`/`exiting` key
   sets → from/to becomes a 0-main-extent version of the target frame (grow/shrink),
   so it rides the same keyed-tween. (by: coordinator)
+- 2026-07-13 PIVOT (design flaw found by Step-4 subagent): a host-built `to-src`
+  reads the OLD render tree (new/inserted cells aren't built until the next build),
+  so flow insert/remove/shuffle MIS-KEYS. FIX: the ENGINE captures `to-src` from the
+  NEW tree on the segment's first pass; the host only triggers. Reuses Step-2
+  committed/union/correction. Design note §4.1/§6/§7 updated. (by: user-approved)
+- 2026-07-13: gen-change pass mechanism — for a FLOW target the new inserted cells
+  only materialize when a real driver walks them, so the engine runs the normal flow
+  driver once to create+measure them, snapshots that as `to-src` (index-frozen over
+  the NEW indices), then re-lays attached children at `from` (t≈0) so there's no
+  target-flash. INDEXED target: `to-src` = indexed-frame-source (pure math, no
+  pre-walk). Subsequent passes run the indexed keyed-tween driver. Fallback if the
+  flow lifecycle entanglement is too risky: LIVE-TARGET (measure natural + tight-lerp
+  each pass) — correct but defers constraint-1 zero-relayout. (by: coordinator)
 
 ## Open questions
 - [ ] Enter/exit content-collapse wrap: confirm ClipRect+OverflowBox(final,align-start)
@@ -75,15 +88,16 @@ non-goal; box shares the core minus windowing+correction). Every subagent reads 
         unit tests — done (+175 green, committed)
 - [x] 2. Sliver engine: committed map + key-of plumbing + union windowing +
         anchor-delta correction (gated on tweenAnim) — done (bin/check clean, 179 green)
-- [ ] 3. Enter/exit primitives (prereqs for host): (a) extend keyed-tween-layout with
-        `entering`/`exiting` key-sets → 0-main-extent from/to (pure+tests); (b) add
-        ClipRect+OverflowBox collapse-wrap helper to animation.cljd (keeps custom
-        :builder) — agent: general-purpose
-- [ ] 4. Sliver host rewrite (sliver_collection.cljd): always pass key-of; trigger the
-        segment on ANY move-causing update (data/layout/count/axis); build keyed-tween
-        (to-src, committed from engine, from-extent, entering/exiting from diff); wrap
-        enter/exit content via the collapse helper; retire maybe-layout-tween!/:id
-        detection AND the MoveRender move wiring — agent: general-purpose
+- [x] 3. Enter/exit primitives: keyed-tween-layout 7-arg {:entering :exiting} +
+        collapse-wrap in animation.cljd — done (+182 green, bin/check clean, committed)
+- [ ] 4E. Engine segment (render.cljd): on gen change capture to-src from the NEW tree
+        (flow: run driver→snapshot; grid: indexed math), freeze from/from-extent, build
+        keyed-tween internally, relay at from (t≈0); subsequent passes run the indexed
+        keyed-tween driver. Fallback: live-target. — agent: general-purpose
+- [ ] 4H. Sliver host (sliver_collection.cljd): trigger segment (gen++/forward) on ANY
+        move-causing update; diff→entering/exiting sets; pass plain layout + tween-anim
+        + gen + entering/exiting + key-of; wrap enter/exit content via collapse-wrap;
+        retire maybe-layout-tween!/:id + MoveRender wiring — agent: general-purpose
 - [ ] 5. Retire dead code: MoveRender/MoveLayer/capture-positions/visual-position from
         animation.cljd; SizeTransition default size driver — agent: general-purpose
 - [ ] 6. Box host: RenderCollectionBox committed/from/gen + content-size animating

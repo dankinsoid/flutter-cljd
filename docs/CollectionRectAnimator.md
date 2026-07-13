@@ -91,6 +91,28 @@ The natural-size measurement therefore happens **once per segment** (at start /
 retarget), not per tick — this is what lets a stable-size cell reach
 zero-relayout per tick during the glide.
 
+### 4.1 The target is captured by the ENGINE, from the NEW tree (critical)
+
+The target must be measured **after** the widget update, over the *new* children —
+and only the engine's first layout pass has that tree. At `didUpdateWidget` time the
+render tree still holds the **old** children; the new/inserted cells aren't built or
+laid out yet. So the host **cannot** build the target (a v1 mistake we don't inherit:
+v1 got away with a host-built target only because its morph fired on a pure layout
+swap with *unchanged data* — same cells, so the old tree measured the right sizes,
+and it explicitly *snapped* on any simultaneous data change).
+
+For v2, where a data change (flow insert/remove/shuffle) *is* animated, a
+host-built-from-old-tree target mis-keys: the inserted cell isn't measurable, and the
+survivors' new positions aren't derivable from the old sequence. Therefore:
+
+**The engine captures the target on the first pass of a segment, from the new tree,
+keyed.** On the gen-change pass the new children are attached; the engine runs its
+normal driver's measurement (flow: dry-project the new window under the target
+layout; indexed: exact math) to produce the target frames, freezes them, then lays
+this pass at `t≈0` (= `from`, no jump). Because the target is captured from the new
+tree in the new index space, it aligns byte-for-byte with what the engine queries,
+and keying both sides fixes shuffle alignment for free.
+
 ## 5. State on the render object
 
 ```
@@ -120,18 +142,24 @@ correct behavior for a cell that shuffles in from far off-screen.
 
 ## 6. Segment lifecycle (jump-free retarget — constraint 5)
 
-The host owns the `AnimationController` (needs a vsync) + curve; the render object
-owns the clock's *effect*. On any `didUpdateWidget` where a cell could have moved
-(data changed, layout changed, count changed):
+The host owns the `AnimationController` (needs a vsync) + curve and the *trigger*;
+the render object owns the target capture and the clock's *effect*. On any
+`didUpdateWidget` where a cell could have moved (data changed, layout changed, count
+changed), the host bumps `gen`, calls `controller.forward(from: 0)`, and hands the
+engine the plain target layout + the animation + `gen` + the `entering`/`exiting`
+key sets + `key-of`. It builds **no** target (see §4.1). Then:
 
-1. Host bumps `gen` and calls `controller.forward(from: 0)`.
-2. First layout pass of the new segment sees `gen` changed ⇒ **freeze**
+1. First layout pass of the new segment sees `gen` changed ⇒ **freeze**
    `from := committed` (the currently displayed rects — which, mid-previous-glide,
-   are the interpolated rects). This is the v1 retarget trick, now keyed: re-aiming
-   from the interpolated position is automatically jump-free.
-3. Every pass: `displayed = lerp(from[key], target[index], t)`, lay at tight
-   constraints from `displayed` size, set offset; `committed[key] := displayed`.
-4. At `t=1`: `finish` — drop animating mode, settle to resting.
+   are the interpolated rects; jump-free retarget) and **capture the target** from
+   the new tree (§4.1): `to-src` = a frame source over the target layout (indexed
+   math, or a dry-projection of the new flow window), plus `from-extent` = the
+   scroll extent at segment start. The engine builds the keyed lerp
+   (`keyed-tween-layout`) internally and uses it as its layout for the segment.
+2. Every pass: `displayed = lerp(from[key], to-src(index), t)` keyed via
+   `key-of(index)`, lay at tight constraints from `displayed` size, set offset;
+   `committed[key] := displayed`.
+3. At `t=1`: `finish` — host drops animating mode, engine settles to resting.
 
 No `capture-positions!` step is needed (v1 needed it because `MoveRender` read
 screen coords lazily on paint); the engine already holds content-space `committed`
@@ -141,11 +169,12 @@ continuously, so freezing `from := committed` is a map copy.
 
 Which indices to materialize while animating = **union** of:
 
-- **target window** — `first/last-index` of the live layout over `[ws, we]`
-  (exact, as today), and
-- **committed cells overlapping `[ws, we]`** — iterate the `committed`/`from` map
-  (bounded by visible history, *not* full data) and include any key whose frozen
-  `from` rect overlaps the window.
+- **target window** — `first/last-index` of the `to-src` over `[ws, we]`, and
+- **attached children still overlapping `[ws, we]`** — any currently-attached cell
+  whose laid (lerped) content-space rect still overlaps the window is kept, even if
+  its index falls outside the target window. (Implemented driver-side as
+  `widen-window!`, since the keyed `from`/`committed` maps have no cheap
+  index-inverse; the attached set is the practical, bounded stand-in.)
 
 The union makes a cell leaving the window under the new layout, or entering it,
 materialize for the whole glide instead of popping at an edge. A cell whose target
