@@ -38,7 +38,7 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare flow-layout! indexed-layout!)
+(declare flow-layout! indexed-layout! commit-pass!)
 
 ;; --- Render object ---
 
@@ -51,7 +51,10 @@
    ^:mutable ^int cacheFirst      ;; absolute index of cache[0]
    ^:mutable baseState    ;; flow state before cache[0]
    ^:mutable ^a/Animation? tweenAnim   ;; drives per-tick relayout during a layout morph
-   ^:mutable tweenListener]            ;; the listener registered on tweenAnim (for removal)
+   ^:mutable tweenListener            ;; the listener registered on tweenAnim (for removal)
+   ^:mutable keyOf         ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
+   ^:mutable committed     ;; {key -> rect+ :seen} content-space; persists across child GC
+   ^:mutable ^int passTick] ;; monotonic layout-pass counter (drives committed pruning)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -72,13 +75,123 @@
         (.-baseState! this nil))
       (if (:geometry (.-layoutModel this))
         (indexed-layout! this (.-layoutModel this) c)
-        (flow-layout! this (.-layoutModel this) c))))
+        (flow-layout! this (.-layoutModel this) c))
+      (.-passTick! this (inc (.-passTick this)))
+      (commit-pass! this (lay/make-env c (.-itemCount this)))))
 
   (dispose [^CollectionRenderSliver this]
     (when-let [l (.-tweenListener this)]
       (when-let [^a/Animation anim (.-tweenAnim this)]
         (.removeListener anim l)))
     (.dispose ^super this)))
+
+;; --- keyed rect commit (v2 persistent {key -> content-space rect}) ---
+
+(defn- key-for
+  "Animation key of index `i`: the host's key-of closure, or the index itself
+   when no key-of was supplied."
+  [^CollectionRenderSliver rs ^int i]
+  (if-let [kf (.-keyOf rs)] (kf i) i))
+
+(defn- child-rect
+  "Content-space rect {:offset :cross :main-extent :cross-extent} of an attached,
+   sized child from its parentData offsets and measured size."
+  [env ^r/RenderBox child]
+  (let [^r/SliverGridParentData pd (.-parentData child)
+        ^ui/Size size (.-size child)]
+    {:offset (double (or (.-layoutOffset pd) 0.0))
+     :cross (double (or (.-crossAxisOffset pd) 0.0))
+     :main-extent (lay/size-main env size)
+     :cross-extent (lay/size-cross env size)}))
+
+(def ^:private committed-max-age
+  "Passes a key may go untouched before its committed rect is pruned, bounding
+   the map so an unbounded feed can't leak history."
+  600)
+
+(defn prune-committed
+  "Drops committed entries whose :seen stamp is older than `max-age` passes. Pure."
+  [committed ^int pass-tick ^int max-age]
+  (reduce-kv (fn [m k v]
+               (if (> (- pass-tick (int (:seen v))) max-age)
+                 m
+                 (assoc m k v)))
+             {} committed))
+
+(defn- commit-pass!
+  "Upserts committed[key] = this pass's content-space rect (+ :seen stamp) for
+   every attached, sized child — scrolled-off keys are kept — then prunes stale
+   ones. Runs once per performLayout, after the driver returns."
+  [^CollectionRenderSliver rs env]
+  (let [^int tick (.-passTick rs)
+        m (loop [child (.-firstChild rs) m (.-committed rs)]
+            (if child
+              (let [^r/RenderBox ch child]
+                (recur (.childAfter rs ch)
+                       (if (.-hasSize ch)
+                         (assoc m (key-for rs (.indexOf rs ch))
+                                (assoc (child-rect env ch) :seen tick))
+                         m)))
+              m))]
+    (.-committed! rs (prune-committed m tick committed-max-age))))
+
+(defn committed-rects
+  "Snapshot of committed with :seen stamps stripped — {key -> rect} content
+   space, for the host to freeze as a segment's `from` side at (re)start."
+  [^CollectionRenderSliver rs]
+  (reduce-kv (fn [m k v] (assoc m k (dissoc v :seen))) {} (.-committed rs)))
+
+(defn widen-window-indices
+  "Union windowing (pure): extend the target [first-index, target-last] window to
+   keep any attached cell still overlapping [ws, we] under its last committed
+   rect, so a cell leaving/entering under a new layout glides through instead of
+   popping. `cells` are {:index :offset :main-extent}; `target-last` may be nil
+   (unbounded trailing). Returns [first-index target-last]."
+  [^int first-index target-last cells ^double ws ^double we]
+  (reduce (fn [[^int fi tl] c]
+            (let [^int ci (int (:index c))
+                  ^double o (double (:offset c))
+                  ^double m (double (:main-extent c))
+                  overlaps (and (< o we) (> (+ o m) ws))]
+              [(if (and overlaps (< ci fi)) ci fi)
+               (if (and overlaps tl (> ci ^int tl)) ci tl)]))
+          [first-index target-last] cells))
+
+(defn- widen-window!
+  "widen-window-indices over this sliver's attached children, keyed via key-of
+   into the committed map for each child's last content-space rect."
+  [^CollectionRenderSliver rs ^int first-index target-last ^double ws ^double we]
+  (let [committed (.-committed rs)
+        cells (loop [child (.-firstChild rs) out []]
+                (if child
+                  (let [^r/RenderBox ch child
+                        rect (get committed (key-for rs (.indexOf rs ch)))]
+                    (recur (.childAfter rs ch)
+                           (if rect
+                             (conj out {:index (.indexOf rs ch)
+                                        :offset (:offset rect)
+                                        :main-extent (:main-extent rect)})
+                             out)))
+                  out))]
+    (widen-window-indices first-index target-last cells ws we)))
+
+(defn- indexed-anchor-cells
+  "Cells for tw/anchor-delta this pass: each attached child's committed OLD
+   offset/main (last pass) paired with its freshly-laid NEW content-space offset."
+  [^CollectionRenderSliver rs]
+  (let [committed (.-committed rs)]
+    (loop [child (.-firstChild rs) out []]
+      (if child
+        (let [^r/RenderBox ch child
+              ^r/SliverGridParentData pd (.-parentData ch)
+              old (get committed (key-for rs (.indexOf rs ch)))]
+          (recur (.childAfter rs ch)
+                 (if old
+                   (conj out {:old-off (double (:offset old))
+                              :old-main (double (:main-extent old))
+                              :new-off (double (or (.-layoutOffset pd) 0.0))})
+                   out)))
+        out))))
 
 (defn- set-tween-anim!
   "Registers/updates the per-tick relayout listener. While a layout morph runs
@@ -99,7 +212,7 @@
 (defn update-render!
   "Applies a new layout / item count / morph animation from updateRenderObject.
    A changed layout :id invalidates the flow geometry cache."
-  [^CollectionRenderSliver rs new-layout item-count ^a/Animation? tween-anim]
+  [^CollectionRenderSliver rs new-layout item-count ^a/Animation? tween-anim key-of]
   (let [old (.-layoutModel rs)
         layout-changed (or (nil? (:id new-layout))
                            (not= (:id old) (:id new-layout)))
@@ -110,6 +223,7 @@
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs new-layout)
     (.-itemCount! rs item-count)
+    (.-keyOf! rs key-of)
     (set-tween-anim! rs tween-anim)
     (when (or layout-changed count-changed)
       (.markNeedsLayout rs))))
@@ -532,12 +646,18 @@
           ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
           ^double we (+ ws (.-remainingCacheExtent c))
           item-count (:item-count env)
-          ^int first-index (let [^int fi (int ((:first-index layout) env ws))]
-                             (if (and item-count (pos? ^int item-count))
-                               (math/max 0 (math/min fi (dec ^int item-count)))
-                               (math/max 0 fi)))
-          target-last (when (.-isFinite we)
-                        (int ((:last-index layout) env we)))]
+          ^int first-index0 (let [^int fi (int ((:first-index layout) env ws))]
+                              (if (and item-count (pos? ^int item-count))
+                                (math/max 0 (math/min fi (dec ^int item-count)))
+                                (math/max 0 fi)))
+          target-last0 (when (.-isFinite we)
+                         (int ((:last-index layout) env we)))
+          ;; Union windowing (animating only): keep attached cells still
+          ;; overlapping [ws, we] so a cell leaving/entering the new layout glides.
+          [^int first-index target-last]
+          (if (.-tweenAnim rs)
+            (widen-window! rs first-index0 target-last0 ws we)
+            [first-index0 target-last0])]
       ;; GC by index range
       (if (.-firstChild rs)
         (let [^int leading (.calculateLeadingGarbage rs .firstIndex first-index)
@@ -616,19 +736,28 @@
                   .from (math/min (.-scrollOffset c) leading-off)
                   .to trail-end)
                 ^double cache-extent
-                (.calculateCacheOffset rs c .from leading-off .to trail-end)]
-            (.-geometry! rs
-              (r/SliverGeometry
-               .scrollExtent total
-               .paintExtent paint-extent
-               .maxPaintExtent total
-               .cacheExtent cache-extent
-               .hasVisualOverflow (or (> total paint-extent)
-                                      (pos? (.-scrollOffset c))
-                                      (not (zero? (.-overlap c))))))
-            (when (or reached (= total trail-end))
-              (.setDidUnderflow mgr true))
-            (.didFinishLayout mgr)))))))
+                (.calculateCacheOffset rs c .from leading-off .to trail-end)
+                ;; Scroll correction (animating only): the indexed path writes
+                ;; geometry directly, so when content above collapses mid-morph
+                ;; the anchored child jumps unless we follow it. One per pass.
+                corr (when (.-tweenAnim rs)
+                       (tw/anchor-delta (indexed-anchor-cells rs) (.-scrollOffset c)))]
+            (if corr
+              (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
+                  (.didFinishLayout mgr))
+              (do
+                (.-geometry! rs
+                  (r/SliverGeometry
+                   .scrollExtent total
+                   .paintExtent paint-extent
+                   .maxPaintExtent total
+                   .cacheExtent cache-extent
+                   .hasVisualOverflow (or (> total paint-extent)
+                                          (pos? (.-scrollOffset c))
+                                          (not (zero? (.-overlap c))))))
+                (when (or reached (= total trail-end))
+                  (.setDidUnderflow mgr true))
+                (.didFinishLayout mgr)))))))))
 
 ;; ============================================================
 ;; Widget
@@ -639,22 +768,23 @@
    ^w/Key? k
    layoutImpl   ;; layout map
    itemCount    ;; int? — nil = infinite
-   ^a/Animation? tweenAnim]  ;; non-nil while a layout morph plays
+   ^a/Animation? tweenAnim  ;; non-nil while a layout morph plays
+   keyOf]       ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
-          rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil)]
+          rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-render! render-object layoutImpl itemCount tweenAnim)))
+    (update-render! render-object layoutImpl itemCount tweenAnim keyOf)))
 
 (defn ^w/Widget collection-sliver-widget
   "Creates the collection sliver from a builder, item count (nil = infinite),
    a layout map and options {:key :find-child-index :auto-keep-alive
-   :repaint-boundaries :semantic-indexes :tween-anim}."
+   :repaint-boundaries :semantic-indexes :tween-anim :key-of}."
   [item-builder item-count layout-impl opts]
   (CollectionSliverWidget
    (w/SliverChildBuilderDelegate
@@ -667,4 +797,5 @@
    (:key opts)
    layout-impl
    item-count
-   (:tween-anim opts)))
+   (:tween-anim opts)
+   (:key-of opts)))

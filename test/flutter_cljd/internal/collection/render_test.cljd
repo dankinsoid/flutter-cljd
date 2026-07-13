@@ -1,0 +1,58 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.render-test
+  "Pure-fn coverage for the v2 keyed rect engine (render.cljd). The rect-commit
+   and anchor-cell walks need a live render tree, so they are exercised only
+   through their extracted pure kernels: prune-committed and widen-window-indices."
+  (:require [clojure.test :refer [deftest is testing]]
+            [flutter-cljd.internal.collection.render :as render]))
+
+;; --- prune-committed ---
+
+(deftest prune-committed-drops-only-stale
+  (let [m {:a {:offset 0.0 :seen 100}
+           :b {:offset 1.0 :seen 500}
+           :c {:offset 2.0 :seen 700}}]
+    (testing "entries older than max-age are dropped, fresher ones kept"
+      ;; pass-tick 701, max-age 600 ⇒ :a age 601 pruned, :b/:c kept
+      (let [p (render/prune-committed m 701 600)]
+        (is (= #{:b :c} (set (keys p))))
+        (is (nil? (:a p)))
+        (is (= (:b m) (:b p)))))
+    (testing "boundary is strict >: exactly max-age old survives"
+      ;; :a seen 100, pass-tick 700 ⇒ age 600, not > 600 ⇒ kept
+      (is (contains? (render/prune-committed m 700 600) :a))
+      ;; pass-tick 701 ⇒ age 601 > 600 ⇒ pruned
+      (is (not (contains? (render/prune-committed m 701 600) :a))))
+    (testing "nothing stale ⇒ map unchanged"
+      (is (= m (render/prune-committed m 700 10000))))))
+
+;; --- widen-window-indices ---
+
+(defn- cell [i off main] {:index i :offset (double off) :main-extent (double main)})
+
+(deftest widen-window-keeps-overlapping-attached
+  ;; window [ws=100, we=300]; target index window [2, 4]
+  (let [ws 100.0 we 300.0
+        ;; index 0 sits at [50,150] — overlaps below the target window
+        ;; index 6 sits at [280,380] — overlaps above the target window
+        ;; index 9 sits at [500,600] — fully outside, must NOT widen
+        cells [(cell 0 50 100) (cell 2 150 100) (cell 4 250 100)
+               (cell 6 280 100) (cell 9 500 100)]]
+    (testing "first-index widens down to the lowest overlapping attached index"
+      (is (= [0 6] (render/widen-window-indices 2 4 cells ws we))))
+    (testing "a cell fully outside the window never widens"
+      (is (= [2 4] (render/widen-window-indices
+                    2 4 [(cell 9 500 100) (cell 11 700 100)] ws we))))
+    (testing "no attached cells ⇒ window unchanged"
+      (is (= [2 4] (render/widen-window-indices 2 4 [] ws we))))))
+
+(deftest widen-window-nil-target-last-unbounded
+  ;; target-last nil (infinite trailing): never widen the (already unbounded) tail,
+  ;; but leading widening still applies.
+  (let [cells [(cell 0 50 100) (cell 6 280 100)]]
+    (is (= [0 nil] (render/widen-window-indices 3 nil cells 100.0 300.0)))))
+
+(deftest widen-window-never-narrows
+  ;; an overlapping cell already inside [first-index, target-last] leaves it be
+  (let [cells [(cell 3 200 100)]]
+    (is (= [2 5] (render/widen-window-indices 2 5 cells 100.0 300.0)))))
