@@ -151,6 +151,8 @@
      (padding (insets 8) child) ;; Padding(padding: EdgeInsets.all(8))
      ```
      If the padding argument is a map, the keys :all, :left, :right, :start, :end, :vertical, :horizontal, :top, and :bottom are used to specify the padding.
-     If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding."
+     If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding.
+
+     Unlike Flutter's built-in Padding, negative insets are allowed: a negative edge inflates the child's constraints on that axis and shifts it past the box's edge; the box size stays clamped to non-negative."
   ([value child]
    (AnyPadding (t/insets value) nil child)))

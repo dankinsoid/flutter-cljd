@@ -1680,7 +1680,9 @@ Examples:
 ```
 
 If the padding argument is a map, the keys `:all`, `:left`, `:right`, `:start`, `:end`, `:vertical`, `:horizontal`, `:top`, and `:bottom` are used to specify the padding.
-If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding."
+If the padding argument is a vector of four numbers, the numbers are used for the left, top, right, and bottom padding.
+
+Unlike Flutter's built-in `Padding`, negative insets are allowed: a negative edge inflates the child's constraints on that axis and shifts it past the box's edge, letting the child overflow its parent. The resulting box size is still clamped to be non-negative."
   ([arg0 & args]
    (cond
      (keyword? arg0)
