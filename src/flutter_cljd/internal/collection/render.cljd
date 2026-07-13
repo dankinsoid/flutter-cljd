@@ -62,7 +62,9 @@
    ^:mutable ^double fromExtent ;; scroll extent frozen at segment start
    ^:mutable entering       ;; set of keys wiping open this segment
    ^:mutable exiting        ;; set of keys wiping shut this segment
-   ^:mutable segTween]      ;; the built keyed-tween-layout for the current segment, or nil
+   ^:mutable segTween      ;; the built keyed-tween-layout for the current segment, or nil
+   ^:mutable ^bool segCorrect] ;; emit scroll correction this segment? only when total extent changed
+                               ;; (insert/remove/morph) — NOT on a pure reorder/shuffle (extent stable)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -773,7 +775,7 @@
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses mid-morph
                 ;; the anchored child jumps unless we follow it. One per pass.
-                corr (when (.-tweenAnim rs)
+                corr (when (and (.-tweenAnim rs) (.-segCorrect rs))
                        (tw/anchor-delta (indexed-anchor-cells rs) (.-scrollOffset c)))]
             (if corr
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
@@ -862,6 +864,18 @@
                  (tw/indexed-frame-source layout)
                  (do (flow-layout! rs layout c)
                      (tw/frozen-frame-source (snapshot-window rs))))
+        ;; correct scroll only when the TOTAL extent changed (content added/removed/
+        ;; morphed above the anchor). A pure reorder/shuffle keeps the extent (grid
+        ;; math is index-based; a list's summed height is order-independent), so the
+        ;; per-pass anchor-follow would otherwise chase the shuffled anchor and drift.
+        ^double target-extent (if indexed
+                                (let [env (lay/make-env c (.-itemCount rs))
+                                      env (if-let [prep (:prepare layout)]
+                                            (assoc env :ctx (prep env)) env)
+                                      ^int n (int (or (:item-count env) 0))]
+                                  (if (pos? n) (double ((:max-extent layout) env n)) 0.0))
+                                (if-let [^r/SliverGeometry g (.-geometry rs)]
+                                  (.-scrollExtent g) 0.0))
         seg-tween (tw/keyed-tween-layout                                 ; (d)
                    [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
                    (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
@@ -869,6 +883,7 @@
     (.-fromRects! rs from-rects)
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
+    (.-segCorrect! rs (< 1.0 (.abs (- from-extent target-extent))))
     (.-segGen! rs (.-curGen rs))
     (if indexed                                                          ; (e)
       (indexed-layout! rs seg-tween c)
@@ -893,7 +908,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil)]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil false)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
