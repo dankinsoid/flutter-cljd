@@ -99,11 +99,12 @@
      :clip (t/clip (args :clip m/Clip.none))}))
 
 (defn- ^vec-math/Matrix4? lerp-transform [a b tt]
-  (cond
-    (and (some? a) (some? b)) (.lerp (m/Matrix4Tween .begin a .end b) tt)
-    ;; A transform appearing/disappearing has no meaningful interpolation; snap.
-    (< tt 0.5) a
-    :else b))
+  ;; A transform appearing/disappearing interpolates against identity, so it
+  ;; eases in/out smoothly rather than snapping. nil on both sides stays nil.
+  (when (or (some? a) (some? b))
+    (.lerp (m/Matrix4Tween .begin (or a (vec-math/Matrix4.identity))
+                           .end (or b (vec-math/Matrix4.identity)))
+           tt)))
 
 ;; `f/CustomTween` calls its lerp fn as `(f begin end)` to obtain a `t -> value`
 ;; closure, so this is 2-arg returning a 1-arg fn — not a 3-arg `(a b t)`.
