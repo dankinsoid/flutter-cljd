@@ -130,6 +130,42 @@
       .removeBottom (contains? edges :bottom)
       .child child))))
 
+(defn parse-modify
+  "Parses `(side… f child)` into `[edges f child]`. Edges use the same keys as
+   `parse-sides` and default to all four; `f` is the second-to-last argument and
+   `child` the last."
+  [args]
+  (loop [vs args, edges #{}, edges? false]
+    (let [a (first vs)]
+      (cond
+        (keyword? a)
+        (recur (next vs) (into edges (edges-of a)) true)
+
+        (vector? a)
+        (recur (next vs) (reduce #(into %1 (edges-of %2)) edges a) true)
+
+        :else
+        (do (assert (and (some? a) (some? (second vs)) (empty? (nnext vs)))
+                    (str "modify-safe-area: expected (side… f child), got trailing " (vec vs)))
+            [(if edges? edges all-edges) a (second vs)])))))
+
+(defn ^w/Widget modify-safe-area*
+  "See `flutter-cljd.widgets/modify-safe-area`. Applies `f` (a `double -> double`)
+   to the `MediaQuery` padding on each selected edge, leaving the rest untouched."
+  [edges f child]
+  (w/Builder
+   .builder
+   (fn [^w/BuildContext ctx]
+     (let [^w/MediaQueryData mq (w/MediaQuery.of ctx)
+           ^w/EdgeInsets pad (.-padding mq)
+           edge (fn [k ^double v] (if (contains? edges k) (double (f v)) v))
+           ^w/EdgeInsets npad (w/EdgeInsets.only
+                               .left (edge :left (.-left pad))
+                               .top (edge :top (.-top pad))
+                               .right (edge :right (.-right pad))
+                               .bottom (edge :bottom (.-bottom pad)))]
+       (w/MediaQuery .data (.copyWith mq .padding npad) .child child)))))
+
 (defn ^w/Widget restore-safe-area*
   "See `flutter-cljd.widgets/restore-safe-area`."
   [edges child]

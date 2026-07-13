@@ -213,6 +213,28 @@ Examples:
     (sa/remove-safe-area* edges child)))
 
 ;; @ai-generated(guided)
+(defn ^w/Widget modify-safe-area
+  "Wraps `child` in a `MediaQuery` whose safe-area padding on the chosen edges is
+   run through `f`, a `double -> double` mapping the current inset to a new one.
+   Untouched edges pass through unchanged. Unlike `safe-area`, this renders
+   nothing itself — it only changes what a descendant `safe-area` insets by, so it
+   sits above one. Sides use the same keys as `safe-area`; all four by default.
+
+   `f` receives the edge's current `MediaQuery` padding (device chrome, minus any
+   already consumed by an ancestor `safe-area`) and returns the value descendants
+   see. It generalises `remove-safe-area` (`(constantly 0.0)`); the common use is
+   reserving room for app chrome so content clears both the system inset and a bar:
+
+   ```clojure
+   (modify-safe-area :bottom #(+ % 42) (safe-area child)) ;; chrome + 42 below
+   (modify-safe-area #(* % 0.5) (safe-area child))        ;; half the inset, all edges
+   (modify-safe-area :top (constantly 0.0) child)         ;; drop the top inset
+   ```"
+  [& args]
+  (let [[edges f child] (sa/parse-modify args)]
+    (sa/modify-safe-area* edges f child)))
+
+;; @ai-generated(guided)
 (defn ^w/Widget restore-safe-area
   "Re-injects the display's physical safe-area insets into the `MediaQuery` on the
    chosen edges, so a descendant `safe-area` insets from the screen edge again.
