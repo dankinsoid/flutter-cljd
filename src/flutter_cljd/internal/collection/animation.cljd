@@ -116,6 +116,26 @@
     (w/axisDirectionToAxis (.-axisDirection (.-position s)))
     w/Axis.vertical))
 
+;; @ai-generated(solo)
+(defn ^w/Widget collapse-wrap
+  "Wraps `child` so the engine can grow/shrink its outer rect along `axis`
+   without the content ever reflowing through intermediate sizes. OverflowBox
+   relaxes the MAIN axis to [0, ∞] (nil on the cross axis inherits the parent's
+   tight cross constraint), so the child lays out once at its NATURAL final size
+   regardless of the shrinking tight main constraint the engine feeds; ClipRect
+   reveals/hides it as the outer box grows/shrinks. Aligned to the START of the
+   main axis. Does NOT animate size — the engine owns the rect."
+  [^w/Axis axis ^w/Widget child]
+  (let [vertical? (identical? axis w/Axis.vertical)]
+    (w/ClipRect
+     .child (w/OverflowBox
+             .minWidth (when-not vertical? 0.0)
+             .maxWidth (when-not vertical? dc/double.infinity)
+             .minHeight (when vertical? 0.0)
+             .maxHeight (when vertical? dc/double.infinity)
+             .alignment (if vertical? w/Alignment.topCenter w/Alignment.centerLeft)
+             .child child))))
+
 (defn- default-inout-transition
   [^a/Animation animation ^w/Axis axis ^w/Widget child]
   (w/SizeTransition

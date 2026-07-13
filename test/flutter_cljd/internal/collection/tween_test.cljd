@@ -284,6 +284,45 @@
       (is (= 1 ((:first-index tl) env 150.0)))
       (is (= 2 ((:last-index tl) env 250.0))))))
 
+;; --- keyed combinator (v2): enter/exit wipe (main-extent collapse) ---
+
+(defn- keyed-geo* [to-src committed ^double from-extent key-of opts ^double t ^int i]
+  (let [tl (tw/keyed-tween-layout [:k t] to-src committed from-extent key-of (fn [] t) opts)]
+    ((:geometry tl) (with-ctx tl base-env) i)))
+
+(deftest keyed-tween-entering-key-wipes-open
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        key-of (fn [^int _i] :n)]
+    (testing "t=0: main-extent 0 at the target offset/cross (no committed history)"
+      (is (frame= (fr 40 20 0 100) (keyed-geo* to {} 180.0 key-of {:entering #{:n}} 0.0 0))))
+    (testing "t=0.5: half-open at the target position"
+      (is (frame= (fr 40 20 30 100) (keyed-geo* to {} 180.0 key-of {:entering #{:n}} 0.5 0))))
+    (testing "t=1: full target frame"
+      (is (frame= (fr 40 20 60 100) (keyed-geo* to {} 180.0 key-of {:entering #{:n}} 1.0 0))))))
+
+(deftest keyed-tween-exiting-key-wipes-shut
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:d (fr 40 20 60 100)}
+        key-of (fn [^int _i] :d)]
+    (testing "t=0: natural committed rect"
+      (is (frame= (fr 40 20 60 100) (keyed-geo* to committed 180.0 key-of {:exiting #{:d}} 0.0 0))))
+    (testing "t=1: main-extent 0, offset/cross unchanged (collapses in place)"
+      (is (frame= (fr 40 20 0 100) (keyed-geo* to committed 180.0 key-of {:exiting #{:d}} 1.0 0))))))
+
+(deftest keyed-tween-normal-key-unaffected-by-enter-exit-opts
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 0 0 60 100) (fr 60 0 60 100)]})
+        committed {:m (fr 200 0 100 200) :n (fr 400 0 40 80)}
+        key-of (fn [^int i] (if (zero? i) :m :n))
+        ;; :n is entering; index 0 carries the normal key :m and must lerp committed->to
+        opts {:entering #{:n}}]
+    (testing "the normal key still lerps its committed rect -> target"
+      (is (frame= (fr 200 0 100 200) (keyed-geo* to committed 300.0 key-of opts 0.0 0)))
+      (is (frame= (fr 100 0 80 150) (keyed-geo* to committed 300.0 key-of opts 0.5 0)))
+      (is (frame= (fr 0 0 60 100) (keyed-geo* to committed 300.0 key-of opts 1.0 0))))))
+
 (deftest tween-between-two-grids-endpoints-exact
   (let [g2 (lay/resolve-layout :grid {:columns 2 :rows {:size 50}})
         g3 (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})

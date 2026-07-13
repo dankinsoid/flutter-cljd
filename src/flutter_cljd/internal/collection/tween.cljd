@@ -194,6 +194,13 @@
 (defn ^:private zero-frame [env]
   {:offset 0.0 :cross 0.0 :main-extent 0.0 :cross-extent (double (:cross-extent env))})
 
+(defn ^:private zero-main
+  "Frame `fr` with its main-extent collapsed to 0, every other component kept —
+   the enter/exit endpoint where a cell has wiped shut at its target position.
+   nil passes through so an off-window target stays a no-opinion answer."
+  [fr]
+  (when fr (assoc fr :main-extent 0.0)))
+
 (defn tween-layout
   "The morph as an indexed layout map. `from-src`/`to-src` are frame sources;
    `progress` is a 0..1 thunk (already curved) read fresh every pass so the same
@@ -255,8 +262,17 @@
    t=1 ≡ the target. A key with no committed rect appears settled at its target
    at every t (no glide). Windowing passes through to-src only — the committed
    side is key-addressed with no cheap index inverse, so the driver, not this
-   map, unions in overlapping committed cells."
-  [id to-src committed ^double from-extent key-of progress]
+   map, unions in overlapping committed cells.
+
+   The 7-arg arity takes an `opts` map `{:entering <set> :exiting <set>}` naming
+   keys mid enter/exit. An entering key wipes open (main-extent 0 → full) at its
+   target rect; an exiting key wipes shut (natural → 0) in place. Only main-extent
+   collapses — offset/cross/cross-extent come from the target frame so the cell
+   stays put while it wipes."
+  ([id to-src committed ^double from-extent key-of progress]
+   (keyed-tween-layout id to-src committed from-extent key-of progress {}))
+  ([id to-src committed ^double from-extent key-of progress
+    {:keys [entering exiting] :or {entering #{} exiting #{}}}]
   (let [to-frame (:frame to-src)  to-first (:first-index to-src)
         to-last (:last-index to-src) to-ext (:extent to-src)
         to-prep (:prepare to-src)]
@@ -265,10 +281,15 @@
                 {:t (double (progress))
                  :to-ctx (to-prep env)})
      :geometry (fn [env ^int i]
-                 (let [ctx (:ctx env)]
-                   (or (lerp-frame (get committed (key-of i))
-                                   (to-frame env (:to-ctx ctx) i)
-                                   (double (:t ctx)))
+                 (let [ctx (:ctx env)
+                       key (key-of i)
+                       to (to-frame env (:to-ctx ctx) i)
+                       from (get committed key)
+                       [from* to*] (cond
+                                     (contains? entering key) [(zero-main to) to]
+                                     (contains? exiting key) [(or from to) (zero-main to)]
+                                     :else [from to])]
+                   (or (lerp-frame from* to* (double (:t ctx)))
                        (zero-frame env))))
      :first-index (fn [env ^double off]
                     (let [ctx (:ctx env)]
@@ -280,4 +301,4 @@
                    (let [ctx (:ctx env)]
                      (lerp from-extent
                            (double (or (to-ext env (:to-ctx ctx) n) 0.0))
-                           (double (:t ctx)))))}))
+                           (double (:t ctx)))))})))
