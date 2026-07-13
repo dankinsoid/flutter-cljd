@@ -100,6 +100,29 @@
                                                      (math/max 0.0 (.-vertical padding)))))
             nil))))
 
+  ;; Negative insets can drive the box's computed size below zero, at which
+  ;; point performLayout clamps it to 0 and the child overflows its box. Flag
+  ;; that (and only that) with Flutter's yellow/black overflow indicator plus a
+  ;; console report — the same treatment RenderFlex gives its overflow. Plain
+  ;; negative padding that keeps the size non-negative is an intended bleed and
+  ;; stays silent.
+  (paint [this context offset]
+    (.paint ^super this context offset)
+    (when f/kDebugMode
+      (when-let [child (.-child this)]
+        (let [^w/EdgeInsets padding (resolvedPadding this)
+              ^w/Size child-size (.-size child)
+              unclamped-width (+ (.-width child-size) (.-horizontal padding))
+              unclamped-height (+ (.-height child-size) (.-vertical padding))]
+          (when (or (< unclamped-width 0.0) (< unclamped-height 0.0))
+            (let [^r/BoxParentData child-parent-data (.-parentData child)
+                  ^w/Offset child-offset (.-offset child-parent-data)
+                  ^w/Size size (.-size this)
+                  container-rect (w/Rect.fromLTWH 0.0 0.0 (.-width size) (.-height size))
+                  child-rect (w/Rect.fromLTWH (.-dx child-offset) (.-dy child-offset)
+                                              (.-width child-size) (.-height child-size))]
+              (.paintOverflowIndicator this context offset container-rect child-rect)))))))
+
   (debugPaintSize [this context offset]
     (.debugPaintSize ^super this context offset)
     (when f/kDebugMode
@@ -112,7 +135,9 @@
   (debugFillProperties [this properties]
     (.debugFillProperties ^super this properties)
     (.add properties (f/DiagnosticsProperty. "padding" padding))
-    (.add properties (f/EnumProperty. "textDirection" textDirection .defaultValue nil))))
+    (.add properties (f/EnumProperty. "textDirection" textDirection .defaultValue nil)))
+
+  ^:mixin r/DebugOverflowIndicatorMixin)
 
   ;; Getters and setters
 (defn- setPadding [this value]
