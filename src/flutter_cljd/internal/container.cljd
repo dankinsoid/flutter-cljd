@@ -24,6 +24,20 @@
         (not= decoration (.-decoration ^DecorationClipper old))
         (not= textDirection (.-textDirection ^DecorationClipper old)))))
 
+(defn- ^m/Widget clip-box
+  "Wraps `child` in the clip requested by `clip`. With a decoration it clips to
+   the decoration's shape (rounded corners, etc.), matching Container. Without a
+   decoration — where Container asserts — it falls back to a plain rectangular
+   clip of the box bounds, which is what a bare `:clip` most naturally means
+   (e.g. to cut off a child pushed out by negative padding)."
+  [^m/Clip clip ^m/Decoration? decoration context ^m/Widget child]
+  (cond
+    (= clip m/Clip.none) child
+    (some? decoration)
+    (m/ClipPath .clipper (DecorationClipper (or (some-> context m/Directionality.maybeOf) ui/TextDirection.ltr) decoration)
+                .clipBehavior clip .child child)
+    :else (m/ClipRect .clipBehavior clip .child child)))
+
 (defn- ^m/EdgeInsetsGeometry? padding-including-decoration [^m/EdgeInsetsGeometry? padding ^m/Decoration? decoration]
   ;; Container folds the decoration's own padding (e.g. border width) into the
   ;; layout padding; the sum stays a single inset layer.
@@ -57,9 +71,8 @@
       (some? effective-padding)
       (->> (pd/padding* effective-padding))
 
-      (and (not= clip m/Clip.none) (some? decoration))
-      (->> (m/ClipPath .clipper (DecorationClipper (or (some-> context m/Directionality.maybeOf) ui/TextDirection.ltr) decoration)
-                       .clipBehavior clip .child))
+      (not= clip m/Clip.none)
+      (->> (clip-box clip decoration context))
 
       (some? decoration)
       (->> (m/DecoratedBox .decoration decoration .child))

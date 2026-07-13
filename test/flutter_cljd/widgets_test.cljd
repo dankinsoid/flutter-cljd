@@ -353,6 +353,19 @@
         (is (instance? m/DecoratedBox decorated))
         (is (= (.-color (.-decoration decorated)) (t/color :red)))))
 
+    (testing ":clip without a decoration falls back to a rectangular ClipRect"
+      (let [top (tree (f/container {:clip :hard-edge} (m/Text "Child")))]
+        ;; ConstrainedBox > ClipRect > child
+        (is (instance? m/ClipRect (.-child top)))
+        (is (= (.-clipBehavior (.-child top)) m/Clip.hardEdge))))
+
+    (testing ":clip with a decoration clips to the decoration shape"
+      (let [top (tree (f/container {:clip :anti-alias :color :red} (m/Text "Child")))
+            ;; ConstrainedBox > DecoratedBox > ClipPath
+            clip (.-child (.-child top))]
+        (is (instance? m/ClipPath clip))
+        (is (= (.-clipBehavior clip) m/Clip.antiAlias))))
+
     (testing "animated container builds a ValueAnimationBuilder"
       (is (instance? anim/ValueAnimationBuilder
                      (f/container {:color :red :animation {:dur 300}} (m/Text "Child")))))))
