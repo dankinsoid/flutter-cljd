@@ -1,0 +1,205 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.tween
+  "Layout-change morph for collection layouts — host-agnostic.
+
+   When the resolved layout changes (a different `:id` — list↔grid, a grid
+   column-count change, …) each item should glide from its old frame to its new
+   one, animating BOTH position and size. Size animates via real relayout: the
+   engine lays every child out at tight, interpolated constraints each tick, so
+   text reflows — it is not a paint-space scale.
+
+   The morph is expressed as a plain layout map (see collection.layout), so both
+   hosts consume it unchanged through the same drivers: the sliver engine
+   (collection.render) and the box (collection.box). A host is responsible only
+   for the imperative shell — detect the `:id` change, own the AnimationController
+   and invalidate layout per tick, snapshot the endpoints.
+
+   ## Why the tween is always an INDEXED layout
+
+   The indexed driver forces each child to a tight rect derived from `:geometry`.
+   That is exactly the morph we want (child relayout at an interpolated size). A
+   flow driver, by contrast, self-sizes children and stacks sequentially — it
+   cannot force an interpolated size. So `tween-layout` emits `:geometry` and the
+   drivers take their indexed path for the whole animation, then the host swaps
+   the plain target layout back in at completion.
+
+   ## Frame sources
+
+   The combinator lerps two `frame-source`s. A frame source answers, for the
+   current pass, the geometry questions the indexed driver needs — reframed to
+   allow a nil \"no opinion\" answer so the two sources can be unioned:
+
+     :prepare     (fn [env] ctx)                 once per pass
+     :frame       (fn [env ctx i] frame | nil)   {:offset :cross :main-extent :cross-extent}
+     :first-index (fn [env ctx off] int | nil)
+     :last-index  (fn [env ctx off] int | nil)
+     :extent      (fn [env ctx n] double | nil)  total scroll extent
+
+   Two implementations:
+
+   - `indexed-frame-source` — wraps a live indexed layout; every answer is exact
+     O(1) math and covers every index. Used for an indexed endpoint (grid).
+   - `frozen-frame-source` — a snapshot: a contiguous vector of frames for a
+     window of indices plus the endpoint's total extent. Window queries scan the
+     frozen offsets; indices outside the window answer nil, so the other source
+     fills them in. Used for a flow endpoint and for the frozen `from` side (the
+     positions captured off the render tree at tween start / retarget)."
+  (:require
+   ["dart:ui" :as ui]
+   [flutter-cljd.internal.collection.layout :as lay]))
+
+;; --- lerp helpers ---
+
+(defn ^double lerp [^double a ^double b ^double t]
+  (+ a (* (- b a) t)))
+
+(defn lerp-frame
+  "Component-wise lerp of two frames. A nil endpoint means \"only the other side
+   has an opinion here\" (index outside a frozen window) — return it unchanged so
+   the item sits at the side that knows it."
+  [from to ^double t]
+  (cond
+    (nil? from) to
+    (nil? to) from
+    :else {:offset (lerp (double (:offset from)) (double (:offset to)) t)
+           :cross (lerp (double (:cross from)) (double (:cross to)) t)
+           :main-extent (lerp (double (:main-extent from)) (double (:main-extent to)) t)
+           :cross-extent (lerp (double (:cross-extent from)) (double (:cross-extent to)) t)}))
+
+(defn- min-some [a b] (cond (nil? a) b (nil? b) a :else (min ^int a ^int b)))
+(defn- max-some [a b] (cond (nil? a) b (nil? b) a :else (max ^int a ^int b)))
+
+;; --- frame sources ---
+
+(defn indexed-frame-source
+  "Frame source over a live indexed `layout` — exact, covers every index."
+  [layout]
+  (let [geo (:geometry layout)
+        fi (:first-index layout)
+        li (:last-index layout)
+        mx (:max-extent layout)]
+    {:prepare (or (:prepare layout) (fn [_env] nil))
+     :frame (fn [env ctx ^int i] (geo (assoc env :ctx ctx) i))
+     :first-index (fn [env ctx ^double off] (fi (assoc env :ctx ctx) off))
+     :last-index (fn [env ctx ^double off] (li (assoc env :ctx ctx) off))
+     :extent (fn [env ctx ^int n] (mx (assoc env :ctx ctx) n))}))
+
+(defn ^double frames-main-extent
+  "Furthest main-axis edge reached by a frame vector (flow content extent)."
+  [frames]
+  (reduce (fn [^double m fr]
+            (let [^double e (+ (double (:offset fr)) (double (:main-extent fr)))]
+              (if (> e m) e m)))
+          0.0 frames))
+
+(defn frozen-frame-source
+  "Frame source over a frozen snapshot. `frames` are the frames of the
+   contiguous indices [base, base+count). `extent` is the endpoint's reported
+   total scroll extent. Window queries return nil when the requested offset lies
+   entirely outside the snapshot, so the paired source fills the gap."
+  [{:keys [frames base extent]}]
+  (let [frames (vec frames)
+        ^int base (int base)
+        ^int len (count frames)
+        ^double extent (double (or extent (frames-main-extent frames)))]
+    {:prepare (fn [_env] nil)
+     :frame (fn [_env _ctx ^int i]
+              (let [rel (- i base)]
+                (when (and (>= rel 0) (< rel len)) (nth frames rel))))
+     :first-index (fn [_env _ctx ^double off]
+                    ;; first index whose main span still reaches past `off`
+                    (loop [^int rel 0]
+                      (when (< rel len)
+                        (let [fr (nth frames rel)]
+                          (if (> (+ (double (:offset fr)) (double (:main-extent fr))) off)
+                            (+ base rel)
+                            (recur (inc rel)))))))
+     :last-index (fn [_env _ctx ^double off]
+                   ;; last index that starts before `off`
+                   (loop [^int rel (dec len)]
+                     (when (>= rel 0)
+                       (let [fr (nth frames rel)]
+                         (if (< (double (:offset fr)) off)
+                           (+ base rel)
+                           (recur (dec rel)))))))
+     :extent (fn [_env _ctx ^int _n] extent)}))
+
+;; --- flow endpoint projection ---
+
+(defn flow-frames
+  "Runs a FLOW layout's placement over an ordered, contiguous seq of measured
+   sizes, seeded with `seed-state` (from the layout's :init at 0, or :anchor at a
+   window's first index). Returns a frame vector aligned with `sized`.
+
+   `sized` is a seq of [abs-index ui/Size]. Used to project a flow endpoint we
+   cannot query directly: the box runs it over every child (exact); the sliver
+   runs it over the working window, anchored at the window's top (approximate in
+   absolute offset, exact in the reflowed sizes)."
+  [layout env sized seed-state]
+  (let [place-fn (:place layout)]
+    (loop [s (seq sized) st seed-state out (transient [])]
+      (if s
+        (let [[^int i ^ui/Size size] (first s)
+              [gm st'] (place-fn env i size st)]
+          (recur (next s) st'
+                 (conj! out {:offset (double (:offset gm))
+                             :cross (double (or (:cross gm) 0.0))
+                             :main-extent (lay/size-main env size)
+                             :cross-extent (lay/size-cross env size)})))
+        (persistent! out)))))
+
+(defn flow-seed-state
+  "Seed flow state for `flow-frames`: :init when the window starts at index 0,
+   otherwise :anchor at the window's first index and offset (dead-reckoning)."
+  [layout env ^int base ^double base-off]
+  (if (or (zero? base) (nil? (:anchor layout)))
+    ((:init layout) env)
+    ((:anchor layout) env base base-off)))
+
+;; --- combinator ---
+
+(defn ^:private zero-frame [env]
+  {:offset 0.0 :cross 0.0 :main-extent 0.0 :cross-extent (double (:cross-extent env))})
+
+(defn tween-layout
+  "The morph as an indexed layout map. `from-src`/`to-src` are frame sources;
+   `progress` is a 0..1 thunk (already curved) read fresh every pass so the same
+   layout map animates across ticks. Endpoints are exact: at t=0 geometry ≡ the
+   from source, at t=1 ≡ the to source.
+
+   Windowing is the union of both sources: :first-index takes the min, :last-index
+   the max — so items leaving under one layout and entering under the other both
+   materialize and glide, instead of popping at a window edge."
+  [id from-src to-src progress]
+  (let [from-frame (:frame from-src)  from-first (:first-index from-src)
+        from-last (:last-index from-src) from-ext (:extent from-src)
+        from-prep (:prepare from-src)
+        to-frame (:frame to-src)  to-first (:first-index to-src)
+        to-last (:last-index to-src) to-ext (:extent to-src)
+        to-prep (:prepare to-src)]
+    {:id id
+     :prepare (fn [env]
+                {:t (double (progress))
+                 :from-ctx (from-prep env)
+                 :to-ctx (to-prep env)})
+     :geometry (fn [env ^int i]
+                 (let [ctx (:ctx env)]
+                   (or (lerp-frame (from-frame env (:from-ctx ctx) i)
+                                   (to-frame env (:to-ctx ctx) i)
+                                   (double (:t ctx)))
+                       (zero-frame env))))
+     :first-index (fn [env ^double off]
+                    (let [ctx (:ctx env)]
+                      (int (or (min-some (from-first env (:from-ctx ctx) off)
+                                         (to-first env (:to-ctx ctx) off))
+                               0))))
+     :last-index (fn [env ^double off]
+                   (let [ctx (:ctx env)]
+                     (int (or (max-some (from-last env (:from-ctx ctx) off)
+                                        (to-last env (:to-ctx ctx) off))
+                              0))))
+     :max-extent (fn [env ^int n]
+                   (let [ctx (:ctx env)]
+                     (lerp (double (or (from-ext env (:from-ctx ctx) n) 0.0))
+                           (double (or (to-ext env (:to-ctx ctx) n) 0.0))
+                           (double (:t ctx)))))}))

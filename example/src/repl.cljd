@@ -732,10 +732,90 @@
                    :rows {:size 100 :gap 12} :padding 12
                    (fn [_ i] (fg-tile i))))))
 
+;; ====== LAYOUT-CHANGE MORPH (tween) ======
+
+(defn- morph-tile [^int i]
+  (->> (ui/text (str i) {:size 14 :weight :bold :color :white})
+       (ui/center)
+       (ui/colored (nth colors (mod i (count colors))))))
+
+(def ^:private morph-modes
+  [["List"   :list]
+   ["Grid 2" :grid2]
+   ["Grid 3" :grid3]
+   ["Grid 4" :grid4]])
+
+(defn- morph-sliver [mode]
+  ;; Same SliverCollection widget position across modes → the element is reused
+  ;; and didUpdateWidget sees the layout :id change → morph. :animate true turns
+  ;; on the index-based layout morph (no :key-fn needed).
+  (if (= mode :list)
+    (ui/sliver-collection 200 :layout :list :spacing 8 :animate true
+      (fn [_ ^int i] (ui/sized {:h 56} (morph-tile i))))
+    (let [n (case mode :grid2 2 :grid3 3 4)]
+      (ui/sliver-collection 200 :layout :grid
+        :columns {:count n :gap 8} :rows {:size {:aspect 1} :gap 8}
+        :animate true
+        (fn [_ ^int i] (morph-tile i))))))
+
+(defn layout-tween-preview
+  "Sliver host: 200 items morphing between :list and :grid at 2/3/4 columns.
+   Cells glide with a real size change; window-edge items don't pop; tapping a
+   new mode mid-morph retargets smoothly from the current interpolated frame."
+  []
+  (f/widget
+   :watch [mode (atom :grid3) :as $mode]
+   (ui/column
+    :cross-axis-alignment :stretch
+    (->> (apply ui/row :main-axis-alignment :space-evenly
+                (map (fn [[label m]] (btn label #(reset! $mode m))) morph-modes))
+         (ui/padding {:h 8 :v 8})
+         (ui/colored (c/CupertinoColors.systemGrey6)))
+    (->> (ui/custom-scroll-view
+          (ui/sliver-padding 8 (morph-sliver mode)))
+         (ui/expanded)))))
+
+;; ====== BOX MORPH (tag cloud: wrap ↔ list) ======
+
+(def ^:private morph-tags
+  ["clojure" "dart" "flutter" "sliver" "layout" "grid" "wrap" "masonry"
+   "morph" "tween" "lerp" "reflow" "engine" "virtualize" "anchor" "geometry"
+   "collection" "box" "cross-axis" "main-axis" "curve" "vsync" "reorder" "prefetch"])
+
+(defn- morph-chip [^int i label]
+  (->> (ui/text label {:size 14 :color :white})
+       (ui/padding {:h 12 :v 8})
+       (ui/clip-corners :all 14)
+       (ui/colored (nth colors (mod i (count colors))))))
+
+(defn box-tween-preview
+  "Box host: a tag cloud morphing between :wrap (chips flow into rows) and :list
+   (one chip per row). Both endpoints are exact — the box measures every child —
+   so chips glide and the box's own height animates with them."
+  []
+  (f/widget
+   :watch [mode (atom :wrap) :as $mode]
+   (ui/column
+    :cross-axis-alignment :stretch
+    (->> (ui/row :main-axis-alignment :space-evenly
+           (btn "Wrap" #(reset! $mode :wrap))
+           (btn "List" #(reset! $mode :list)))
+         (ui/padding {:h 8 :v 8})
+         (ui/colored (c/CupertinoColors.systemGrey6)))
+    (->> (ui/single-child-scroll-view
+          (ui/padding 12
+            (let [chips (map-indexed morph-chip morph-tags)]
+              (if (= mode :wrap)
+                (apply ui/collection :wrap :spacing 8 :run-spacing 8 :animate true chips)
+                (apply ui/collection :list :spacing 6 :animate true chips)))))
+         (ui/expanded)))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
-  [["Flex Grid"  flexible-grid-preview]
+  [["Morph"      layout-tween-preview]
+   ["Box Morph"  box-tween-preview]
+   ["Flex Grid"  flexible-grid-preview]
    ["Drag Grid"  draggable-grid-preview]
    ["Corners"    corners-preview]
    ["List"       list-layout-preview]

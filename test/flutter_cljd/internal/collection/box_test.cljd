@@ -18,7 +18,7 @@
   "Builds a RenderCollectionBox over fixed-size children and lays it out
    detached. Returns the render box."
   [layout axis children ^double max-w ^double max-h]
-  (let [rb (box/RenderCollectionBox layout axis)]
+  (let [rb (box/RenderCollectionBox layout axis nil nil)]
     (doseq [c children] (.add rb c))
     (.layout rb (r/BoxConstraints .maxWidth max-w .maxHeight max-h))
     rb))
@@ -99,7 +99,7 @@
 ;; via getDryLayout — RenderObject.layout swallows performLayout exceptions
 ;; into FlutterError.reportError, the dry path propagates them
 (deftest unbounded-cross-throws
-  (let [rb (box/RenderCollectionBox (l/list) :vertical)]
+  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil)]
     (.add rb (fixed-child 10 10))
     (is (thrown? Exception
                  (.getDryLayout rb (r/BoxConstraints .maxWidth ##Inf .maxHeight 100.0))))))

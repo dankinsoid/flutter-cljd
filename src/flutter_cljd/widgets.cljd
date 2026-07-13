@@ -2785,6 +2785,13 @@ Options:
 
 - `:axis` — the layout's main axis, `:vertical` (default) or `:horizontal`
 - `:key` — widget key
+- `:animate` — `true` | `{:layout {:duration :curve}}`; morphs each child and
+  the box's own size when the layout `:id` changes (`:wrap`↔`:list`, a grid
+  `:columns` change, …). Only the `:layout` section applies — a box has no
+  items to insert/remove/move. Endpoints are exact (the box measures every
+  child, so text reflows for real); interrupting mid-morph re-aims from the
+  current frame; a simultaneous child-count change snaps instead. See
+  `sliver-collection`'s `:layout` for the shared model
 
 The cross axis must be bounded (a layout packs against it); the main axis may
 be unbounded — the box shrink-wraps to its content either way, and content
@@ -2990,16 +2997,29 @@ provide `:id :init :measure :place :flow-end :anchor`; indexed layouts
 :last-index :max-extent`. See `flutter-cljd.internal.collection.layout` for
 the full contract and the built-ins as examples (wrap is ~25 lines).
 
-Animations (off by default, require `:key-fn`):
+Animations (off by default):
 
-- `:key-fn` — `(fn [item] identity-key)`
-- `:animate` — `true` | `{:duration :curve :insert :remove :move}`; each
-  section may be `false` to disable or `{:duration :curve :builder}`
+- `:key-fn` — `(fn [item] identity-key)`; required by the diff-driven
+  `:insert`/`:remove`/`:move` sections below
+- `:animate` — `true` | `{:duration :curve :insert :remove :move :layout}`;
+  each section may be `false` to disable or `{:duration :curve :builder}`
+  (`:layout` takes only `:duration`/`:curve`)
 - Inserts grow in, removals collapse out, and any item whose position
   changed (insert/remove/shuffle around it) glides to its new place — in
   any layout and scroll axis
-- `:item-extent` is ignored while `:animate` is on (collapse animations
-  need self-sizing children)
+- `:layout` — the layout-change morph: when the resolved layout `:id` changes
+  (`:list`↔`:grid`, a grid `:columns` count change, …) every item glides from
+  its old frame to its new one, animating position AND size via real relayout
+  at interpolated constraints (text reflows — not a paint scale). Index-based,
+  so it needs no `:key-fn` and fires even when the data is unchanged. Enabled
+  by `:animate true` or an explicit `{:layout …}`. Window-edge items glide in/
+  out instead of popping (the materialized set covers both layouts). A morph
+  and a data change in the same update snaps the layout and runs the diff
+  instead; `:reorderable` disables the morph (reorder is list-only). Flow
+  targets inside a bare sliver (e.g. `:grid`→`:list`) are approximated by an
+  anchored projection; indexed targets (grids) are exact
+- `:item-extent` is ignored while `:animate` is on (collapse and morph
+  animations need self-sizing children)
 
 Reorder (list layout only):
 

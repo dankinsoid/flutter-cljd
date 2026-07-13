@@ -23,29 +23,39 @@
 
 (defn parse-anim-config
   "Parses the :animate option into a normalized config map.
-   Input: true | {:duration :curve :insert :remove :move}
-   Output: {:duration Duration :curve Curve :insert {...}? :remove {...}? :move {...}?}
-   Each section may be disabled with false."
+   Input: true | {:duration :curve :insert :remove :move :layout}
+   Output: {:duration Duration :curve Curve
+            :insert {...}? :remove {...}? :move {...}? :layout {...}?}
+   Each section may be disabled with false.
+
+   `:insert`/`:remove`/`:move` are diff-based and need a :key-fn; `:layout`
+   (the layout-change morph, see collection.tween) is index-based and does not.
+   `:layout` defaults to OFF (only enabled by `true` or an explicit map) so the
+   ubiquitous `:animate true` doesn't retrigger a morph on every rebuild that
+   swaps layout closures."
   [animate]
   (if (true? animate)
     (let [sub {:duration default-duration :curve default-curve}]
       {:duration default-duration :curve default-curve
-       :insert sub :remove sub :move sub})
+       :insert sub :remove sub :move sub :layout sub})
     (let [dur (t/duration (or (:duration animate) (:dur animate) 300))
           crv (t/curve (or (:curve animate) :ease-in-out))
-          parse-sub (fn [sub]
+          parse-sub (fn [sub default]
                       (cond
-                        (nil? sub) {:duration dur :curve crv}
+                        (nil? sub) default
                         (false? sub) nil
                         (map? sub) {:duration (t/duration (or (:duration sub) (:dur sub) dur))
                                     :curve (t/curve (or (:curve sub) crv))
                                     :builder (:builder sub)}
-                        :else {:duration dur :curve crv}))]
+                        :else {:duration dur :curve crv}))
+          on {:duration dur :curve crv}]
       {:duration dur
        :curve crv
-       :insert (parse-sub (:insert animate))
-       :remove (parse-sub (:remove animate))
-       :move (parse-sub (:move animate))})))
+       :insert (parse-sub (:insert animate) on)
+       :remove (parse-sub (:remove animate) on)
+       :move (parse-sub (:move animate) on)
+       ;; layout morph is opt-in: absent → nil, present (map/true) → parsed
+       :layout (parse-sub (:layout animate) nil)})))
 
 ;; --- Insert / Remove controllers ---
 

@@ -21,9 +21,12 @@
   (:require
    ["dart:core" :as dc]
    ["dart:math" :as math]
+   ["dart:ui" :as ui]
+   ["package:flutter/animation.dart" :as a]
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
-   [flutter-cljd.internal.collection.layout :as lay]))
+   [flutter-cljd.internal.collection.layout :as lay]
+   [flutter-cljd.internal.collection.tween :as tw]))
 
 ;; --- parent data helpers ---
 
@@ -46,7 +49,9 @@
    ^:mutable ^double crossCached  ;; cross extent the cache was built for
    ^:mutable cache        ;; vec of {:offset :cross :extent :end :max-end :state}
    ^:mutable ^int cacheFirst      ;; absolute index of cache[0]
-   ^:mutable baseState]   ;; flow state before cache[0]
+   ^:mutable baseState    ;; flow state before cache[0]
+   ^:mutable ^a/Animation? tweenAnim   ;; drives per-tick relayout during a layout morph
+   ^:mutable tweenListener]            ;; the listener registered on tweenAnim (for removal)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -67,12 +72,34 @@
         (.-baseState! this nil))
       (if (:geometry (.-layoutModel this))
         (indexed-layout! this (.-layoutModel this) c)
-        (flow-layout! this (.-layoutModel this) c)))))
+        (flow-layout! this (.-layoutModel this) c))))
+
+  (dispose [^CollectionRenderSliver this]
+    (when-let [l (.-tweenListener this)]
+      (when-let [^a/Animation anim (.-tweenAnim this)]
+        (.removeListener anim l)))
+    (.dispose ^super this)))
+
+(defn- set-tween-anim!
+  "Registers/updates the per-tick relayout listener. While a layout morph runs
+   its :id is stable, so updateRenderObject won't relayout on its own — the
+   Animation's listener does, once per frame."
+  [^CollectionRenderSliver rs ^a/Animation? anim]
+  (when-not (identical? anim (.-tweenAnim rs))
+    (when-let [old (.-tweenListener rs)]
+      (when-let [^a/Animation prev (.-tweenAnim rs)]
+        (.removeListener prev old)))
+    (.-tweenAnim! rs anim)
+    (if anim
+      (let [listener (fn [] (when (.-attached rs) (.markNeedsLayout rs)) nil)]
+        (.-tweenListener! rs listener)
+        (.addListener ^a/Animation anim listener))
+      (.-tweenListener! rs nil))))
 
 (defn update-render!
-  "Applies a new layout / item count from updateRenderObject. A changed
-   layout :id invalidates the flow geometry cache."
-  [^CollectionRenderSliver rs new-layout item-count]
+  "Applies a new layout / item count / morph animation from updateRenderObject.
+   A changed layout :id invalidates the flow geometry cache."
+  [^CollectionRenderSliver rs new-layout item-count ^a/Animation? tween-anim]
   (let [old (.-layoutModel rs)
         layout-changed (or (nil? (:id new-layout))
                            (not= (:id old) (:id new-layout)))
@@ -83,8 +110,65 @@
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs new-layout)
     (.-itemCount! rs item-count)
+    (set-tween-anim! rs tween-anim)
     (when (or layout-changed count-changed)
       (.markNeedsLayout rs))))
+
+;; --- layout-morph snapshots (read by the host at tween start / retarget) ---
+
+(defn snapshot-window
+  "Frozen `from` endpoint: the exact on-screen frames of every attached child
+   this frame, plus the current reported scroll extent. At tween start this is
+   the outgoing layout; at retarget the children sit at interpolated positions,
+   so the same read captures them mid-morph and the re-aim is jump-free.
+   Returns {:frames :base :extent :env} — nil when nothing is attached."
+  [^CollectionRenderSliver rs]
+  (when-let [fc (.-firstChild rs)]
+    (let [^r/SliverConstraints c (.-constraints rs)
+          env (lay/make-env c (.-itemCount rs))]
+      (loop [child fc frames [] base (.indexOf rs ^r/RenderBox fc)]
+        (if child
+          (let [^r/RenderBox ch child
+                ^r/SliverGridParentData pd (.-parentData ch)]
+            (if (.-hasSize ch)
+              (let [^ui/Size size (.-size ch)
+                    fr {:offset (double (or (.-layoutOffset pd) 0.0))
+                        :cross (double (or (.-crossAxisOffset pd) 0.0))
+                        :main-extent (lay/size-main env size)
+                        :cross-extent (lay/size-cross env size)}]
+                (recur (.childAfter rs ch) (conj frames fr) base))
+              (recur (.childAfter rs ch) frames base)))
+          (when (seq frames)
+            {:frames frames :base (int base)
+             :extent (let [^r/SliverGeometry g (.-geometry rs)]
+                       (if g (.-scrollExtent g) (tw/frames-main-extent frames)))
+             :env env}))))))
+
+(defn project-flow-window
+  "Frozen `to` endpoint for a FLOW target that can't be queried directly (e.g.
+   grid→list): dry-measures each attached child under the target's :measure
+   constraints — so sizes reflow for real — and runs its placement anchored at
+   the window's top. Approximate in absolute offset, exact in the reflowed sizes.
+   Returns {:frames :base :extent} — nil when nothing is attached."
+  [^CollectionRenderSliver rs to-layout]
+  (when-let [fc (.-firstChild rs)]
+    (let [^r/SliverConstraints c (.-constraints rs)
+          env (lay/make-env c (.-itemCount rs))
+          env (if-let [prep (:prepare to-layout)] (assoc env :ctx (prep env)) env)
+          measure-fn (:measure to-layout)
+          ^int base (.indexOf rs ^r/RenderBox fc)
+          ^double base-off (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
+          sized (loop [child fc out []]
+                  (if child
+                    (let [^r/RenderBox ch child
+                          i (.indexOf rs ch)
+                          ^r/BoxConstraints bc (measure-fn env i)
+                          ^ui/Size size (.getDryLayout ch bc)]
+                      (recur (.childAfter rs ch) (conj out [i size])))
+                    out))
+          seed (tw/flow-seed-state to-layout env base base-off)
+          frames (tw/flow-frames to-layout env sized seed)]
+      {:frames frames :base base :extent (tw/frames-main-extent frames)})))
 
 ;; --- shared helpers ---
 
@@ -554,20 +638,23 @@
   [^w/SliverChildDelegate del
    ^w/Key? k
    layoutImpl   ;; layout map
-   itemCount]   ;; int? — nil = infinite
+   itemCount    ;; int? — nil = infinite
+   ^a/Animation? tweenAnim]  ;; non-nil while a layout morph plays
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
-    (let [^w/SliverMultiBoxAdaptorElement element context]
-      (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil)))
+    (let [^w/SliverMultiBoxAdaptorElement element context
+          rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil)]
+      (set-tween-anim! rs tweenAnim)
+      rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-render! render-object layoutImpl itemCount)))
+    (update-render! render-object layoutImpl itemCount tweenAnim)))
 
 (defn ^w/Widget collection-sliver-widget
   "Creates the collection sliver from a builder, item count (nil = infinite),
    a layout map and options {:key :find-child-index :auto-keep-alive
-   :repaint-boundaries :semantic-indexes}."
+   :repaint-boundaries :semantic-indexes :tween-anim}."
   [item-builder item-count layout-impl opts]
   (CollectionSliverWidget
    (w/SliverChildBuilderDelegate
@@ -579,4 +666,5 @@
     .addSemanticIndexes (boolean (:semantic-indexes opts true)))
    (:key opts)
    layout-impl
-   item-count))
+   item-count
+   (:tween-anim opts)))

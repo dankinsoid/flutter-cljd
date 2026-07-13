@@ -1,0 +1,198 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.tween-test
+  (:require [clojure.test :refer [deftest is testing]]
+            ["dart:ui" :as ui]
+            ["package:flutter/rendering.dart" :as r]
+            [flutter-cljd.internal.collection.layout :as lay]
+            [flutter-cljd.internal.collection.tween :as tw]))
+
+(defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
+
+(defn- frame= [a b]
+  (and (close? (:offset a) (:offset b))
+       (close? (:cross a) (:cross b))
+       (close? (:main-extent a) (:main-extent b))
+       (close? (:cross-extent a) (:cross-extent b))))
+
+(def ^:private base-env {:axis :vertical :cross-extent 200.0 :item-count 10})
+
+(defn- fr [off cross me ce]
+  {:offset (double off) :cross (double cross)
+   :main-extent (double me) :cross-extent (double ce)})
+
+(defn- with-ctx
+  "Prepares a tween layout's per-pass ctx into env, as a driver would."
+  [layout env]
+  (assoc env :ctx ((:prepare layout) env)))
+
+(defn- tween-geo [from-src to-src ^double t ^int i]
+  (let [tl (tw/tween-layout [:test t] from-src to-src (fn [] t))]
+    ((:geometry tl) (with-ctx tl base-env) i)))
+
+(defn- tween-window [from-src to-src ^double t ^double ws ^double we]
+  (let [tl (tw/tween-layout [:test t] from-src to-src (fn [] t))
+        env (with-ctx tl base-env)]
+    [((:first-index tl) env ws) ((:last-index tl) env we)]))
+
+;; --- lerp-frame ---
+
+(deftest lerp-frame-endpoints-and-mid
+  (let [a (fr 0 0 100 200) b (fr 40 200 60 100)]
+    (testing "endpoints are exact"
+      (is (frame= a (tw/lerp-frame a b 0.0)))
+      (is (frame= b (tw/lerp-frame a b 1.0))))
+    (testing "midpoint lerps every component"
+      (is (frame= (fr 20 100 80 150) (tw/lerp-frame a b 0.5))))
+    (testing "a nil endpoint yields the side that has an opinion"
+      (is (frame= b (tw/lerp-frame nil b 0.3)))
+      (is (frame= a (tw/lerp-frame a nil 0.7))))))
+
+;; --- frozen-frame-source window queries ---
+
+(deftest frozen-source-windowing
+  (let [src (tw/frozen-frame-source
+             {:base 0 :extent 400.0
+              :frames [(fr 0 0 100 200) (fr 100 0 100 200)
+                       (fr 200 0 100 200) (fr 300 0 100 200)]})
+        first-idx (:first-index src)
+        last-idx (:last-index src)]
+    (testing "frame lookup is by absolute index, nil outside the window"
+      (is (frame= (fr 100 0 100 200) ((:frame src) base-env nil 1)))
+      (is (nil? ((:frame src) base-env nil 9))))
+    (testing "first-index: first frame still reaching past the offset"
+      (is (= 0 (first-idx base-env nil 0.0)))
+      (is (= 1 (first-idx base-env nil 150.0))))
+    (testing "last-index: last frame starting before the offset"
+      (is (= 2 (last-idx base-env nil 250.0)))
+      (is (= 3 (last-idx base-env nil 999.0))))
+    (testing "an offset past the snapshot yields no opinion (nil)"
+      (is (nil? (first-idx base-env nil 500.0))))
+    (testing "extent is the endpoint total"
+      (is (close? 400.0 ((:extent src) base-env nil 10))))))
+
+;; --- combinator: geometry endpoints exact (two frozen sources) ---
+
+(deftest tween-geometry-endpoints-exact
+  (let [from (tw/frozen-frame-source
+              {:base 0 :extent 300.0
+               :frames [(fr 0 0 100 200) (fr 100 0 100 200) (fr 200 0 100 200)]})
+        to (tw/frozen-frame-source
+            {:base 0 :extent 180.0
+             :frames [(fr 0 0 60 100) (fr 60 100 60 100) (fr 120 0 60 100)]})]
+    (testing "t=0 is exactly the from source"
+      (is (frame= (fr 100 0 100 200) (tween-geo from to 0.0 1))))
+    (testing "t=1 is exactly the to source"
+      (is (frame= (fr 60 100 60 100) (tween-geo from to 1.0 1))))
+    (testing "t=0.5 lerps position and size together"
+      (is (frame= (fr 80 50 80 150) (tween-geo from to 0.5 1))))))
+
+;; --- combinator: union windowing ---
+
+(deftest tween-union-window
+  (let [a (tw/frozen-frame-source
+           {:base 0 :extent 400.0
+            :frames [(fr 0 0 100 200) (fr 100 0 100 200)
+                     (fr 200 0 100 200) (fr 300 0 100 200)]})
+        b (tw/frozen-frame-source
+           {:base 0 :extent 360.0
+            :frames [(fr 0 0 60 200) (fr 60 0 60 200) (fr 120 0 60 200)
+                     (fr 180 0 60 200) (fr 240 0 60 200) (fr 300 0 60 200)]})]
+    (testing "first-index is the min, last-index the max across both layouts"
+      ;; ws=150: a→1, b→2 ; we=250: a→2, b→4
+      (is (= [1 4] (tween-window a b 0.5 150.0 250.0))))
+    (testing "the union holds regardless of progress"
+      (is (= [1 4] (tween-window a b 0.0 150.0 250.0)))
+      (is (= [1 4] (tween-window a b 1.0 150.0 250.0))))))
+
+;; --- combinator: scroll extent lerps ---
+
+(deftest tween-extent-lerps
+  (let [a (tw/frozen-frame-source {:base 0 :extent 400.0 :frames [(fr 0 0 100 200)]})
+        b (tw/frozen-frame-source {:base 0 :extent 360.0 :frames [(fr 0 0 60 200)]})
+        ext (fn [^double t]
+              (let [tl (tw/tween-layout [:e t] a b (fn [] t))]
+                ((:max-extent tl) (with-ctx tl base-env) 10)))]
+    (is (close? 400.0 (ext 0.0)))
+    (is (close? 360.0 (ext 1.0)))
+    (is (close? 380.0 (ext 0.5)))))
+
+;; --- retarget: freezing the interpolated frame is jump-free ---
+
+(deftest retarget-freeze-is-continuous
+  (let [a (tw/frozen-frame-source
+           {:base 0 :extent 300.0 :frames [(fr 0 0 100 200) (fr 100 0 100 200)]})
+        b (tw/frozen-frame-source
+           {:base 0 :extent 180.0 :frames [(fr 0 0 60 100) (fr 60 100 60 100)]})
+        ;; interrupt at t=0.5 → capture the interpolated frame of index 1
+        mid (tween-geo a b 0.5 1)
+        ;; re-aim: the captured frame becomes the frozen `from` of a new tween
+        frozen (tw/frozen-frame-source {:base 0 :extent 240.0 :frames [(fr 0 0 0 0) mid]})
+        c (tw/frozen-frame-source
+           {:base 0 :extent 120.0 :frames [(fr 0 0 40 80) (fr 40 0 40 80)]})]
+    (testing "the new tween starts exactly where the old one was interrupted"
+      (is (frame= mid (tween-geo frozen c 0.0 1))))
+    (testing "and still lands exactly on the new target"
+      (is (frame= (fr 40 0 40 80) (tween-geo frozen c 1.0 1))))))
+
+;; --- flow projection: run a flow layout over measured sizes ---
+
+(deftest flow-frames-projection
+  (let [venv {:axis :vertical :cross-extent 300.0 :item-count 10}
+        l (lay/list-layout {:spacing 10})
+        sized [[0 (ui/Size 300 50)] [1 (ui/Size 300 80)] [2 (ui/Size 300 20)]]
+        seed (tw/flow-seed-state l venv 0 0.0)
+        frames (tw/flow-frames l venv sized seed)]
+    (testing "list stacks with spacing, sizes captured from the measured boxes"
+      (is (frame= (fr 0 0 50 300) (nth frames 0)))
+      (is (frame= (fr 60 0 80 300) (nth frames 1)))
+      (is (frame= (fr 150 0 20 300) (nth frames 2)))))
+  (testing "a windowed seed anchors the first index at its offset"
+    (let [venv {:axis :vertical :cross-extent 300.0 :item-count 10}
+          l (lay/list-layout {:spacing 10})
+          seed (tw/flow-seed-state l venv 7 500.0)
+          frames (tw/flow-frames l venv [[7 (ui/Size 300 40)]] seed)]
+      (is (close? 500.0 (:offset (nth frames 0)))))))
+
+;; --- indexed source wraps a live layout ---
+
+(defn- ^r/SliverConstraints sliver-constraints [^double cross ^double main]
+  (r/SliverConstraints
+   .axisDirection r/AxisDirection.down
+   .growthDirection r/GrowthDirection.forward
+   .userScrollDirection r/ScrollDirection.idle
+   .scrollOffset 0.0
+   .precedingScrollExtent 0.0
+   .overlap 0.0
+   .remainingPaintExtent main
+   .crossAxisExtent cross
+   .crossAxisDirection r/AxisDirection.right
+   .viewportMainAxisExtent main
+   .remainingCacheExtent main
+   .cacheOrigin 0.0))
+
+(deftest indexed-source-matches-layout
+  (let [g (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})
+        genv (lay/make-env (sliver-constraints 300.0 600.0) 10)
+        src (tw/indexed-frame-source g)
+        ctx ((:prepare src) genv)]
+    (testing "frame equals the layout's own geometry"
+      (is (frame= ((:geometry g) (assoc genv :ctx ((:prepare g) genv)) 4)
+                  ((:frame src) genv ctx 4))))
+    (testing "window + extent pass through"
+      (is (= 3 ((:first-index src) genv ctx 50.0)))
+      (is (close? 200.0 ((:extent src) genv ctx 10))))))
+
+(deftest tween-between-two-grids-endpoints-exact
+  (let [g2 (lay/resolve-layout :grid {:columns 2 :rows {:size 50}})
+        g3 (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})
+        genv (lay/make-env (sliver-constraints 300.0 600.0) 10)
+        from (tw/indexed-frame-source g2)
+        to (tw/indexed-frame-source g3)
+        geo-at (fn [^double t ^int i]
+                 (let [tl (tw/tween-layout [:g t] from to (fn [] t))]
+                   ((:geometry tl) (assoc genv :ctx ((:prepare tl) genv)) i)))
+        g2-geo (fn [^int i] ((:geometry g2) (assoc genv :ctx ((:prepare g2) genv)) i))
+        g3-geo (fn [^int i] ((:geometry g3) (assoc genv :ctx ((:prepare g3) genv)) i))]
+    (testing "indexed×indexed morph is exact at both endpoints"
+      (is (frame= (g2-geo 4) (geo-at 0.0 4)))
+      (is (frame= (g3-geo 4) (geo-at 1.0 4))))))
