@@ -2,7 +2,7 @@
 
 **Slug**: collection-rect-animator
 **Started**: 2026-07-13
-**Status**: in-progress
+**Status**: DONE (bin/check --clean 0 errors; 186 tests green; all commits landed)
 
 ## Goal
 Replace v1's three animation paths (MoveRender position-glide, tween-layout
@@ -90,27 +90,27 @@ non-goal; box shares the core minus windowing+correction). Every subagent reads 
         anchor-delta correction (gated on tweenAnim) — done (bin/check clean, 179 green)
 - [x] 3. Enter/exit primitives: keyed-tween-layout 7-arg {:entering :exiting} +
         collapse-wrap in animation.cljd — done (+182 green, bin/check clean, committed)
-- [ ] 4E. Engine segment (render.cljd): on gen change capture to-src from the NEW tree
-        (flow: run driver→snapshot; grid: indexed math), freeze from/from-extent, build
-        keyed-tween internally, relay at from (t≈0); subsequent passes run the indexed
-        keyed-tween driver. Fallback: live-target. — agent: general-purpose
-- [ ] 4H. Sliver host (sliver_collection.cljd): trigger segment (gen++/forward) on ANY
-        move-causing update; diff→entering/exiting sets; pass plain layout + tween-anim
-        + gen + entering/exiting + key-of; wrap enter/exit content via collapse-wrap;
-        retire maybe-layout-tween!/:id + MoveRender wiring — agent: general-purpose
-- [ ] 5. Retire dead code: MoveRender/MoveLayer/capture-positions/visual-position from
+- [x] 4E. Engine segment (render.cljd): gen-change capture from new tree + from-relay
+        display + subsequent keyed-tween passes — done (bin/check clean, +182, committed).
+        HOST CONTRACT: `update-render! (rs target-layout item-count tween-anim ^int gen
+        entering exiting key-of)`; widget opts `:seg-gen`, `:entering`, `:exiting`,
+        `:key-of`. Host passes PLAIN target layout (never a tween) + tween-anim + gen++
+        per segment + entering/exiting key-sets + key-of. curGen field = incoming gen.
+- [x] 4H. Sliver host: trigger-only + diff→enter/exit + collapse-wrap + retire :id/
+        MoveRender wiring — done (bin/check clean, 182 green, committed)
+- [x] 5. Retire dead code: MoveRender/MoveLayer/capture-positions/visual-position from
         animation.cljd; SizeTransition default size driver — agent: general-purpose
-- [ ] 6. Box host: RenderCollectionBox committed/from/gen + content-size animating
+- [x] 6. Box host: RenderCollectionBox committed/from/gen + content-size animating
         branch + own-size lerp; CollectionBoxState gen+forward; retire tween wrapper
         — agent: general-purpose
-- [ ] 7. parse-anim-config: drop :layout, :move single knob; widgets.cljd docstrings
+- [x] 7. parse-anim-config: drop :layout, :move single knob; widgets.cljd docstrings
         — agent: general-purpose
-- [ ] 8. Tests: content-space continuity, stable-size zero-relayout, key-match
+- [x] 8. Tests: content-space continuity, stable-size zero-relayout, key-match
         shuffle, enter/exit vs scroll-off, retarget continuity, box own-size
         — agent: general-purpose
-- [ ] 9. Demos: repl.cljd Morph + Box Morph exercise shuffle + simultaneous
+- [x] 9. Demos: repl.cljd Morph + Box Morph exercise shuffle + simultaneous
         data+layout — agent: general-purpose
-- [ ] 10. Final verify: bin/check --clean + full test run — coordinator
+- [x] 10. Final verify: bin/check --clean + full test run — coordinator
 
 ## Step results
 
