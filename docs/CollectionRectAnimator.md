@@ -103,8 +103,11 @@ gen       : int            ;; host bumps on each (re)start; engine compares
 `rect = {:offset :cross :main-extent :cross-extent}` in content space.
 
 **Keying.** The render layer is index-addressed, but animation identity is by key.
-The host passes `key-of : (fn [^int index] → key)` (closure over data + `:key-fn`;
-`identity`/index when no `:key-fn` — constraint 3). The engine maps `index →
+The host passes `key-of : (fn [^int index] → key)` (closure over data + `:key-fn`).
+`:key-fn` is **optional**: with it, a cell's rect history follows its data identity
+across shuffles/inserts; without it, `key-of` is the index — a first-class mode,
+not a degraded one (a positional collection animates position/size correctly, it
+just can't tell a shuffle from a set of coincident moves). The engine maps `index →
 key-of → key` per child. During removes the index space is shadow-data (live +
 dying), so `key-of` reads it, exactly like the reorderable `key-of` already does.
 
@@ -196,10 +199,21 @@ animates`) is written **before** the engine change.
 
 - **Sliver** (`render.cljd` + `sliver_collection.cljd`) — windowed; owns the
   segment/gen, the `AnimationController`, and the correction above.
-- **Box** (`box.cljd`) — no windowing, no scroll: it measures every child, so both
-  endpoints are exact and there is no correction. Its own size lerps with the cells
-  (committed content extent → target content extent). Simpler; same `committed/from/
-  gen` machinery, no `first/last-index`.
+- **Box** (`box.cljd`) — **the same rect animator, not a separate one.** It shares
+  the whole core — `{key → rect}` committed/from maps, `gen`-freeze, `lerp-frame`,
+  tight lerped constraints per cell, the resting/animating mode switch, enter/exit
+  wrapping — and only *drops* the parts that exist because the sliver scrolls:
+  - no windowing / virtualization (it measures every child anyway) ⇒ no
+    `first/last-index`, no union window, no GC;
+  - no scrolling ⇒ no `anchor-delta` / scroll correction; both endpoints are exact
+    because the box measures everything.
+  What it *adds* over the sliver: its **own** size lerps with the cells
+  (`lerp(committed-content-extent, target-content-extent, t)`) so the box's height
+  animates as its content reflows. `key-of` is the child index (positional) unless
+  a child carries a `ValueKey`. Concretely, `box.cljd` loses the v1 `tween-layout`
+  map wrapper and `:id`-change gating; `RenderCollectionBox` gains the committed/
+  from/gen fields and a lerp branch in `content-size`; `CollectionBoxState` bumps
+  `gen` + `forward` on any `didUpdateWidget` that could move a child.
 
 ## 11. Retired
 
@@ -210,12 +224,20 @@ animates`) is written **before** the engine change.
 - `:layout` as an `:animate` sub-key and all `:id`-change detection
   (`maybe-layout-tween!`, the `layout-changed` branches).
 
-## 12. Non-goals (unchanged from v1)
+## 12. Axis change is just another rect change
 
-Axis-switching morphs; coexistence with `:reorderable` (kept mutually exclusive —
-`SliverReorderableList` animates its own reorders).
+An `:axis` swap (`:vertical` ↔ `:horizontal`) is **not** a special case in v2 — it
+falls out of the unified model. A cell's content-space rect (offset, cross,
+main-extent, cross-extent) simply lands at a different target under the new axis,
+and `lerp-frame` interpolates it component-wise like any other move. (This was a
+v1 non-goal; it now works for free.)
 
-## 13. Test plan
+## 13. Non-goals
+
+Coexistence with `:reorderable` (kept mutually exclusive — `SliverReorderableList`
+animates its own reorders).
+
+## 14. Test plan
 
 1. **Scroll-anchor stability** (write first, failing): anchored child fixed while
    content above animates its rect; engine emits the correction.
