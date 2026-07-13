@@ -730,7 +730,7 @@
                     (let [^r/RenderBox fc (.-firstChild rs)
                           ^int fidx (.indexOf rs fc)
                           gm (geo-fn env fidx)]
-                      (.layout fc (geo-constraints env gm))
+                      (.layout fc (geo-constraints env gm) .parentUsesSize true)
                       (set-layout-offset! fc (double (:offset gm)))
                       (set-cross-axis-offset! fc (double (:cross gm)))
                       fc))
@@ -747,7 +747,7 @@
                           ^r/BoxConstraints bc (geo-constraints env gm)
                           existing (.childAfter rs prev)
                           child (if (and existing (= (.indexOf rs ^r/RenderBox existing) idx))
-                                  (do (.layout ^r/RenderBox existing bc)
+                                  (do (.layout ^r/RenderBox existing bc .parentUsesSize true)
                                       existing)
                                   (.insertAndLayoutChild rs bc .after prev))]
                       (if (nil? child)
@@ -816,7 +816,7 @@
             (let [^r/RenderBox ch child
                   ^int i (.indexOf rs ch)
                   gm (geo-fn env i)]
-              (.layout ch (geo-constraints env gm))
+              (.layout ch (geo-constraints env gm) .parentUsesSize true)
               (set-layout-offset! ch (double (:offset gm)))
               (set-cross-axis-offset! ch (double (:cross gm)))
               (recur (.childAfter rs ch)
