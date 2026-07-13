@@ -112,11 +112,11 @@
 
         :else
         (do (assert (empty? (next vs))
-                    (str "remove-padding: child must be the final argument, got extra " (vec (next vs))))
+                    (str "remove-safe-area: child must be the final argument, got extra " (vec (next vs))))
             [(if edges? edges all-edges) a])))))
 
-(defn ^w/Widget remove-padding*
-  "See `flutter-cljd.widgets/remove-padding`."
+(defn ^w/Widget remove-safe-area*
+  "See `flutter-cljd.widgets/remove-safe-area`."
   [edges child]
   (w/Builder
    .builder
