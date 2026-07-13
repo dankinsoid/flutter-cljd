@@ -1,9 +1,12 @@
 ;; @ai-generated(solo)
 (ns flutter-cljd.internal.sliver-collection
-  "sliver-collection widget: data-driven sliver with pluggable layouts,
-   diffable insert/remove animations, position-based move animations,
-   drag-to-reorder and prefetch. See collection.layout for the layout model
-   and collection.render for the virtualization engine."
+  "sliver-collection widget: data-driven sliver with pluggable layouts and a
+   single keyed rect animator (move, layout morph, insert, remove), drag-to-reorder
+   and prefetch. All cell animation is one engine-owned segment driven by one
+   AnimationController clock; the host only classifies enter/exit keys via a diff
+   and bumps the segment generation. See collection.layout for the layout model,
+   collection.render for the virtualization engine + rect animator, and
+   docs/CollectionRectAnimator.md for the design."
   (:require
    ["package:flutter/animation.dart" :as a]
    ["package:flutter/widgets.dart" :as w]
@@ -11,7 +14,6 @@
    [flutter-cljd.utils :as ut]
    [flutter-cljd.internal.collection.layout :as lay]
    [flutter-cljd.internal.collection.render :as render]
-   [flutter-cljd.internal.collection.tween :as tw]
    [flutter-cljd.internal.collection.diff :as diff]
    [flutter-cljd.internal.collection.animation :as an]
    [flutter-cljd.internal.collection.reorder :as reord]))
@@ -55,8 +57,9 @@
 (declare ^:private apply-diff*)
 (declare ^:private rebuild-shadow!)
 (declare ^:private run-prefetch!)
-(declare ^:private maybe-layout-tween!)
-(declare ^:private cancel-tween!)
+(declare ^:private start-segment!)
+(declare ^:private finish-segment!)
+(declare ^:private settle-segment!)
 
 ;; --- SliverCollection Widget ---
 
@@ -80,29 +83,27 @@
   (createState [^SliverCollection this]
     (SliverCollectionState
      (.-data this)  ;; previousUserData
-     {}             ;; activeInserts
+     #{}            ;; activeInserts (entering keys)
      []             ;; dyingItems
      nil            ;; shadowData
      false          ;; reorderInProgress
      #{}            ;; prefetched
-     (atom {})      ;; moveRegistry
-     nil            ;; tweenLayout
+     false          ;; segmentActive
      nil            ;; tweenCtrl
      nil            ;; tweenAnim
      0)))           ;; tweenGen
 
 (deftype SliverCollectionState
   [^:mutable previousUserData    ;; user's data from last update (for diffing)
-   ^:mutable activeInserts       ;; {key -> insert anim-state}
-   ^:mutable dyingItems          ;; [{:key :item :old-index :controller :animation} ...]
+   ^:mutable activeInserts       ;; #{key ...} — keys wiping in this segment
+   ^:mutable dyingItems          ;; [{:key :item :old-index} ...] — keys wiping out
    ^:mutable shadowData          ;; vec of {:type :live/:dying, :key, ...} or nil
    ^:mutable ^bool reorderInProgress
    ^:mutable prefetched          ;; set of identity keys (indices without key-fn)
-   moveRegistry                  ;; atom {key -> MoveRender}
-   ^:mutable tweenLayout         ;; active tween-layout map (collection.tween) or nil
-   ^:mutable ^a/AnimationController? tweenCtrl  ;; morph driver, reused across retargets
+   ^:mutable ^bool segmentActive ;; a rect segment is currently playing
+   ^:mutable ^a/AnimationController? tweenCtrl  ;; the one segment clock, reused across segments
    ^:mutable ^a/Animation? tweenAnim            ;; curved view of tweenCtrl the engine listens to
-   ^:mutable ^int tweenGen]      ;; bumped per (re)start so the tween :id changes
+   ^:mutable ^int tweenGen]      ;; segment generation, bumped per (re)start
   :extends (#/(w/State SliverCollection))
   ^:mixin #/(w/TickerProviderStateMixin SliverCollection)
 
@@ -120,26 +121,24 @@
           data-changed (or (and new-data old-data (not (identical? new-data old-data)))
                            (not= (.-itemCount widget) (.-itemCount oldWidget)))
           layout-changed (not= (:id (.-layoutImpl oldWidget)) (:id (.-layoutImpl widget)))]
-      ;; diff on data change when keyed animations are on; a reorder-driven
-      ;; change is skipped once — SliverReorderableList animates it itself
+      ;; classify enter/exit into the key sets when keyed animations are on; a
+      ;; reorder-driven change is skipped once — SliverReorderableList animates it
       (when (and key-fn anim-config new-data old-data
                  (not (identical? new-data old-data))
                  (not (.-reorderInProgress this)))
-        (when (and (:move anim-config) (not (.-reorderable widget)))
-          (an/capture-positions! (.-moveRegistry this)))
-        (apply-diff* this old-data new-data key-fn anim-config))
-      ;; layout-change morph — index-based, so no :key-fn required; independent
-      ;; of the diff path above
-      (maybe-layout-tween! this anim-config layout-changed data-changed)
+        (apply-diff* this old-data new-data key-fn))
+      ;; one segment covers move + morph + enter + exit; the engine builds it on
+      ;; the gen bump and captures the target from the new tree
+      (when (and anim-config
+                 (not (.-reorderable widget))
+                 (or data-changed layout-changed))
+        (start-segment! this anim-config))
       (.-reorderInProgress! this false)
       (.-previousUserData! this new-data)
       (rebuild-shadow! this))
     nil)
 
   (dispose [^SliverCollectionState this]
-    (an/dispose-all-anims (.-activeInserts this))
-    (doseq [dying (.-dyingItems this)]
-      (an/dispose-anim dying))
     (when-let [^a/CurvedAnimation cv (.-tweenAnim this)]
       (.dispose cv))
     (when-let [^a/AnimationController c (.-tweenCtrl this)]
@@ -155,13 +154,21 @@
           user-builder (.-userBuilder widget)
           shadow (.-shadowData this)
           inserts (.-activeInserts this)
+          seg-anim (when (.-segmentActive this) (.-tweenAnim this))
           reorderable (boolean (and (.-reorderable widget) (.-reorderCallback widget)))
-          move-enabled (boolean (and anim-config key-fn (:move anim-config) (not reorderable)))
-          registry (.-moveRegistry this)
 
-          ;; shadow-data (live + dying) is the index space while removals animate
+          ;; shadow-data (live + dying) is the index space whenever keyed; key-of
+          ;; maps that space to animation identity for the engine
           use-shadow (boolean (and shadow key-fn (seq shadow)))
           item-count (if use-shadow (count shadow) (.-itemCount widget))
+          key-of (cond
+                   use-shadow (fn [^int i] (:key (nth shadow i)))
+                   (and key-fn data) (fn [^int i] (key-fn (nth data i)))
+                   :else (fn [^int i] i))
+          exiting (into #{} (map :key) (.-dyingItems this))
+
+          insert-builder (get-in anim-config [:insert :builder])
+          remove-builder (get-in anim-config [:remove :builder])
 
           base-builder
           (if use-shadow
@@ -169,17 +176,20 @@
               (let [entry (nth shadow index)
                     k (:key entry)]
                 (if (= :dying (:type entry))
-                  (w/KeyedSubtree
-                   .key (w/ValueKey k)
-                   .child (an/wrap-with-remove-transition
-                           anim-config entry ctx
-                           (user-builder ctx (:item entry))))
+                  ;; the engine collapses the outer rect; collapse-wrap clips
+                  (let [content (user-builder ctx (:item entry))
+                        content (if (and remove-builder seg-anim)
+                                  (remove-builder content (a/ReverseAnimation seg-anim))
+                                  content)]
+                    (w/KeyedSubtree
+                     .key (w/ValueKey k)
+                     .child (an/collapse-wrap (an/scroll-axis ctx) content)))
                   (let [child (item-builder ctx (int (:data-index entry)))
-                        child (if-let [ins (get inserts k)]
-                                (an/wrap-with-insert-transition anim-config ins ctx child)
-                                child)
-                        child (if move-enabled
-                                (an/move-layer registry k (:move anim-config) child)
+                        child (if (contains? inserts k)
+                                (let [c (if (and insert-builder seg-anim)
+                                          (insert-builder child seg-anim)
+                                          child)]
+                                  (an/collapse-wrap (an/scroll-axis ctx) c))
                                 child)]
                     (w/KeyedSubtree .key (w/ValueKey k) .child child)))))
             ;; no shadow — plain builder, keyed when possible
@@ -226,22 +236,23 @@
         (reord/build-reorderable-sliver
          final-builder
          (int (or item-count 0))
-         (cond
-           use-shadow (fn [^int index] (:key (nth shadow index)))
-           (and key-fn data) (fn [^int index] (key-fn (nth data index)))
-           :else (fn [^int index] index))
+         key-of
          (fn [^int old-index ^int new-index]
            (.-reorderInProgress! this true)
            ((.-reorderCallback widget) old-index new-index))
          (merge opts (.-extraOpts widget)))
-        ;; while a layout morph plays, drive the transitional (indexed) layout and
-        ;; hand the engine the animation so it relayouts every tick
-        (let [tween (.-tweenLayout this)]
-          (render/collection-sliver-widget
-           final-builder
-           item-count
-           (or tween (.-layoutImpl widget))
-           (cond-> opts tween (assoc :tween-anim (.-tweenAnim this)))))))))
+        ;; always the PLAIN target layout — the engine builds the segment tween
+        ;; internally from the gen bump + enter/exit sets + captured target
+        (render/collection-sliver-widget
+         final-builder
+         item-count
+         (.-layoutImpl widget)
+         (cond-> (assoc opts
+                        :key-of key-of
+                        :seg-gen (.-tweenGen this)
+                        :entering inserts
+                        :exiting exiting)
+           seg-anim (assoc :tween-anim seg-anim)))))))
 
 ;; --- helpers ---
 
@@ -255,134 +266,80 @@
       (.-shadowData! state (an/build-shadow-data data key-fn (.-dyingItems state)))
       (.-shadowData! state nil))))
 
-(defn- remove-dying!
-  [^SliverCollectionState this key]
-  (when-let [entry (first (filter #(= key (:key %)) (.-dyingItems this)))]
-    (an/dispose-anim entry))
-  (.-dyingItems! this
-    (vec (remove #(= key (:key %)) (.-dyingItems this)))))
-
 (defn- apply-diff*
-  "Applies a key diff: removes become dying items (size collapse), inserts
-   get grow-in animations. Position shifts are handled by captured-position
-   move animations, so no move classification is needed."
-  [^SliverCollectionState this old-data new-data key-fn anim-config]
-  (let [diff-result (diff/compute-diff old-data new-data key-fn)]
-    ;; --- Removes → dying items ---
-    (doseq [{:keys [key old-index item]} (:removes diff-result)]
-      (when-let [existing (get (.-activeInserts this) key)]
-        (an/dispose-anim existing)
-        (.-activeInserts! this (dissoc (.-activeInserts this) key)))
-      (when-let [dying-entry
-                 (an/start-remove-anim
-                  this anim-config item old-index
-                  (fn []
-                    (when (.-mounted this)
-                      ;; the vanishing slot shifts everything below it
-                      (when (:move anim-config)
-                        (an/capture-positions! (.-moveRegistry this)))
-                      (.setState this
-                        (fn []
-                          (remove-dying! this key)
-                          (rebuild-shadow! this))))))]
-        (.-dyingItems! this
-          (conj (.-dyingItems this)
-                (assoc dying-entry :key key :old-index old-index :item item)))))
+  "Accumulates enter/exit key sets from a key diff. Removes become dying shadow
+   entries (collapsed by the segment clock); inserts join the entering set; a key
+   re-inserted while still dying moves from dying to entering. No per-cell
+   controllers — the one segment clock drives every wipe."
+  [^SliverCollectionState this old-data new-data key-fn]
+  (let [{:keys [inserts removes]} (diff/compute-diff old-data new-data key-fn)
+        insert-keys (into #{} (map :key) inserts)
+        remove-keys (into #{} (map :key) removes)
+        kept-dying (vec (remove #(or (contains? remove-keys (:key %))
+                                     (contains? insert-keys (:key %)))
+                                (.-dyingItems this)))
+        new-dying (for [{:keys [key old-index item]} removes]
+                    {:key key :item item :old-index old-index})]
+    (.-dyingItems! this (into kept-dying new-dying))
+    (.-activeInserts! this
+      (into (reduce disj (.-activeInserts this) remove-keys) insert-keys))))
 
-    ;; --- Inserts ---
-    (doseq [{:keys [key]} (:inserts diff-result)]
-      ;; re-inserted while its removal still animates: the dying entry must
-      ;; go, or the shadow would contain the key twice (duplicate ValueKeys)
-      (remove-dying! this key)
-      (when-let [existing (get (.-activeInserts this) key)]
-        (an/dispose-anim existing))
-      (when-let [insert-entry
-                 (an/start-insert-anim
-                  this anim-config
-                  (fn []
-                    (when (.-mounted this)
-                      (.setState this
-                        (fn []
-                          (.-activeInserts! this (dissoc (.-activeInserts this) key)))))))]
-        (.-activeInserts! this (assoc (.-activeInserts this) key insert-entry))))))
+;; --- Segment lifecycle (one keyed rect animator, see docs/CollectionRectAnimator.md) ---
 
-;; --- Layout-change morph ---
-
-(defn- cancel-tween!
-  "Stops and forgets any active morph so the next build falls back to the plain
-   layout (used when a data change or reorder makes the snap the correct choice)."
+(defn- settle-segment!
+  "Drops pending enter/exit and stops the clock without animating — used when a
+   change can't animate (nothing attached / no snapshot). Runs inside
+   didUpdateWidget; rebuild-shadow! follows and shows the final state (snap)."
   [^SliverCollectionState this]
-  (when (.-tweenLayout this)
-    (.-tweenLayout! this nil)
-    (when-let [^a/AnimationController c (.-tweenCtrl this)]
-      (.stop c))))
+  (.-segmentActive! this false)
+  (.-dyingItems! this [])
+  (.-activeInserts! this #{})
+  (when-let [^a/AnimationController c (.-tweenCtrl this)]
+    (.stop c)))
 
-(defn- finish-tween!
-  "Runs when the controller reaches 1.0: drop the transitional layout so build
-   swaps the plain target back in. Endpoints are exact, so no visual jump."
+(defn- finish-segment!
+  "Runs when the clock reaches 1.0: settle to resting. All enters/exits have
+   played and dying cells collapsed to 0, so drop them and rebuild the shadow so
+   build swaps the plain layout back in. Endpoints are exact — no visual jump."
   [^SliverCollectionState this]
-  (when (and (.-mounted this) (.-tweenLayout this))
-    (.setState this (fn [] (.-tweenLayout! this nil)))))
+  (when (and (.-mounted this) (.-segmentActive this))
+    (.setState this
+      (fn []
+        (.-segmentActive! this false)
+        (.-dyingItems! this [])
+        (.-activeInserts! this #{})
+        (rebuild-shadow! this)))))
 
-(defn- start-layout-tween!
-  "Snapshots the current on-screen frames as the frozen `from`, builds the `to`
-   frame source from the incoming layout, and (re)starts the morph. Reused for
-   both start and retarget — at retarget the children sit at interpolated
-   positions, so the snapshot re-aims without a jump."
-  [^SliverCollectionState this to-layout layout-config]
+(defn- start-segment!
+  "(Re)starts the one segment clock on any change that could move a cell (data,
+   layout or count). Bumps the generation so the engine freezes the current
+   committed rects as `from` and captures the target from the new tree; the build
+   that follows hands the engine the new gen + segment Animation. At retarget the
+   children sit at interpolated rects, so re-aiming is jump-free. Snaps (settles
+   without animating) when nothing is attached to snapshot."
+  [^SliverCollectionState this anim-config]
   (let [ro (.findRenderObject (.-context this))]
-    (if-not (instance? render/CollectionRenderSliver ro)
-      (cancel-tween! this)
-      (let [^render/CollectionRenderSliver rs ro
-            snap (render/snapshot-window rs)]
-        (if (nil? snap)
-          (cancel-tween! this)  ;; nothing on screen to morph → snap
-          (let [from-src (tw/frozen-frame-source snap)
-                to-src (if (:geometry to-layout)
-                         (tw/indexed-frame-source to-layout)
-                         (when-let [proj (render/project-flow-window rs to-layout)]
-                           (tw/frozen-frame-source proj)))]
-            (if (nil? to-src)
-              (cancel-tween! this)  ;; couldn't project a flow target → snap
-              (let [^int gen (inc (.-tweenGen this))
-                    ^a/AnimationController ctrl
-                    (or (.-tweenCtrl this)
-                        (let [c (a/AnimationController .vsync this
-                                                       .duration (:duration layout-config))]
-                          (.addStatusListener c
-                            (fn [^a/AnimationStatus s]
-                              (when (.-isCompleted s) (finish-tween! this))))
-                          (.-tweenCtrl! this c)
-                          c))
-                    ^a/Animation anim
-                    (or (.-tweenAnim this)
-                        (let [cv (a/CurvedAnimation .parent ctrl .curve (:curve layout-config))]
-                          (.-tweenAnim! this cv)
-                          cv))
-                    progress (fn [] (.-value anim))
-                    tween (tw/tween-layout [:layout-tween (:id to-layout) gen]
-                                           from-src to-src progress)]
-                (.-duration! ctrl (:duration layout-config))
-                (.-tweenGen! this gen)
-                (.-tweenLayout! this tween)
-                (.forward ctrl .from 0.0)))))))))
-
-(defn- maybe-layout-tween!
-  "Decides between morphing and snapping on a resolved-layout `:id` change.
-   Snaps (cancels any active morph) when :layout animation is off, the widget is
-   reorderable, data changed in the same update (v1: keep it simple — run the
-   normal diff), or a remove/insert animation is mid-flight."
-  [^SliverCollectionState this anim-config ^bool layout-changed ^bool data-changed]
-  (when layout-changed
-    (let [^SliverCollection widget (.-widget this)
-          layout-config (:layout anim-config)]
-      (if (or (nil? layout-config)
-              (.-reorderable widget)
-              data-changed
-              (seq (.-dyingItems this))
-              (seq (.-activeInserts this)))
-        (cancel-tween! this)
-        (start-layout-tween! this (.-layoutImpl widget) layout-config)))))
+    (if (and (instance? render/CollectionRenderSliver ro)
+             (some? (render/snapshot-window ^render/CollectionRenderSliver ro)))
+      (let [^int gen (inc (.-tweenGen this))
+            move-cfg (:move anim-config)
+            dur (or (:duration move-cfg) (:duration anim-config))
+            crv (or (:curve move-cfg) (:curve anim-config))
+            ^a/AnimationController ctrl
+            (or (.-tweenCtrl this)
+                (let [c (a/AnimationController .vsync this .duration dur)]
+                  (.addStatusListener c
+                    (fn [^a/AnimationStatus s]
+                      (when (.-isCompleted s) (finish-segment! this))))
+                  (.-tweenCtrl! this c)
+                  c))]
+        (when (nil? (.-tweenAnim this))
+          (.-tweenAnim! this (a/CurvedAnimation .parent ctrl .curve crv)))
+        (.-duration! ctrl dur)
+        (.-tweenGen! this gen)
+        (.-segmentActive! this true)
+        (.forward ctrl .from 0.0))
+      (settle-segment! this))))
 
 (defn- run-prefetch!
   "Prefetches up to prefetchDistance items ahead of `data-index`, at most
@@ -412,8 +369,8 @@
   (let [args (parse-collection-args raw-args)
         key-fn (:key-fn args)
         animate (:animate args)
-        ;; parse whenever :animate is present — the layout morph is index-based
-        ;; and needs no :key-fn; the diff-driven sections stay gated on it later
+        ;; parse whenever :animate is present — the segment covers move/morph
+        ;; index-based (no :key-fn); enter/exit gate on :key-fn via the diff
         anim-config (when animate
                       (an/parse-anim-config animate))
         reorderable (boolean (:reorderable args))

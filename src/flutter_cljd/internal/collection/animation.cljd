@@ -108,7 +108,7 @@
 
 ;; --- Insert / Remove transitions ---
 
-(defn- ^w/Axis scroll-axis
+(defn ^w/Axis scroll-axis
   "Scroll axis of the enclosing scrollable — size transitions must collapse
    along the main axis, which isn't always vertical."
   [^w/BuildContext ctx]
