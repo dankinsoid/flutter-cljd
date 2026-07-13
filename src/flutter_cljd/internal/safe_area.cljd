@@ -96,8 +96,9 @@
 
 (defn parse-sides
   "Parses `(side… child)` into `[edges child]` using the same edge keys as
-   `parse-args`, defaulting to all four edges."
-  [args]
+   `parse-args`, defaulting to all four edges. `caller` names the calling widget
+   for assertion messages."
+  [caller args]
   (loop [vs args, edges #{}, edges? false]
     (let [a (first vs)]
       (cond
@@ -112,7 +113,7 @@
 
         :else
         (do (assert (empty? (next vs))
-                    (str "remove-safe-area: child must be the final argument, got extra " (vec (next vs))))
+                    (str caller ": child must be the final argument, got extra " (vec (next vs))))
             [(if edges? edges all-edges) a])))))
 
 (defn ^w/Widget remove-safe-area*
@@ -128,3 +129,33 @@
       .removeRight (contains? edges :right)
       .removeBottom (contains? edges :bottom)
       .child child))))
+
+(defn ^w/Widget restore-safe-area*
+  "See `flutter-cljd.widgets/restore-safe-area`."
+  [edges child]
+  (w/Builder
+   .builder
+   (fn [^w/BuildContext ctx]
+     (let [^w/MediaQueryData mq (w/MediaQuery.of ctx)
+           ^w/MediaQueryData phys (w/MediaQueryData.fromView (w/View.of ctx))
+           ^w/EdgeInsets pad (.-padding mq)
+           ^w/EdgeInsets vpad (.-viewPadding mq)
+           ^w/EdgeInsets ppad (.-padding phys)
+           ^w/EdgeInsets pvpad (.-viewPadding phys)
+           l? (contains? edges :left)
+           t? (contains? edges :top)
+           r? (contains? edges :right)
+           b? (contains? edges :bottom)
+           ^w/MediaQueryData data
+           (.copyWith mq
+                      .padding (.copyWith pad
+                                          .left (when l? (.-left ppad))
+                                          .top (when t? (.-top ppad))
+                                          .right (when r? (.-right ppad))
+                                          .bottom (when b? (.-bottom ppad)))
+                      .viewPadding (.copyWith vpad
+                                              .left (when l? (.-left pvpad))
+                                              .top (when t? (.-top pvpad))
+                                              .right (when r? (.-right pvpad))
+                                              .bottom (when b? (.-bottom pvpad))))]
+       (w/MediaQuery .data data .child child)))))

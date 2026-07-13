@@ -209,8 +209,40 @@ Examples:
 
    [Flutter docs](https://api.flutter.dev/flutter/widgets/MediaQuery/removePadding.html)"
   [& args]
-  (let [[edges child] (sa/parse-sides args)]
+  (let [[edges child] (sa/parse-sides "remove-safe-area" args)]
     (sa/remove-safe-area* edges child)))
+
+;; @ai-generated(guided)
+(defn ^w/Widget restore-safe-area
+  "Re-injects the display's physical safe-area insets into the `MediaQuery` on the
+   chosen edges, so a descendant `safe-area` insets from the screen edge again.
+   The inverse of `remove-safe-area`: it undoes both an explicit `remove-safe-area`
+   and the automatic consumption a wrapping `safe-area` performs. Sides use the
+   same keys as `safe-area`; all four edges by default.
+
+   Only chrome padding is restored, read straight from the display, so nested
+   `safe-area`s below see the original notch/status-bar/gesture insets. The
+   keyboard inset is not restored.
+
+   When you need this: the child's geometry has been pushed back out to the
+   physical screen edge inside an already-safe region — e.g. an edge-to-edge
+   background, image, or scrollable drawn under the notch (via a negative margin,
+   `OverflowBox`, or an ancestor painting behind system UI) whose *content* you
+   still want inset from the screen.
+
+   When it double-insets: if the child still sits inside the ancestor's inset
+   (its geometry was not expanded back to the edge), the restored inset stacks on
+   top of the ancestor's, so descendants are inset twice. In that case you want a
+   plain `safe-area`, not this.
+
+   ```clojure
+   (restore-safe-area child)
+   (restore-safe-area :top child)
+   (restore-safe-area [:top :bottom] child)
+   ```"
+  [& args]
+  (let [[edges child] (sa/parse-sides "restore-safe-area" args)]
+    (sa/restore-safe-area* edges child)))
 
 (defn ^w/Widget scaffold
   "Implements the basic Material Design visual layout structure: an optional
