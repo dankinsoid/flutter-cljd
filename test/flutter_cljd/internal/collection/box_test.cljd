@@ -3,7 +3,9 @@
   (:require [clojure.test :refer [deftest is testing]]
             ["dart:ui" :as ui]
             ["package:flutter/rendering.dart" :as r]
+            ["package:flutter/widgets.dart" :as w]
             [flutter-cljd.layouts :as l]
+            [flutter-cljd.internal.collection.tween :as tw]
             [flutter-cljd.internal.collection.box :as box]))
 
 (defn- close? [a b] (< (.abs (double (- a b))) 1e-6))
@@ -110,3 +112,110 @@
         rb (laid-out layout :vertical children 100.0 500.0)
         dry (.getDryLayout rb (r/BoxConstraints .maxWidth 100.0 .maxHeight 500.0))]
     (is (= (.-size rb) dry))))
+
+;; --- v2 keyed rect animator (see docs/CollectionRectAnimator.md §14.7 / §10) ---
+;;
+;; A detached box can be driven through a real animating pass without a vsync by
+;; using AlwaysStoppedAnimation as its tweenAnim: a concrete a/Animation whose
+;; .value is fixed. Seed the box with a resting pass first (records committed +
+;; own size), then bump curGen (so the first animating pass captures the target
+;; from the new layout and freezes `from`) and lay it out. At value t the cells
+;; and the box size sit at the from→target midpoint.
+
+(defn- ^ui/Size box-size [^box/RenderCollectionBox rb] (.-size rb))
+
+(defn- size≈ [^ui/Size s ^double w ^double h]
+  (and (close? (.-width s) w) (close? (.-height s) h)))
+
+(defn- offsets≈ [expected actual]
+  (and (= (count expected) (count actual))
+       (every? identity
+               (map (fn [[ex ey] [ax ay]] (and (close? ex ax) (close? ey ay)))
+                    expected actual))))
+
+(defn- start-anim!
+  "From a resting box, begins an animating segment toward `new-layout` held at a
+   fixed progress `t`. Bumps gen so the first pass captures the target then lerps."
+  [^box/RenderCollectionBox rb new-layout ^double t ^double mw ^double mh]
+  (.-layoutModel! rb new-layout)
+  (.-tweenAnim! rb (w/AlwaysStoppedAnimation t))
+  (.-curGen! rb (inc (.-curGen rb)))          ; distinct from segGen ⇒ capture target
+  (.markNeedsLayout rb)
+  (.layout rb (r/BoxConstraints .maxWidth mw .maxHeight mh)))
+
+(defn- relayout-at!
+  "Another pass of the CURRENT segment (gen unchanged ⇒ no retarget, same `from`
+   and `target`) held at a fixed progress `t`."
+  [^box/RenderCollectionBox rb ^double t ^double mw ^double mh]
+  (.-tweenAnim! rb (w/AlwaysStoppedAnimation t))
+  (.markNeedsLayout rb)
+  (.layout rb (r/BoxConstraints .maxWidth mw .maxHeight mh)))
+
+;; 1. Own-size lerp: the box's own size animates between the resting size under A
+;;    and the natural size under B, endpoints exact.
+
+(deftest box-own-size-lerp
+  (let [A (l/list :spacing 0)
+        B (l/wrap :spacing 10 :run-spacing 6)
+        kids #(vector (fixed-child 40 20) (fixed-child 40 20) (fixed-child 40 30))
+        ^ui/Size sa (.-size (laid-out A :vertical (kids) 100.0 500.0))
+        ^ui/Size sb (.-size (laid-out B :vertical (kids) 100.0 500.0))
+        size-at (fn [^double t]
+                  (let [rb (laid-out A :vertical (kids) 100.0 500.0)]
+                    (start-anim! rb B t 100.0 500.0)
+                    (box-size rb)))]
+    (testing "list and wrap yield genuinely different content sizes"
+      (is (not (size≈ sa (.-width sb) (.-height sb)))))
+    (testing "t=0 sits at the resting size under A"
+      (is (size≈ (size-at 0.0) (.-width sa) (.-height sa))))
+    (testing "t=1 sits at the natural size under B"
+      (is (size≈ (size-at 1.0) (.-width sb) (.-height sb))))
+    (testing "t=0.5 is the component-wise midpoint of S_a and S_b"
+      (is (size≈ (size-at 0.5)
+                 (tw/lerp (.-width sa) (.-width sb) 0.5)
+                 (tw/lerp (.-height sa) (.-height sb) 0.5))))))
+
+;; 2. Cell rect lerp / move: a child that moves between A and B sits at the lerped
+;;    offset mid-glide. list spacing 0 → spacing 40 pushes each child down.
+
+(deftest box-cell-move-lerp
+  (let [A (l/list :spacing 0)
+        B (l/list :spacing 40)
+        kids #(vector (fixed-child 40 20) (fixed-child 40 20) (fixed-child 40 30))
+        rest-a (laid-out A :vertical (kids) 100.0 500.0)
+        rest-b (laid-out B :vertical (kids) 100.0 500.0)]
+    (testing "resting endpoints move the lower cells but keep sizes"
+      (is (offsets≈ [[0.0 0.0] [0.0 20.0] [0.0 40.0]] (child-offsets rest-a)))
+      (is (offsets≈ [[0.0 0.0] [0.0 60.0] [0.0 120.0]] (child-offsets rest-b))))
+    (testing "at t=0.5 each child sits at the midpoint offset of A and B"
+      (let [rb (laid-out A :vertical (kids) 100.0 500.0)]
+        (start-anim! rb B 0.5 100.0 500.0)
+        (is (offsets≈ [[0.0 0.0] [0.0 40.0] [0.0 80.0]] (child-offsets rb)))))))
+
+;; 3. Stable-size cell ⇒ zero child relayout across the glide (constraint 1).
+;;    A cell whose size does not change between from and target gets identical
+;;    tight constraints every tick (lerp of equal sizes is bit-identical), so
+;;    RenderObject.layout early-returns and performLayout never re-runs.
+
+;; @ai-generated(solo)
+(deftype CountingChild [^:mutable ^int layouts]
+  :extends r/RenderBox
+  (^ui/Size computeDryLayout [_this ^r/BoxConstraints c]
+    (.constrain c (ui/Size 40.0 30.0)))
+  (performLayout [^CountingChild this]
+    (.-layouts! this (inc (.-layouts this)))
+    (.-size! this (.constrain ^r/BoxConstraints (.-constraints this) (ui/Size 40.0 30.0)))
+    nil))
+
+(deftest box-stable-size-cell-no-relayout
+  ;; list spacing 0 → 40: index 1 moves (y 30 → 70) but keeps its 40×30 size.
+  (let [c0 (CountingChild 0)
+        c1 (CountingChild 0)
+        rb (laid-out (l/list :spacing 0) :vertical [c0 c1] 100.0 500.0)]
+    (start-anim! rb (l/list :spacing 40) 0.1 100.0 500.0)  ; first pass: tight relayout
+    (let [after-first (.-layouts c1)]
+      (testing "the moving cell keeps its size across the segment"
+        (doseq [t [0.3 0.6 0.9]]
+          (relayout-at! rb t 100.0 500.0)))
+      (testing "no further performLayout on a stable-size cell (identity constraints)"
+        (is (= after-first (.-layouts c1)))))))

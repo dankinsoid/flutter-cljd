@@ -270,6 +270,28 @@
       (is (close? 180.0 (ext 1.0)))
       (is (close? 290.0 (ext 0.5))))))
 
+(deftest keyed-tween-retarget-continuous
+  ;; Interrupt a keyed glide mid-flight, freeze the interpolated rect as the new
+  ;; committed `from`, and re-aim at a fresh target — as the engine does when a
+  ;; second data/layout change lands mid-segment. Must be jump-free: the new
+  ;; segment starts exactly where the old was interrupted and still lands on the
+  ;; new target. Distinct from `retarget-freeze-is-continuous`, which exercises
+  ;; the index-addressed `tween-layout`; this one is the KEYED `from` path.
+  (let [to1 (tw/frozen-frame-source
+             {:base 0 :extent 180.0 :frames [(fr 0 0 60 100) (fr 60 100 60 100)]})
+        committed0 {:x (fr 200 0 100 200)}
+        key-of (fn [^int _i] :x)
+        ;; interrupt index 1 at t=0.5 → interpolated rect
+        mid (keyed-geo to1 committed0 300.0 key-of 0.5 1)
+        ;; re-aim: the interpolated rect becomes the new committed `from`
+        committed1 {:x mid}
+        to2 (tw/frozen-frame-source
+             {:base 0 :extent 120.0 :frames [(fr 0 0 40 80) (fr 40 0 40 80)]})]
+    (testing "the re-aimed segment starts exactly at the interrupted rect"
+      (is (frame= mid (keyed-geo to2 committed1 240.0 key-of 0.0 1))))
+    (testing "and still lands exactly on the new target"
+      (is (frame= (fr 40 0 40 80) (keyed-geo to2 committed1 240.0 key-of 1.0 1))))))
+
 (deftest keyed-tween-windowing-passes-through-to-src
   (let [to (tw/frozen-frame-source
             {:base 0 :extent 400.0
