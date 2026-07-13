@@ -38,13 +38,28 @@
     (testing "anchor state is the raw offset"
       (is (close? 500 ((:anchor l) venv 7 500.0))))))
 
-(deftest list-layout-estimate
+(deftest list-layout-fixed-indexed
   (let [l (lay/list-layout {:item-extent 48})]
-    (testing "fixed extent gives an exact total"
-      (is (close? (* 48 100) ((:estimate l) venv 5 288.0 100))))
-    (testing "spacing is counted between items only"
+    (testing "a fixed extent routes to the indexed engine"
+      (is (some? (:geometry l)))
+      (is (nil? (:init l))))
+    (testing "geometry is pure math over the index"
+      (let [g3 ((:geometry l) venv 3)]
+        (is (close? 144 (:offset g3)))
+        (is (close? 0 (:cross g3)))
+        (is (close? 48 (:main-extent g3)))
+        (is (close? 300 (:cross-extent g3)))))
+    (testing "offset maps to index by division, clamped at 0"
+      (is (= 2 ((:first-index l) venv 100.0)))
+      (is (= 2 ((:last-index l) venv 100.0)))
+      (is (= 0 ((:first-index l) venv -10.0))))
+    (testing "total extent is exact, no trailing spacing"
+      (is (close? (* 48 100) ((:max-extent l) venv 100))))
+    (testing "spacing widens the pitch and is counted between items only"
       (let [l (lay/list-layout {:item-extent 48 :spacing 2})]
-        (is (close? (- (* 50 100) 2) ((:estimate l) venv 5 288.0 100)))))))
+        (is (close? 150 (:offset ((:geometry l) venv 3))))
+        (is (= 2 ((:first-index l) venv 100.0)))
+        (is (close? (- (* 50 100) 2) ((:max-extent l) venv 100)))))))
 
 ;; --- wrap ---
 

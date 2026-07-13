@@ -89,27 +89,46 @@
 
 ;; --- Built-in flow layouts ---
 
+(defn- fixed-list-layout
+  "Single-column list with a known main-axis extent: every child is the same
+   size, so offset↔index, per-child geometry and the total extent are pure
+   math. This drives the indexed engine — no measuring or walking the visible
+   children to find the first index, and far-scroll jumps land in O(1)."
+  [^double item-extent ^double spacing]
+  ;; pitch <= 0 only for a degenerate item-extent+spacing; guard the divisions
+  ;; so the geometry never becomes NaN/Infinity — everything collapses to index 0.
+  (let [^double pitch (+ item-extent spacing)
+        index-at (fn ^int [^double off]
+                   (if (and (pos? pitch) (pos? off))
+                     (.floor ^double (/ off pitch))
+                     0))]
+    {:id [:list-fixed item-extent spacing]
+     :geometry (fn [env ^int i]
+                 {:offset (* i pitch)
+                  :cross 0.0
+                  :main-extent item-extent
+                  :cross-extent (:cross-extent env)})
+     :first-index (fn [_env ^double off] (index-at off))
+     :last-index (fn [_env ^double off] (index-at off))
+     :max-extent (fn [_env ^int n]
+                   (if (pos? n) (- (* pitch n) spacing) 0.0))}))
+
 (defn list-layout
   "Children stacked along the main axis. Opts: :item-extent (fixed main-axis
-   size, skips per-child intrinsic sizing), :spacing (gap between items)."
+   size — routes to the O(1) indexed engine), :spacing (gap between items)."
   [opts]
   (let [^double spacing (double (or (:spacing opts) 0))
         item-extent (some-> (:item-extent opts) double)]
-    {:id [:list spacing item-extent]
-     :init (fn [_env] 0.0)
-     :measure (fn [env _i]
-                (let [^r/SliverConstraints c (:constraints env)]
-                  (if item-extent
-                    (.asBoxConstraints c .minExtent item-extent .maxExtent item-extent)
-                    (.asBoxConstraints c))))
-     :place (fn [env _i size ^double offset]
-              [{:offset offset :cross 0.0}
-               (+ offset (size-main env size) spacing)])
-     :flow-end (fn [_env ^double state] state)
-     :anchor (fn [_env _i ^double offset] offset)
-     :estimate (when item-extent
-                 (fn [_env _last-i _end ^int n]
-                   (math/max 0.0 (- (* (+ ^double item-extent spacing) n) spacing))))}))
+    (if item-extent
+      (fixed-list-layout item-extent spacing)
+      {:id [:list spacing]
+       :init (fn [_env] 0.0)
+       :measure (fn [env _i] (.asBoxConstraints ^r/SliverConstraints (:constraints env)))
+       :place (fn [env _i size ^double offset]
+                [{:offset offset :cross 0.0}
+                 (+ offset (size-main env size) spacing)])
+       :flow-end (fn [_env ^double state] state)
+       :anchor (fn [_env _i ^double offset] offset)})))
 
 (defn wrap-layout
   "Rows (or columns, for horizontal scroll) of self-sized children, packed
