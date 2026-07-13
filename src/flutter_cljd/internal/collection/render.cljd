@@ -717,7 +717,8 @@
                        created nil]
                   (if (>= idx first-index)
                     (let [gm (geo-fn env idx)
-                          ch (.insertAndLayoutLeadingChild rs (geo-constraints env gm))]
+                          ch (.insertAndLayoutLeadingChild rs (geo-constraints env gm)
+                                                            .parentUsesSize true)]
                       (if (nil? ch)
                         created
                         (do (set-layout-offset! ch (double (:offset gm)))
@@ -749,7 +750,7 @@
                           child (if (and existing (= (.indexOf rs ^r/RenderBox existing) idx))
                                   (do (.layout ^r/RenderBox existing bc .parentUsesSize true)
                                       existing)
-                                  (.insertAndLayoutChild rs bc .after prev))]
+                                  (.insertAndLayoutChild rs bc .after prev .parentUsesSize true))]
                       (if (nil? child)
                         [trail-end true]
                         (do (set-layout-offset! ^r/RenderBox child (double (:offset gm)))
