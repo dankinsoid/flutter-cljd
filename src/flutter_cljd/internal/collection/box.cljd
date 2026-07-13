@@ -492,7 +492,13 @@
       (throw (Exception. (str "collection: :axis must be :vertical or :horizontal, got " axis))))
     (let [animate (:animate opts)
           anim-config (when animate (an/parse-anim-config animate))
-          kids (vec children)]
+          ;; MultiChildRenderObjectWidget.children needs a real List<Widget>; a
+          ;; cljd PersistentVector reaches it through the deftype :extends super-call
+          ;; uncoerced (unlike a normal Flutter constructor call) and fails the cast.
+          kids (let [l #dart ^w/Widget []]
+                 (doseq [c (flatten children)]
+                   (when (instance? w/Widget c) (.add l ^w/Widget c)))
+                 l)]
       (if anim-config
         (CollectionBox (t/widget-key (:key opts)) layout-impl axis kids anim-config)
         (CollectionBoxWidget (t/widget-key (:key opts)) kids layout-impl axis nil 0 nil)))))
