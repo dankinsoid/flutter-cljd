@@ -13,7 +13,20 @@
 
    No virtualization by design: a box must measure all children to know its own
    size, so laziness has nothing to cut. Large or infinite collections belong
-   to the sliver host."
+   to the sliver host.
+
+   ## Animation — the shared keyed rect animator (v2)
+
+   The box shares the sliver's rect animator core (docs/CollectionRectAnimator.md):
+   a persistent {key -> content-space rect} committed map, a gen-freeze of the
+   `from` rects at segment start, a target captured from the NEW tree, and a
+   per-tick lerp that lays every cell at tight interpolated constraints — so
+   move, layout morph and axis change all fall out of one mechanism. Because the
+   box is eager it DROPS everything the sliver needs only because it scrolls:
+   windowing, GC, union windows, scroll correction. It ADDS one thing the sliver
+   lacks — the box's OWN size lerps with the cells. Child enter/exit is out of
+   scope (the box has always shown its full child list); an entering key with no
+   committed history simply appears at its target."
   (:require
    ["dart:math" :as math]
    ["dart:ui" :as ui]
@@ -48,7 +61,7 @@
      .cacheOrigin 0.0)))
 
 (defn- ^r/BoxConstraints tight-constraints
-  "Tight constraints for an indexed-layout cell geometry."
+  "Tight constraints for a cell geometry {:main-extent :cross-extent}."
   [env gm]
   (let [^double me (double (:main-extent gm))
         ^double ce (double (:cross-extent gm))]
@@ -59,10 +72,18 @@
 (declare content-size)
 
 (deftype RenderCollectionBox
-  [^:mutable layoutModel  ;; layout map (see collection.layout)
+  [^:mutable layoutModel  ;; PLAIN layout map (see collection.layout) — never a tween
    ^:mutable axis         ;; :vertical | :horizontal — the layout's main axis
-   ^:mutable ^a/Animation? tweenAnim   ;; drives per-tick relayout during a morph
-   ^:mutable tweenListener]            ;; listener registered on tweenAnim
+   ^:mutable ^a/Animation? tweenAnim   ;; drives per-tick relayout during a segment
+   ^:mutable tweenListener             ;; listener registered on tweenAnim
+   ^:mutable keyOf        ;; (fn [^int i] -> key) — animation identity of child i
+   ^:mutable committed    ;; {key -> rect} content-space; updated every pass
+   ^:mutable fromRects    ;; {key -> rect} frozen committed at segment start
+   ^:mutable ^ui/Size? fromSize    ;; box size frozen at segment start
+   ^:mutable targetRects  ;; {key -> rect} this segment's goal, from the new tree
+   ^:mutable ^ui/Size? targetSize  ;; natural content size at segment target
+   ^:mutable ^int curGen  ;; host's current segment gen (set by update-box!)
+   ^:mutable ^int segGen] ;; gen the engine last captured a target for; -1 = none
   :extends r/RenderBox
 
   (setupParentData [_this ^r/RenderObject child]
@@ -91,6 +112,8 @@
 
   ^:mixin #/(r/ContainerRenderObjectMixin r/RenderBox CollectionBoxParentData)
   ^:mixin #/(r/RenderBoxContainerDefaultsMixin r/RenderBox CollectionBoxParentData))
+
+;; --- resting drivers (natural placement, self-sizing) ---
 
 (defn- flow-pass!
   "Measures and places every child through the flow model. Returns
@@ -143,13 +166,134 @@
               ^double cross (double (:cross gm))
               ^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)]
           (when-not dry?
-            (.layout ^r/RenderBox child bc)
+            (.layout ^r/RenderBox child bc .parentUsesSize true)
             (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross))))
           (recur (.-nextSibling pd) (inc i)
                  (double (math/max cross-end (+ cross ^double (:cross-extent gm))))))))))
 
+;; --- keyed rect animator (v2, see docs/CollectionRectAnimator.md) ---
+
+(defn- key-for
+  "Animation key of index `i`: the host's key-of closure, or the index itself."
+  [^RenderCollectionBox rb ^int i]
+  (if-let [kf (.-keyOf rb)] (kf i) i))
+
+(defn- ^ui/Size lerp-size
+  "Component-wise lerp of two box sizes (width and height, so main + cross).
+   A nil `from` (no prior size) appears settled at the target."
+  [^ui/Size? from ^ui/Size to ^double t]
+  (if (nil? from)
+    to
+    (ui/Size (tw/lerp (.-width from) (.-width to) t)
+             (tw/lerp (.-height from) (.-height to) t))))
+
+;; @ai-generated(guided)
+(defn- natural-frames
+  "Runs `layout` over every child with dry measurement (the once-per-segment
+   natural measure), producing an ordered per-child frame vector plus the content
+   extents: [frames main-end cross-end]. `env` must already carry :ctx. Writes no
+   parent data — used to capture a segment's keyed target and target box size."
+  [^RenderCollectionBox rb layout env]
+  (if (:geometry layout)
+    (let [geo (:geometry layout)
+          ^int n (int (or (:item-count env) 0))
+          ^double main-end (if (pos? n) (double ((:max-extent layout) env n)) 0.0)]
+      (loop [child (.-firstChild rb) ^int i 0 frames [] ^double cross-end 0.0]
+        (if (nil? child)
+          [frames main-end cross-end]
+          (let [gm (geo env i)
+                ^double cross (double (:cross gm))
+                ^double ce (double (:cross-extent gm))
+                ^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)]
+            (recur (.-nextSibling pd) (inc i)
+                   (conj frames {:offset (double (:offset gm)) :cross cross
+                                 :main-extent (double (:main-extent gm)) :cross-extent ce})
+                   (double (math/max cross-end (+ cross ce))))))))
+    (let [measure-fn (:measure layout)
+          place-fn (:place layout)]
+      (loop [child (.-firstChild rb) ^int i 0 state ((:init layout) env)
+             frames [] ^double main-end 0.0 ^double cross-end 0.0]
+        (if (nil? child)
+          [frames main-end cross-end]
+          (let [^r/RenderBox ch child
+                ^r/BoxConstraints bc (measure-fn env i)
+                ^ui/Size size (.getDryLayout ch bc)
+                [gm state'] (place-fn env i size state)
+                ^double off (double (:offset gm))
+                ^double cross (double (or (:cross gm) 0.0))
+                ^double me (lay/size-main env size)
+                ^double ce (lay/size-cross env size)
+                ^CollectionBoxParentData pd (.-parentData ch)]
+            (recur (.-nextSibling pd) (inc i) state'
+                   (conj frames {:offset off :cross cross :main-extent me :cross-extent ce})
+                   (double (math/max main-end (+ off me)))
+                   (double (math/max cross-end (+ cross ce))))))))))
+
+(defn- record-committed!
+  "Resting commit: {key -> content-space rect} over the just-placed children,
+   read from parent-data offset + measured size. Frozen as `from` at the next
+   segment start."
+  [^RenderCollectionBox rb env vertical?]
+  (loop [child (.-firstChild rb) ^int i 0 m {}]
+    (if (nil? child)
+      (.-committed! rb m)
+      (let [^r/RenderBox ch child
+            ^CollectionBoxParentData pd (.-parentData ch)
+            ^ui/Offset o (.-offset pd)
+            ^ui/Size size (.-size ch)
+            ^double off (if vertical? (.-dy o) (.-dx o))
+            ^double cross (if vertical? (.-dx o) (.-dy o))]
+        (recur (.-nextSibling pd) (inc i)
+               (assoc m (key-for rb i)
+                      {:offset off :cross cross
+                       :main-extent (lay/size-main env size)
+                       :cross-extent (lay/size-cross env size)}))))))
+
+;; @ai-generated(guided)
+(defn- ^ui/Size animate-pass!
+  "The animating layout pass. On a gen change captures the segment's `from`
+   (current committed rects + current box size) and its target (natural placement
+   over the NEW children, keyed). Every pass lays each child at tight constraints
+   from its lerped rect, sets its offset, and updates committed. Returns the box
+   size lerped from the frozen size toward the target."
+  [^RenderCollectionBox rb ^r/BoxConstraints c layout env vertical?]
+  (when (not= (.-curGen rb) (.-segGen rb))
+    (let [env' (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+          [frames ^double main-end ^double cross-end] (natural-frames rb layout env')
+          target-rects (loop [fs (seq frames) ^int i 0 m {}]
+                         (if fs
+                           (recur (next fs) (inc i) (assoc m (key-for rb i) (first fs)))
+                           m))
+          ^ui/Size target-size (.constrain c (if vertical?
+                                               (ui/Size cross-end main-end)
+                                               (ui/Size main-end cross-end)))]
+      (.-fromRects! rb (.-committed rb))
+      (.-fromSize! rb (when (.-hasSize rb) (.-size rb)))
+      (.-targetRects! rb target-rects)
+      (.-targetSize! rb target-size)
+      (.-segGen! rb (.-curGen rb))))
+  (let [^double t (.-value ^a/Animation (.-tweenAnim rb))
+        from-rects (.-fromRects rb)
+        target-rects (.-targetRects rb)]
+    (loop [child (.-firstChild rb) ^int i 0 committed {}]
+      (if (nil? child)
+        (do (.-committed! rb committed)
+            (lerp-size (.-fromSize rb) (.-targetSize rb) t))
+        (let [^r/RenderBox ch child
+              key (key-for rb i)
+              disp (tw/lerp-frame (get from-rects key) (get target-rects key) t)
+              ^double off (double (:offset disp))
+              ^double cross (double (:cross disp))
+              ^CollectionBoxParentData pd (.-parentData ch)]
+          (.layout ch (tight-constraints env disp))
+          (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross)))
+          (recur (.-nextSibling pd) (inc i) (assoc committed key disp)))))))
+
 (defn- ^ui/Size content-size
-  "Runs the layout over all children and returns the constrained box size."
+  "performLayout / computeDryLayout worker. Resting (no tween) runs the natural
+   driver and records committed; animating lays cells at lerped tight constraints
+   and lerps the box's own size; the dry path returns the lerped size mid-segment
+   and never writes state."
   [^RenderCollectionBox rb ^r/BoxConstraints c dry?]
   (let [axis (.-axis rb)
         vertical? (= :vertical axis)
@@ -162,91 +306,38 @@
                    " for :axis " axis ") must be bounded — wrap the collection "
                    "in a sized or constrained box"))))
     (let [layout (.-layoutModel rb)
+          ^a/Animation? anim (.-tweenAnim rb)
           env (lay/make-env (synth-constraints axis cross-max main-max)
-                            (.-childCount rb))
-          env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
-          [^double main-end ^double cross-end]
-          (if (:geometry layout)
-            (indexed-pass! rb layout env dry?)
-            (flow-pass! rb layout env dry?))]
-      (.constrain c (if vertical?
-                      (ui/Size cross-end main-end)
-                      (ui/Size main-end cross-end))))))
+                            (.-childCount rb))]
+      (cond
+        ;; ANIMATING: real layout pass (side effects allowed).
+        (and anim (not dry?))
+        (animate-pass! rb c layout env vertical?)
 
-;; --- layout-morph snapshots ---
+        ;; DRY mid-segment with a captured target: report the lerped size only.
+        (and dry? anim (= (.-curGen rb) (.-segGen rb)) (some? (.-targetSize rb)))
+        (lerp-size (.-fromSize rb) (.-targetSize rb)
+                   (double (.-value ^a/Animation anim)))
 
-(defn- box-env
-  "The synthetic sliver universe the box lays out under, from its current
-   constraints — matches what `content-size` builds."
-  [^RenderCollectionBox rb]
-  (let [axis (.-axis rb)
-        vertical? (= :vertical axis)
-        ^r/BoxConstraints c (.-constraints rb)
-        ^double cross-max (if vertical? (.-maxWidth c) (.-maxHeight c))
-        ^double main-max (if vertical? (.-maxHeight c) (.-maxWidth c))]
-    (lay/make-env (synth-constraints axis cross-max main-max) (.-childCount rb))))
-
-(defn- box-snapshot-current
-  "Frozen `from`: the children as they sit right now (the previous layout, or
-   interpolated positions on retarget). Reads parent-data offsets and sizes."
-  [^RenderCollectionBox rb env]
-  (let [vertical? (= :vertical (:axis env))]
-    (loop [child (.-firstChild rb) frames [] ^double main 0.0]
-      (if (nil? child)
-        {:frames frames :base 0 :extent main}
-        (let [^r/RenderBox ch child
-              ^CollectionBoxParentData pd (.-parentData ch)
-              ^ui/Offset o (.-offset pd)
-              ^ui/Size size (.-size ch)
-              ^double off (if vertical? (.-dy o) (.-dx o))
-              ^double crs (if vertical? (.-dx o) (.-dy o))
-              ^double me (lay/size-main env size)
-              ^double ce (lay/size-cross env size)]
-          (recur (.-nextSibling pd)
-                 (conj frames {:offset off :cross crs :main-extent me :cross-extent ce})
-                 (double (math/max main (+ off me)))))))))
-
-(defn- box-snapshot-layout
-  "Frozen `to`: runs `layout` over the children with dry measurement, producing
-   a frame per child without touching parent data. Exact — the box measures
-   everything, so text reflow under the target layout is captured."
-  [^RenderCollectionBox rb layout env]
-  (let [env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)]
-    (if (:geometry layout)
-      (let [geo (:geometry layout)
-            ^int n (int (or (:item-count env) 0))
-            frames (mapv (fn [^int i]
-                           (let [gm (geo env i)]
-                             {:offset (double (:offset gm)) :cross (double (:cross gm))
-                              :main-extent (double (:main-extent gm))
-                              :cross-extent (double (:cross-extent gm))}))
-                         (range (.-childCount rb)))]
-        {:frames frames :base 0
-         :extent (if (pos? n) (double ((:max-extent layout) env n)) 0.0)})
-      (let [measure-fn (:measure layout)
-            place-fn (:place layout)]
-        (loop [child (.-firstChild rb) ^int i 0 state ((:init layout) env)
-               frames [] ^double main 0.0]
-          (if (nil? child)
-            {:frames frames :base 0 :extent main}
-            (let [^r/RenderBox ch child
-                  ^r/BoxConstraints bc (measure-fn env i)
-                  ^ui/Size size (.getDryLayout ch bc)
-                  [gm state'] (place-fn env i size state)
-                  ^double off (double (:offset gm))
-                  ^double crs (double (or (:cross gm) 0.0))
-                  ^double me (lay/size-main env size)
-                  ^double ce (lay/size-cross env size)
-                  ^CollectionBoxParentData pd (.-parentData ch)]
-              (recur (.-nextSibling pd) (inc i) state'
-                     (conj frames {:offset off :cross crs :main-extent me :cross-extent ce})
-                     (double (math/max main (+ off me)))))))))))
+        ;; RESTING (or a dry pass with no live target): natural placement.
+        :else
+        (let [env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+              [^double main-end ^double cross-end]
+              (if (:geometry layout)
+                (indexed-pass! rb layout env dry?)
+                (flow-pass! rb layout env dry?))]
+          (when (and (not dry?) (nil? anim))
+            (record-committed! rb env vertical?))
+          (.constrain c (if vertical?
+                          (ui/Size cross-end main-end)
+                          (ui/Size main-end cross-end))))))))
 
 ;; --- render-object update ---
 
 (defn- set-box-tween-anim!
-  "Registers/updates the per-tick relayout listener (see the sliver engine's
-   twin). While a morph runs the :id is stable, so the Animation drives frames."
+  "Registers/updates the per-tick relayout listener. While a segment runs the
+   layout :id is stable, so the Animation drives the frames (mirrors the sliver
+   engine's twin)."
   [^RenderCollectionBox rb ^a/Animation? anim]
   (when-not (identical? anim (.-tweenAnim rb))
     (when-let [old (.-tweenListener rb)]
@@ -260,102 +351,100 @@
       (.-tweenListener! rb nil))))
 
 (defn update-box!
-  "Applies a new layout / axis / morph animation from updateRenderObject. Same
-   :id means same geometry, but the fns are swapped anyway for fresher closures."
-  [^RenderCollectionBox rb new-layout axis ^a/Animation? tween-anim]
-  (let [changed (or (nil? (:id new-layout))
-                    (not= (:id (.-layoutModel rb)) (:id new-layout))
-                    (not= axis (.-axis rb)))]
+  "Applies a segment from updateRenderObject. The host always passes the PLAIN
+   target layout (never a tween), the segment `tween-anim` (nil when resting),
+   an int `gen` bumped once per segment and `key-of`. The engine captures the
+   target itself on the first pass whose `gen` differs (see `animate-pass!`);
+   with `tween-anim` nil it rests and forgets the segment."
+  [^RenderCollectionBox rb new-layout axis ^a/Animation? tween-anim ^int gen key-of]
+  (let [layout-changed (or (nil? (:id new-layout))
+                           (not= (:id (.-layoutModel rb)) (:id new-layout))
+                           (not= axis (.-axis rb)))
+        gen-changed (not= gen (.-curGen rb))]
     (.-layoutModel! rb new-layout)
     (.-axis! rb axis)
+    (.-keyOf! rb key-of)
+    (.-curGen! rb gen)
     (set-box-tween-anim! rb tween-anim)
-    (when changed (.markNeedsLayout rb))))
+    (when-not tween-anim
+      (.-segGen! rb -1))
+    (when (or layout-changed gen-changed)
+      (.markNeedsLayout rb))))
 
 (deftype CollectionBoxWidget
   [^w/Key? k
    childWidgets  ;; List<Widget>
-   layoutImpl    ;; layout map
+   layoutImpl    ;; PLAIN layout map
    axisKw        ;; :vertical | :horizontal
-   ^a/Animation? tweenAnim]  ;; non-nil while a layout morph plays
+   ^a/Animation? tweenAnim  ;; non-nil while a segment plays
+   ^int gen      ;; segment generation, bumped once per segment
+   keyOf]        ;; (fn [^int i] -> key)
   :extends (w/MultiChildRenderObjectWidget .key k .children childWidgets)
 
   (createRenderObject [_this ^w/BuildContext _context]
-    (let [rb (RenderCollectionBox layoutImpl axisKw nil nil)]
+    (let [rb (RenderCollectionBox layoutImpl axisKw nil nil keyOf {} {} nil {} nil gen -1)]
       (set-box-tween-anim! rb tweenAnim)
       rb))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-box! render-object layoutImpl axisKw tweenAnim)))
+    (update-box! render-object layoutImpl axisKw tweenAnim gen keyOf)))
 
-;; --- stateful morph driver (mirrors SliverCollectionState) ---
+;; --- stateful segment driver (mirrors SliverCollectionState, trigger-only) ---
 
 (declare CollectionBoxState CollectionBox)
 
-(defn- cancel-box-tween! [^CollectionBoxState this]
-  (when (.-tweenLayout this)
-    (.-tweenLayout! this nil)
-    (when-let [^a/AnimationController c (.-tweenCtrl this)]
-      (.stop c))))
+(defn- finish-segment!
+  "Runs when the clock reaches 1.0: settle to resting. The render object's
+   committed already ended at the target, so dropping animating mode causes no
+   visual jump — the following resting pass re-measures naturally to the same."
+  [^CollectionBoxState this]
+  (when (and (.-mounted this) (.-segmentActive this))
+    (.setState this (fn [] (.-segmentActive! this false) nil))))
 
-(defn- finish-box-tween! [^CollectionBoxState this]
-  (when (and (.-mounted this) (.-tweenLayout this))
-    (.setState this (fn [] (.-tweenLayout! this nil)))))
-
-(defn- start-box-tween!
-  "Snapshots the current children as the frozen `from`, dry-measures the target
-   as the frozen `to`, and (re)starts the morph. Both endpoints are exact, so
-   the box size and every cell lerp cleanly and land on the real target."
+;; @ai-generated(guided)
+(defn- start-segment!
+  "(Re)starts the one segment clock on any change that could move a child (layout
+   :id, axis or child count). Bumps the generation so the engine freezes the
+   current committed rects + box size as `from` and captures the target from the
+   new tree. At retarget the children sit at interpolated rects, so re-aiming is
+   jump-free."
   [^CollectionBoxState this]
   (let [^CollectionBox wgt (.-widget this)
-        ro (.findRenderObject (.-context this))]
-    (if-not (instance? RenderCollectionBox ro)
-      (cancel-box-tween! this)
-      (let [^RenderCollectionBox rb ro]
-        (if (nil? (.-firstChild rb))
-          (cancel-box-tween! this)
-          (let [env (box-env rb)
-                to-layout (.-layoutImpl wgt)
-                config (.-layoutConfig wgt)
-                from-src (tw/frozen-frame-source (box-snapshot-current rb env))
-                to-src (tw/frozen-frame-source (box-snapshot-layout rb to-layout env))
-                ^int gen (inc (.-tweenGen this))
-                ^a/AnimationController ctrl
-                (or (.-tweenCtrl this)
-                    (let [c (a/AnimationController .vsync this
-                                                   .duration (:duration config))]
-                      (.addStatusListener c
-                        (fn [^a/AnimationStatus s]
-                          (when (.-isCompleted s) (finish-box-tween! this))))
-                      (.-tweenCtrl! this c)
-                      c))
-                ^a/Animation anim
-                (or (.-tweenAnim this)
-                    (let [cv (a/CurvedAnimation .parent ctrl .curve (:curve config))]
-                      (.-tweenAnim! this cv)
-                      cv))
-                progress (fn [] (.-value anim))
-                tween (tw/tween-layout [:layout-tween (:id to-layout) gen]
-                                       from-src to-src progress)]
-            (.-duration! ctrl (:duration config))
-            (.-tweenGen! this gen)
-            (.-tweenLayout! this tween)
-            (.forward ctrl .from 0.0)))))))
+        config (.-animConfig wgt)
+        move-cfg (:move config)
+        dur (or (:duration move-cfg) (:duration config))
+        crv (or (:curve move-cfg) (:curve config))
+        ^int gen (inc (.-tweenGen this))
+        ^a/AnimationController ctrl
+        (or (.-tweenCtrl this)
+            (let [c (a/AnimationController .vsync this .duration dur)]
+              (.addStatusListener c
+                (fn [^a/AnimationStatus s]
+                  (when (.-isCompleted s) (finish-segment! this))))
+              (.-tweenCtrl! this c)
+              c))]
+    (when (nil? (.-tweenAnim this))
+      (.-tweenAnim! this (a/CurvedAnimation .parent ctrl .curve crv)))
+    (.-duration! ctrl dur)
+    (.-tweenGen! this gen)
+    (.-segmentActive! this true)
+    (.forward ctrl .from 0.0)))
 
 (deftype CollectionBox
   [^w/Key? k
    layoutImpl
    axisKw
    childWidgets
-   layoutConfig]  ;; parsed :layout section of :animate
+   animConfig]  ;; parsed :animate config (see collection.animation)
   :extends (w/StatefulWidget .key k)
 
-  (createState [_this] (CollectionBoxState nil nil nil 0)))
+  (createState [_this] (CollectionBoxState false nil nil 0)))
 
 (deftype CollectionBoxState
-  [^:mutable tweenLayout
-   ^:mutable ^a/AnimationController? tweenCtrl
-   ^:mutable ^a/Animation? tweenAnim
-   ^:mutable ^int tweenGen]
+  [^:mutable ^bool segmentActive  ;; a rect segment is currently playing
+   ^:mutable ^a/AnimationController? tweenCtrl  ;; the one segment clock, reused
+   ^:mutable ^a/Animation? tweenAnim            ;; curved view the engine listens to
+   ^:mutable ^int tweenGen]       ;; segment generation, bumped per (re)start
   :extends (#/(w/State CollectionBox))
   ^:mixin #/(w/SingleTickerProviderStateMixin CollectionBox)
 
@@ -363,13 +452,10 @@
     (.didUpdateWidget ^super this old)
     (let [^CollectionBox wgt (.-widget this)
           layout-changed (not= (:id (.-layoutImpl old)) (:id (.-layoutImpl wgt)))
-          ;; a simultaneous child-count change → snap (v1: keep it simple)
-          count-changed (not= (count (.-childWidgets old))
-                              (count (.-childWidgets wgt)))]
-      (when layout-changed
-        (if count-changed
-          (cancel-box-tween! this)
-          (start-box-tween! this))))
+          axis-changed (not= (.-axisKw old) (.-axisKw wgt))
+          count-changed (not= (count (.-childWidgets old)) (count (.-childWidgets wgt)))]
+      (when (or layout-changed axis-changed count-changed)
+        (start-segment! this)))
     nil)
 
   (dispose [^CollectionBoxState this]
@@ -381,25 +467,32 @@
 
   (^w/Widget build [^CollectionBoxState this ^w/BuildContext _ctx]
     (let [^CollectionBox wgt (.-widget this)
-          tween (.-tweenLayout this)]
+          kids (.-childWidgets wgt)
+          key-of (fn [^int i]
+                   (let [^w/Widget c (nth kids i)
+                         k (.-key c)]
+                     (if (instance? w/ValueKey k) (.-value ^w/ValueKey k) i)))]
       (CollectionBoxWidget nil
-                           (.-childWidgets wgt)
-                           (or tween (.-layoutImpl wgt))
+                           kids
+                           (.-layoutImpl wgt)
                            (.-axisKw wgt)
-                           (when tween (.-tweenAnim this))))))
+                           (when (.-segmentActive this) (.-tweenAnim this))
+                           (.-tweenGen this)
+                           key-of))))
 
 (defn ^w/Widget collection-box
   "Eager box over already-built children driven by a collection layout map.
-   Opts: :key, :axis (:vertical default), :animate (only its `:layout` section
-   applies here — the box has no items to insert/remove/move). See
-   `flutter-cljd.widgets/collection`."
+   Opts: :key, :axis (:vertical default), :animate. When :animate is present the
+   box animates move + layout-morph + axis-change and lerps its own size via the
+   shared keyed rect animator; the `:move` section (falling back to the top-level
+   duration/curve) drives the segment. See `flutter-cljd.widgets/collection`."
   [layout-impl opts children]
   (let [axis (or (:axis opts) :vertical)]
     (when-not (contains? #{:vertical :horizontal} axis)
       (throw (Exception. (str "collection: :axis must be :vertical or :horizontal, got " axis))))
     (let [animate (:animate opts)
-          layout-config (:layout (when animate (an/parse-anim-config animate)))
+          anim-config (when animate (an/parse-anim-config animate))
           kids (vec children)]
-      (if layout-config
-        (CollectionBox (t/widget-key (:key opts)) layout-impl axis kids layout-config)
-        (CollectionBoxWidget (t/widget-key (:key opts)) kids layout-impl axis nil)))))
+      (if anim-config
+        (CollectionBox (t/widget-key (:key opts)) layout-impl axis kids anim-config)
+        (CollectionBoxWidget (t/widget-key (:key opts)) kids layout-impl axis nil 0 nil)))))
