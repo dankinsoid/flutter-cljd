@@ -182,6 +182,39 @@
       (is (= 3 ((:first-index src) genv ctx 50.0)))
       (is (close? 200.0 ((:extent src) genv ctx 10))))))
 
+;; --- scroll correction on the indexed/animating path (the v2 gotcha) ---
+;;
+;; The indexed driver writes geometry directly and never emits
+;; scrollOffsetCorrection. When content above the viewport collapses while the
+;; rect animator runs, the anchored child must stay put — the engine has to
+;; follow it. anchor-delta is the pure core the driver calls.
+
+(deftest anchor-delta-follows-collapsing-content
+  (testing "content above the anchor is removed → viewport follows the anchor up"
+    ;; anchor sits at old-off 100; 50px above it vanished so it now sits at 50.
+    (is (close? -50.0
+                (tw/anchor-delta [{:key :a :old-off 100.0 :old-main 40.0 :new-off 50.0}]
+                                 100.0))))
+  (testing "no movement → no correction"
+    (is (nil? (tw/anchor-delta [{:key :a :old-off 100.0 :old-main 40.0 :new-off 100.0}]
+                               100.0))))
+  (testing "the topmost cell still overlapping scroll-off is the anchor"
+    ;; scroll-off 120: cell :a (100..140) overlaps and is topmost; :b (140..) is below.
+    ;; only :a's delta drives the correction, even though :b moved further.
+    (is (close? 20.0
+                (tw/anchor-delta [{:key :a :old-off 100.0 :old-main 40.0 :new-off 120.0}
+                                  {:key :b :old-off 140.0 :old-main 40.0 :new-off 999.0}]
+                                 120.0))))
+  (testing "a cell entirely above scroll-off is not the anchor"
+    ;; :a (0..40) ends before scroll-off 100; :b (100..140) is the anchor.
+    (is (close? -30.0
+                (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off -999.0}
+                                  {:key :b :old-off 100.0 :old-main 40.0 :new-off 70.0}]
+                                 100.0))))
+  (testing "nothing overlapping scroll-off → no anchor"
+    (is (nil? (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off 10.0}]
+                               100.0)))))
+
 (deftest tween-between-two-grids-endpoints-exact
   (let [g2 (lay/resolve-layout :grid {:columns 2 :rows {:size 50}})
         g3 (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})

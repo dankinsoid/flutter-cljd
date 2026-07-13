@@ -66,6 +66,39 @@
            :main-extent (lerp (double (:main-extent from)) (double (:main-extent to)) t)
            :cross-extent (lerp (double (:cross-extent from)) (double (:cross-extent to)) t)}))
 
+;; --- keyed rect animator (v2) ---
+;;
+;; The engine owns a persistent {key -> content-space rect} and animates each
+;; visible cell from its last-committed rect toward its live target, whatever the
+;; cause. These are the host-agnostic pure pieces of that mechanism; the imperative
+;; shell (persistent state, per-tick relayout, controller) lives in each host's
+;; render object. See docs/CollectionRectAnimator.md.
+
+(defn anchor-delta
+  "Scroll correction for the animating/indexed path, which (unlike the flow
+   driver) writes geometry directly and never self-corrects. When content above
+   the viewport collapses — a remove, or list->grid shrinking the region before the
+   anchor — the anchored child jumps unless the viewport follows it.
+
+   `cells` is the visible cells this pass, each {:old-off :old-main :new-off}
+   (content-space main axis: where the cell sat last pass, its main extent last
+   pass, and where it sits this pass). `scroll-off` is the current scrollOffset.
+   The anchor is the topmost cell still overlapping `scroll-off` under the OLD
+   positions (smallest :old-off whose old span reaches past it); the correction is
+   how far that cell moved. Returns the delta to add to scrollOffset (keeping the
+   anchor visually fixed) or nil when there is no anchor or it did not move."
+  [cells ^double scroll-off]
+  (let [anchor (reduce (fn [best c]
+                         (let [^double oo (double (:old-off c))
+                               ^double om (double (:old-main c))]
+                           (if (> (+ oo om) scroll-off)
+                             (if (or (nil? best) (< oo (double (:old-off best)))) c best)
+                             best)))
+                       nil cells)]
+    (when anchor
+      (let [^double d (- (double (:new-off anchor)) (double (:old-off anchor)))]
+        (when (> (.abs d) 1e-3) d)))))
+
 (defn- min-some [a b] (cond (nil? a) b (nil? b) a :else (min ^int a ^int b)))
 (defn- max-some [a b] (cond (nil? a) b (nil? b) a :else (max ^int a ^int b)))
 
