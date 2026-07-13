@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [flutter-cljd.types :as t]
             [flutter-cljd.widgets :as f]
+            [flutter-cljd.internal.animated :as anim]
             [flutter-cljd.internal.sliver-collection :as scol]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/widgets.dart" :as w]
@@ -329,6 +330,32 @@
           widget (f/padding 10 child)]
       (is (= (.-padding widget) (t/insets 10)))
       (is (instance? m/Text (.-child widget))))))
+
+(deftest test-container
+  ;; The static container is a Builder; invoke its builder to inspect the tree.
+  ;; A ConstrainedBox always wraps the result (constraints are always resolved),
+  ;; so its `.-child` is the container's innermost decorated/padded subtree. No
+  ;; clip means the fake nil context is never dereferenced.
+  (letfn [(tree [widget] ((.-builder widget) nil))]
+    (testing "negative :padding is preserved (unlike Flutter's Container)"
+      (let [child (m/Text "Child")
+            pad (.-child (tree (f/container {:padding -8} child)))]
+        (is (= (.-padding pad) (t/insets -8)))
+        (is (instance? m/Text (.-child pad)))))
+
+    (testing "negative :margin is preserved as the outermost inset layer"
+      (let [outer (tree (f/container {:margin -4} (m/Text "Child")))]
+        (is (= (.-padding outer) (t/insets -4)))
+        (is (instance? m/ConstrainedBox (.-child outer)))))
+
+    (testing ":color folds into a BoxDecoration"
+      (let [decorated (.-child (tree (f/container {:color :red} (m/Text "Child"))))]
+        (is (instance? m/DecoratedBox decorated))
+        (is (= (.-color (.-decoration decorated)) (t/color :red)))))
+
+    (testing "animated container builds a ValueAnimationBuilder"
+      (is (instance? anim/ValueAnimationBuilder
+                     (f/container {:color :red :animation {:dur 300}} (m/Text "Child")))))))
 
 (deftest test-row
   (testing "Row with default properties"

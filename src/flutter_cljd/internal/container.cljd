@@ -1,80 +1,155 @@
+;; @ai-generated(solo)
 (ns flutter-cljd.internal.container
   (:require
+   ["dart:ui" :as ui]
    ["package:flutter/material.dart" :as m]
-   [flutter-cljd.types :as t]))
+   ["package:vector_math/vector_math_64.dart" :as vec-math]
+   [flutter-cljd.types :as t]
+   [flutter-cljd.internal.padding :as pd]
+   [flutter-cljd.internal.animated :as anim]))
+
+;; Flutter's Container builds its `padding`/`margin` with `Padding`, whose
+;; RenderPadding asserts `padding.isNonNegative` (and Container itself asserts
+;; the same on both fields). To allow negative insets — a child that overflows
+;; its box — this reimplements Container's widget tree verbatim, swapping only
+;; those two `Padding` layers for `pd/padding*` (the negative-capable AnyPadding).
+
+(deftype ^:private DecorationClipper [^ui/TextDirection textDirection ^m/Decoration decoration]
+  :extends (#/(m/CustomClipper ui/Path))
+  ;; Mirrors Container's private _DecorationClipper: clip to the decoration shape.
+  (getClip [this ^ui/Size size]
+    (.getClipPath decoration (ui/Rect.fromLTWH 0.0 0.0 (.-width size) (.-height size)) textDirection))
+  (shouldReclip [this old]
+    (or (not (instance? DecorationClipper old))
+        (not= decoration (.-decoration ^DecorationClipper old))
+        (not= textDirection (.-textDirection ^DecorationClipper old)))))
+
+(defn- ^m/EdgeInsetsGeometry? padding-including-decoration [^m/EdgeInsetsGeometry? padding ^m/Decoration? decoration]
+  ;; Container folds the decoration's own padding (e.g. border width) into the
+  ;; layout padding; the sum stays a single inset layer.
+  (let [^m/EdgeInsetsGeometry? decor-padding (some-> decoration .-padding)]
+    (cond
+      (nil? padding) decor-padding
+      (nil? decor-padding) padding
+      :else (.add padding decor-padding))))
+
+(defn- ^m/Widget build-tree
+  "Composes Container's widget tree from already-resolved props, using
+   `pd/padding*` for the padding and margin layers so negatives are allowed."
+  ;; `context` is only read for the directional clip; nil is fine otherwise.
+  [^m/BuildContext? context
+   {:keys [alignment padding decoration foreground-decoration
+           constraints margin transform transform-alignment clip]}
+   ^m/Widget? child]
+  (let [effective-padding (padding-including-decoration padding decoration)
+        ^m/BoxConstraints? constraints constraints
+        ;; Container's null-child rule: expand to fill unless tightly constrained.
+        base (cond
+               (and (nil? child) (or (nil? constraints) (not (.-isTight constraints))))
+               (m/LimitedBox .maxWidth 0.0 .maxHeight 0.0
+                             .child (m/ConstrainedBox .constraints (m/BoxConstraints.expand)))
+               (some? alignment) (m/Align .alignment alignment .child child)
+               :else child)]
+    ;; `constraints` is always resolved (see resolve-props), so the ConstrainedBox
+    ;; layer below always fires and the result is non-null — assert it for the analyzer.
+    ^m/Widget
+    (cond-> base
+      (some? effective-padding)
+      (->> (pd/padding* effective-padding))
+
+      (and (not= clip m/Clip.none) (some? decoration))
+      (->> (m/ClipPath .clipper (DecorationClipper (or (some-> context m/Directionality.maybeOf) ui/TextDirection.ltr) decoration)
+                       .clipBehavior clip .child))
+
+      (some? decoration)
+      (->> (m/DecoratedBox .decoration decoration .child))
+
+      (some? foreground-decoration)
+      (->> (m/DecoratedBox .decoration foreground-decoration .position m/DecorationPosition.foreground .child))
+
+      (some? constraints)
+      (->> (m/ConstrainedBox .constraints constraints .child))
+
+      (some? margin)
+      (->> (pd/padding* margin))
+
+      (some? transform)
+      (->> (m/Transform .transform transform .alignment transform-alignment .child)))))
+
+(defn- resolve-props [args]
+  (let [color (some-> args :color t/color)
+        decoration (cond
+                     (contains? args :decoration)
+                     (let [decor (t/decoration (:decoration args))]
+                       (if (nil? color) decor (.copyWith decor .color color)))
+                     (some? color) (m/BoxDecoration .color color)
+                     :else nil)]
+    ;; `color` is folded into `decoration` here, so build-tree never needs a
+    ;; separate ColoredBox and animation lerps the color via Decoration.lerp.
+    {:alignment (some-> args :alignment t/alignment-geometry)
+     :padding (some-> args :padding t/insets)
+     :decoration decoration
+     :foreground-decoration (some-> args :foreground-decoration t/decoration)
+     ;; `(:constraints args args)` falls back to the whole args map, so bare
+     ;; :width/:height/:min-* keys become constraints.
+     :constraints (some-> (:constraints args args) t/box-constraints .normalize)
+     :margin (some-> args :margin t/insets)
+     :transform (some-> args :transform t/mat4)
+     :transform-alignment (some-> args :transform-alignment t/alignment-geometry)
+     :clip (t/clip (args :clip m/Clip.none))}))
+
+(defn- ^vec-math/Matrix4? lerp-transform [a b tt]
+  (cond
+    (and (some? a) (some? b)) (.lerp (m/Matrix4Tween .begin a .end b) tt)
+    ;; A transform appearing/disappearing has no meaningful interpolation; snap.
+    (< tt 0.5) a
+    :else b))
+
+;; `f/CustomTween` calls its lerp fn as `(f begin end)` to obtain a `t -> value`
+;; closure, so this is 2-arg returning a 1-arg fn — not a 3-arg `(a b t)`.
+(defn- container-lerp [a b]
+  (fn [tt]
+    {:alignment (m/AlignmentGeometry.lerp (:alignment a) (:alignment b) tt)
+     :padding (m/EdgeInsetsGeometry.lerp (:padding a) (:padding b) tt)
+     :decoration (m/Decoration.lerp (:decoration a) (:decoration b) tt)
+     :foreground-decoration (m/Decoration.lerp (:foreground-decoration a) (:foreground-decoration b) tt)
+     :constraints (m/BoxConstraints.lerp (:constraints a) (:constraints b) tt)
+     :margin (m/EdgeInsetsGeometry.lerp (:margin a) (:margin b) tt)
+     :transform (lerp-transform (:transform a) (:transform b) tt)
+     :transform-alignment (m/AlignmentGeometry.lerp (:transform-alignment a) (:transform-alignment b) tt)
+     ;; Discrete: clip snaps to the target instead of interpolating.
+     :clip (:clip b)}))
 
 (defn ^m/Widget container*
   "Internal implementation of container widget.
-  See flutter-cljd.widgets/container for public API documentation."
+  See flutter-cljd.widgets/container for public API documentation.
+
+  Unlike Flutter's Container, negative `:padding` and `:margin` are allowed."
   ([] (container* {} nil))
   ([child] (if (instance? m/Widget child) (container* {} child) (container* child nil)))
   ([args child]
    (let [key (t/widget-key (args :key))
-         alignment (some-> args :alignment t/alignment-geometry)
-         padding (some-> args :padding t/insets)
-         color (some-> args :color t/color)
-         decor (cond
-                 (contains? args :decoration)
-                 (let [decor (t/decoration (:decoration args))]
-                   (if (nil? color)
-                     decor
-                     (.copyWith decor .color color)))
-                 
-                 (some? color)
-                 (m/BoxDecoration .color color)
-                 
-                 :else nil)
-         foreground-decoration (some-> args :foreground-decoration t/decoration)
-         hug-height (= (some args [:height :h :size]) :hug) 
+         props (resolve-props args)
+         hug-height (= (some args [:height :h :size]) :hug)
          hug-width (= (some args [:width :w :size]) :hug)
-         constraints (some-> (:constraints args args)
-                             t/box-constraints
-                             .normalize)
-         margin (some-> args :margin t/insets)
-         transform (some-> args :transform t/mat4)
-         transform-alignment (some-> args :transform-alignment t/alignment-geometry)
-         clip-behavior (t/clip (args :clip m/Clip.none))
-         container (if
-                    (contains? args :animation)
-                     ;; Builder gives a context to read the inherited animation theme.
+         container (if (contains? args :animation)
+                     (anim/ValueAnimationBuilder
+                      key
+                      props
+                      (:animation args)
+                      container-lerp
+                      (or (:update-strategy (:animation args)) :immediate)
+                      (fn [^m/BuildContext ctx value child] (build-tree ctx value child))
+                      child)
+                     ;; Builder gives the render tree a context (for the clip's
+                     ;; Directionality) and carries the key, mirroring Container
+                     ;; being a single StatelessWidget.
                      (m/Builder
-                      .builder
-                      (fn [ctx]
-                        (let [animation (t/animation-options (:animation args {}) ctx)]
-                          (m/AnimatedContainer
-                           .key key
-                           .alignment alignment
-                           .padding padding
-                           .color nil
-                           .decoration decor
-                           .foregroundDecoration foreground-decoration
-                           .width nil
-                           .height nil
-                           .constraints constraints
-                           .margin margin
-                           .transform transform
-                           .transformAlignment transform-alignment
-                           .clipBehavior clip-behavior
-                           .child child
-                           .duration (animation :duration)
-                           .curve (animation :curve)
-                           .onEnd (animation :on-end)))))
-
-                     (m/Container
                       .key key
-                      .alignment alignment
-                      .padding padding
-                      .color nil
-                      .decoration decor
-                      .foregroundDecoration foreground-decoration
-                      .width nil
-                      .height nil
-                      .constraints constraints
-                      .margin margin
-                      .transform transform
-                      .transformAlignment transform-alignment
-                      .clipBehavior clip-behavior
-                      .child child))]
+                      ;; ctx is passed straight through to build-tree (which only
+                      ;; reads it for a directional clip); left untyped so callers
+                      ;; may probe the builder with a nil context.
+                      .builder (fn [ctx] (build-tree ctx props child))))]
      (cond
        (and hug-height hug-width)
        (m/IntrinsicWidth .child (m/IntrinsicHeight .child container))
@@ -83,6 +158,6 @@
        (m/IntrinsicWidth .child container)
 
        hug-height
-       (m/IntrinsicHeight .child container) 
+       (m/IntrinsicHeight .child container)
 
        :else container))))

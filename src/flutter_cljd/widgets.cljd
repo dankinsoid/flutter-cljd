@@ -1118,7 +1118,9 @@ Args:
    - args: A map of arguments for the container widget
      - `:key` An identifier for the container
      - `:alignment` (Alignment) How to align the child
-     - `:padding` (EdgeInsets) Empty space inside the container. Cannot be negative.
+     - `:padding` (EdgeInsets) Empty space inside the container. May be negative,
+       in which case the child overflows the container's bounds on that edge
+       (unlike Flutter's Container, which forbids negative padding).
      - `:color` (Color) Background color — a shorthand for `{:decoration {:color …}}`;
        cannot be combined with a `:decoration` that already sets `:color`.
      - `:decoration` Background decoration. A `Decoration` or a map passed to
@@ -1137,7 +1139,8 @@ Args:
      - `:height`, `:h` (number) Container height  
      - `:size` (Size or :hug) Container size. Use :hug to fit content
      - `:constraints` (BoxConstraints) Size constraints
-     - `:margin` (EdgeInsets) Empty space around the container. Cannot be negative.
+     - `:margin` (EdgeInsets) Empty space around the container. May be negative,
+       pulling adjacent content over the container's edge.
      - `:transform` (Matrix4) Transform to apply
      - `:transform-alignment` (AlignmentGeometry) Origin of transform
      - `:clip` (Clip) How to clip content
