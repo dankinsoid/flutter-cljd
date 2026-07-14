@@ -276,6 +276,20 @@ them (§10):
 - `(shadow-frame-source to-src shadow-entries)` → a frame source with the collapse
   remap baked in (same shape as `frozen-frame-source`, so each host's driver consumes
   it unchanged).
+
+  **The collapse remap wraps BOTH layout branches, not just indexed.** A layout
+  branch's only job is to emit `to-src` = a frame source over PURE-NEW (live-only)
+  data — survivors gap-closed, indexed by pure-live index. The universal
+  `shadow-frame-source` then remaps shadow indices onto it (dying slots → zero-extent
+  gap, live shadow index → pure-live index). The branches differ only in how the
+  live-only source is produced: **indexed** = exact O(1) math over live indices
+  (`indexed-frame-source`); **flow** = a live-only *re-flow* (`live-only-flow-window`
+  in `render.cljd`) that, after the flow measure pass, drops the dying cells, reindexes
+  the survivors to contiguous pure-live indices, and re-places them via `flow-frames`
+  (a real re-flow, correct for wrap/masonry where offset-subtraction would be wrong),
+  frozen as a `frozen-frame-source`. Indexed is the O(1) special case of flow. A flow
+  branch that instead froze the raw SHADOW snapshot (dying measured at full size)
+  gives survivors `to == from` ⇒ no glide — the bug this fixes.
 - `(slide-out-frame from-rect ws we dir)` → the edge-clamped slide target (committed
   rect translated to the near window edge, main-extent unchanged).
 

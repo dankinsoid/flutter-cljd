@@ -489,6 +489,39 @@
           ctx ((:prepare src) env)]
       (is (close? 100.0 (:offset ((:frame src) env ctx 2)))))))  ; live total = 2×50
 
+(deftest flow-live-only-reflow-collapses-gap
+  ;; Flow analogue of the indexed collapse remap (the `live-only-flow-window` core):
+  ;; a flow list [a b c d] (natural 50 tall, spacing 10 → committed 0/60/120/180)
+  ;; removes the MIDDLE `b`. The live-only source is the SURVIVOR sizes reindexed to
+  ;; contiguous pure-live indices and RE-FLOWED via flow-frames (gap closes), frozen,
+  ;; then wrapped by the SAME shadow-frame-source the indexed branch uses. Survivors
+  ;; below the removal must glide UP; the dying slot must be a zero-extent gap.
+  (let [l (lay/list-layout {:spacing 10})
+        venv (assoc base-env :item-count 4)
+        ;; survivors a,c,d reindexed to pure-live 0,1,2 and re-flowed
+        sized [[0 (ui/Size 200 50)] [1 (ui/Size 200 50)] [2 (ui/Size 200 50)]]
+        live-frames (tw/flow-frames l venv sized (tw/flow-seed-state l venv 0 0.0))
+        to (tw/frozen-frame-source {:frames live-frames :base 0
+                                    :extent (tw/frames-main-extent live-frames)})
+        entries [{:type :live :key :a}
+                 {:type :dying :key :b :committed (fr 60 0 50 200)}
+                 {:type :live :key :c}
+                 {:type :live :key :d}]
+        src (tw/shadow-frame-source to entries)
+        ctx ((:prepare src) venv)
+        frame (fn [^int i] ((:frame src) venv ctx i))]
+    (testing "survivors glide UP to their compacted pure-live offsets"
+      (is (close? 0.0 (:offset (frame 0))))    ; a → d0 → 0
+      (is (close? 60.0 (:offset (frame 2))))   ; c → d1 → 60 (was committed 120)
+      (is (close? 120.0 (:offset (frame 3))))) ; d → d2 → 120 (was committed 180)
+    (testing "dying slot is a zero-extent gap at the next survivor's new offset"
+      (let [g (frame 1)]
+        (is (close? 60.0 (:offset g)))
+        (is (close? 0.0 (:main-extent g)))
+        (is (close? 200.0 (:cross-extent g)))))
+    (testing "extent is the pure-live total (dying cell excluded)"
+      (is (close? 170.0 ((:extent src) venv ctx 4))))))
+
 (deftest slide-out-frame-clamps-to-edge
   (let [rect (fr 100 10 20 50)]
     (testing ":leading slides fully above ws, extent & cross unchanged"
