@@ -393,6 +393,20 @@
 
 (declare CollectionBoxState CollectionBox)
 
+(defn- child-key
+  "Animation key of child widget `c` at index `i`: its ValueKey value, or `i`
+   when unkeyed."
+  [^w/Widget c ^int i]
+  (let [k (.-key c)]
+    (if (instance? w/ValueKey k) (.-value ^w/ValueKey k) i)))
+
+(defn- child-key-seq
+  "Ordered animation keys of a child-widget list. A shuffle moves keys to new
+   indices (same layout/axis/count) — comparing this sequence is how the box
+   notices it and starts a segment; unequal lengths flag insert/remove too."
+  [kids]
+  (into [] (map-indexed (fn [^int i c] (child-key c i))) kids))
+
 (defn- finish-segment!
   "Runs when the clock reaches 1.0: settle to resting. The render object's
    committed already ended at the target, so dropping animating mode causes no
@@ -453,8 +467,11 @@
     (let [^CollectionBox wgt (.-widget this)
           layout-changed (not= (:id (.-layoutImpl old)) (:id (.-layoutImpl wgt)))
           axis-changed (not= (.-axisKw old) (.-axisKw wgt))
-          count-changed (not= (count (.-childWidgets old)) (count (.-childWidgets wgt)))]
-      (when (or layout-changed axis-changed count-changed)
+          ;; Order change covers both shuffle (same length, keys reindexed) and
+          ;; insert/remove (length differs) — the count-only check missed shuffle.
+          order-changed (not= (child-key-seq (.-childWidgets old))
+                              (child-key-seq (.-childWidgets wgt)))]
+      (when (or layout-changed axis-changed order-changed)
         (start-segment! this)))
     nil)
 
@@ -468,10 +485,7 @@
   (^w/Widget build [^CollectionBoxState this ^w/BuildContext _ctx]
     (let [^CollectionBox wgt (.-widget this)
           kids (.-childWidgets wgt)
-          key-of (fn [^int i]
-                   (let [^w/Widget c (nth kids i)
-                         k (.-key c)]
-                     (if (instance? w/ValueKey k) (.-value ^w/ValueKey k) i)))]
+          key-of (fn [^int i] (child-key (nth kids i) i))]
       (CollectionBoxWidget nil
                            kids
                            (.-layoutImpl wgt)
