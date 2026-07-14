@@ -816,13 +816,19 @@
 (def ^:private tag-colors
   (into {} (map-indexed (fn [i t] [t (nth colors (mod i (count colors)))]) morph-tags)))
 
+;; Master-list tags keep their assigned color; inserted tags fall back to a
+;; stable hash of the label so a chip's color never changes as it glides.
+(defn- tag-color [label]
+  (or (get tag-colors label)
+      (nth colors (mod (.-hashCode ^String label) (count colors)))))
+
 (defn- morph-chip [label]
   ;; The box keys children by their widget ValueKey; `keyed` tags each chip with
   ;; ValueKey(label) so the rect animator tracks it across shuffles/morphs.
   (->> (ui/text label {:size 14 :color :white})
        (ui/padding {:h 12 :v 8})
        (ui/clip-corners :all 14)
-       (ui/colored (get tag-colors label))
+       (ui/colored (tag-color label))
        (ui/keyed label)))
 
 (defn box-tween-preview
@@ -835,7 +841,8 @@
   []
   (f/widget
    :watch [tags (atom morph-tags) :as $tags
-           mode (atom :wrap) :as $mode]
+           mode (atom :wrap) :as $mode
+           next-id (atom 0) :as $next-id]
    (ui/column
     :cross-axis-alignment :stretch
     (->> (ui/column
@@ -848,7 +855,23 @@
            (btn "Shuffle" (fn [] (swap! $tags shuffle)))
            ;; reorder AND switch layout in the same rebuild
            (btn "Shuffle+List" (fn [] (swap! $tags shuffle) (reset! $mode :list)))
-           (btn "Shuffle+Wrap" (fn [] (swap! $tags shuffle) (reset! $mode :wrap)))))
+           (btn "Shuffle+Wrap" (fn [] (swap! $tags shuffle) (reset! $mode :wrap))))
+          (ui/sized {:h 6})
+          (ui/row
+           :main-axis-alignment :space-evenly
+           ;; count change → segment; survivors glide, the new chip appears at
+           ;; its slot (the box shows its full list — no per-cell wipe)
+           (btn "Insert"
+                (fn []
+                  (let [pos (rand-int (inc (count tags)))
+                        label (str "new-" next-id)]
+                    (swap! $tags #(vec (concat (take pos %) [label] (drop pos %))))
+                    (swap! $next-id inc))))
+           (btn "Remove"
+                (fn []
+                  (when (seq tags)
+                    (let [idx (rand-int (count tags))]
+                      (swap! $tags #(vec (concat (subvec % 0 idx) (subvec % (inc idx)))))))))))
          (ui/padding {:h 8 :v 8})
          (ui/colored (c/CupertinoColors.systemGrey6)))
     (->> (ui/single-child-scroll-view
