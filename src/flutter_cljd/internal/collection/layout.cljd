@@ -16,6 +16,16 @@
       :item-count   int?                ;; nil = infinite/unknown
       :ctx          <result of :prepare, indexed layouts only>}
 
+   ## Collapse axis (enter/exit)
+
+   Every built-in layout declares `:collapse-axis` (`:main` | `:cross`, default
+   `:main`) — the axis along which a removed cell shrinks to zero and an inserted
+   cell grows from zero. It is a property of the LAYOUT, read generically by the
+   engine/animator (no `case layout`): a list stacks on the main axis so a remove
+   closes the gap on MAIN; a grid/wrap packs on the cross axis so following cells
+   slide in cross-wise (right-to-left) and the dying cell shrinks its CROSS extent.
+   masonry stacks within columns → MAIN.
+
    Two models, chosen by the presence of `:geometry`:
 
    ## Flow (sequential; children self-size — list, wrap, masonry)
@@ -103,6 +113,7 @@
                      (.floor ^double (/ off pitch))
                      0))]
     {:id [:list-fixed item-extent spacing]
+     :collapse-axis :main
      :geometry (fn [env ^int i]
                  {:offset (* i pitch)
                   :cross 0.0
@@ -122,6 +133,7 @@
     (if item-extent
       (fixed-list-layout item-extent spacing)
       {:id [:list spacing]
+       :collapse-axis :main
        :init (fn [_env] 0.0)
        :measure (fn [env _i] (.asBoxConstraints ^r/SliverConstraints (:constraints env)))
        :place (fn [env _i size ^double offset]
@@ -138,6 +150,7 @@
   (let [^double sp (double (or (:spacing opts) 0))
         ^double rsp (double (or (:run-spacing opts) 0))]
     {:id [:wrap sp rsp]
+     :collapse-axis :cross
      ;; state: x = cross-axis end of the current run (nil = empty run),
      ;; y = run start offset, h = run main-axis extent so far
      :init (fn [_env] {:x nil :y 0.0 :h 0.0})
@@ -174,6 +187,7 @@
                               (if (< ^double (nth heights i) ^double (nth heights best)) i best))
                        best)))]
     {:id [:masonry n sp rsp]
+     :collapse-axis :main
      ;; state: vector of per-column end offsets
      :init (fn [_env] (vec (repeat n 0.0)))
      :measure (fn [env _i]
@@ -195,6 +209,7 @@
   "Indexed layout backed by a Flutter SliverGridDelegate."
   [^r/SliverGridDelegate delegate id]
   {:id id
+   :collapse-axis :cross
    :prepare (fn [env] (.getLayout delegate ^r/SliverConstraints (:constraints env)))
    :geometry (fn [env ^int i]
                (let [^r/SliverGridGeometry g

@@ -23,6 +23,9 @@
    `{:geometry <geometry opts> :stack-fit :content|:fill}`."
   [{:keys [geometry stack-fit]}]
   {:id [:flex-grid geometry stack-fit]
+   ;; a grid packs on the cross axis → a removed cell shrinks its CROSS extent and
+   ;; following cells slide in cross-wise to close the gap (see collection.layout).
+   :collapse-axis :cross
    :prepare
    (fn [env]
      (let [^r/SliverConstraints c (:constraints env)

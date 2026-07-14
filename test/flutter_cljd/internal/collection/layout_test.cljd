@@ -152,6 +152,17 @@
     (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :flow [:right :up]})))
     (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :anchor :end})))))
 
+;; --- collapse axis (enter/exit) declaration ---
+
+(deftest collapse-axis-declared-by-layout
+  (testing "main-stacking layouts collapse along MAIN (list/fixed-list/masonry)"
+    (is (= :main (:collapse-axis (lay/resolve-layout :list {}))))
+    (is (= :main (:collapse-axis (lay/resolve-layout :list {:item-extent 40}))))
+    (is (= :main (:collapse-axis (lay/resolve-layout :masonry {})))))
+  (testing "cross-packing layouts collapse along CROSS (grid/wrap)"
+    (is (= :cross (:collapse-axis (lay/resolve-layout :wrap {}))))
+    (is (= :cross (:collapse-axis (lay/resolve-layout :grid {:columns 2 :rows {:size 50}}))))))
+
 ;; --- diff ---
 
 (deftest diff-inserts-and-removes

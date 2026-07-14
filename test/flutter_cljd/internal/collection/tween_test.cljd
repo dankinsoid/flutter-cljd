@@ -411,6 +411,53 @@
         (is (close? 80.0 (:main-extent g)))          ; lerp(100, 60, 0.5)
         (is (close? (:main-extent g) (:full-main-extent g)))))))
 
+;; --- 3c: the collapse axis is DECLARED by the layout (main vs cross) ---
+
+(deftest keyed-tween-cross-collapse-wipes-cross-not-main
+  ;; a grid/wrap declares :collapse-axis :cross → a removed cell shrinks its CROSS
+  ;; extent (width) toward 0 while KEEPING its main extent (height); an inserted
+  ;; cell grows cross 0→full. Mirror of the default :main list collapse.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x (fr 40 20 60 100)}
+        cross {:collapse-axis :cross}]
+    (testing "entering: cross-extent 0→full, main-extent held at target"
+      (let [g0 (keyed-geo* to {} 180.0 (fn [^int _i] :x) (assoc cross :entering #{:x}) 0.0 0)
+            g5 (keyed-geo* to {} 180.0 (fn [^int _i] :x) (assoc cross :entering #{:x}) 0.5 0)]
+        (is (frame= (fr 40 20 60 0) g0))       ; cross wiped shut, main full
+        (is (frame= (fr 40 20 60 50) g5))      ; half-open on cross
+        ;; §8a: laid at full cross, painted clipped to the lerped visible cross
+        (is (close? 100.0 (:full-cross-extent g5)))
+        (is (close? 50.0 (:cross-extent g5)))
+        (is (close? 60.0 (:full-main-extent g5)))))
+    (testing "exiting: cross-extent full→0 in place, main-extent held"
+      (let [g1 (keyed-geo* to committed 180.0 (fn [^int _i] :x) (assoc cross :exiting #{:x}) 1.0 0)]
+        (is (frame= (fr 40 20 60 0) g1)))      ; width gone, height kept
+      (let [g (keyed-geo* to committed 180.0 (fn [^int _i] :x) (assoc cross :exiting #{:x}) 0.25 0)]
+        (is (close? 100.0 (:full-cross-extent g)))  ; stable full cross
+        (is (close? 75.0 (:cross-extent g)))        ; visible = 100*(1-0.25)
+        (is (close? 60.0 (:main-extent g)))))))     ; main untouched
+
+(deftest shadow-frame-source-cross-collapse-keeps-main
+  ;; a grid remove (:collapse-axis :cross): the dying slot's gap frame must reserve
+  ;; zero CROSS extent (width) but keep its committed MAIN extent (height), so the
+  ;; cell shrinks horizontally in place rather than collapsing to a point.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        entries [{:type :live :key :a}
+                 {:type :dying :key :b :committed (fr 50 30 50 90)}
+                 {:type :live :key :c}]
+        src (tw/shadow-frame-source to entries :cross)
+        env (assoc base-env :item-count 3)
+        ctx ((:prepare src) env)
+        g ((:frame src) env ctx 1)]
+    (testing "dying gap frame: cross-extent 0, main-extent kept from committed"
+      (is (close? 0.0 (:cross-extent g)))     ; zero reserved width
+      (is (close? 50.0 (:main-extent g)))     ; height kept (not collapsed to a point)
+      (is (close? 30.0 (:cross g))))          ; positioned at its committed cross
+    (testing "live survivors still map to pure-new indices (unchanged by axis)"
+      (is (close? 0.0 (:offset ((:frame src) env ctx 0))))
+      (is (close? 50.0 (:offset ((:frame src) env ctx 2)))))))
+
 ;; --- §7c: from = committed ∪ edge slide (viewport-entering cells glide) ---
 
 (deftest augment-from-edges-glides-entering-cell

@@ -217,12 +217,13 @@
 (defn ^:private zero-frame [env]
   {:offset 0.0 :cross 0.0 :main-extent 0.0 :cross-extent (double (:cross-extent env))})
 
-(defn ^:private zero-main
-  "Frame `fr` with its main-extent collapsed to 0, every other component kept —
-   the enter/exit endpoint where a cell has wiped shut at its target position.
-   nil passes through so an off-window target stays a no-opinion answer."
-  [fr]
-  (when fr (assoc fr :main-extent 0.0)))
+(defn ^:private zero-axis
+  "Frame `fr` with its COLLAPSE-axis extent collapsed to 0 (`:main` → main-extent,
+   `:cross` → cross-extent), every other component kept — the enter/exit endpoint
+   where a cell has wiped shut along the axis its layout declared. nil passes
+   through so an off-window target stays a no-opinion answer."
+  [fr axis]
+  (when fr (assoc fr (if (= :cross axis) :cross-extent :main-extent) 0.0)))
 
 (defn tween-layout
   "The morph as an indexed layout map. `from-src`/`to-src` are frame sources;
@@ -288,17 +289,23 @@
    map, unions in overlapping committed cells.
 
    The 7-arg arity takes an `opts` map `{:entering <set> :exiting <set>
-   :leaving <map>}`. An entering key wipes open (main-extent 0 → full) at its
-   target rect; an exiting key wipes shut (natural → 0) in place. Only main-extent
-   collapses — offset/cross/cross-extent come from the target frame so the cell
-   stays put while it wipes. `:leaving` is {key → frame}: a leave-slide `to`
-   (docs §7b) that OVERRIDES the target frame — the cell lerps committed → that
-   edge frame at constant size (a pure translation past the viewport edge), even
-   when to-src has no opinion (or a far-off exact frame) at its index."
+   :leaving <map> :collapse-axis :main|:cross}`. An entering key wipes open
+   (collapse-axis extent 0 → full) at its target rect; an exiting key wipes shut
+   (natural → 0) in place. `:collapse-axis` (the layout's own declaration, default
+   `:main`) picks WHICH extent collapses — `:main` for a list/masonry, `:cross` for
+   a grid/wrap — the other extent and offset/cross come from the target frame so the
+   cell stays put while it wipes. The frame carries `:full-main-extent` and
+   `:full-cross-extent` (the STABLE lay-at size on each axis, §8a): the driver lays
+   the cell full on both and paint-clips the collapsing axis to its lerped visible
+   extent. `:leaving` is {key → frame}: a leave-slide `to` (docs §7b) that OVERRIDES
+   the target frame — the cell lerps committed → that edge frame at constant size (a
+   pure translation past the viewport edge), even when to-src has no opinion (or a
+   far-off exact frame) at its index."
   ([id to-src committed ^double from-extent key-of progress]
    (keyed-tween-layout id to-src committed from-extent key-of progress {}))
   ([id to-src committed ^double from-extent key-of progress
-    {:keys [entering exiting leaving] :or {entering #{} exiting #{} leaving {}}}]
+    {:keys [entering exiting leaving collapse-axis]
+     :or {entering #{} exiting #{} leaving {} collapse-axis :main}}]
   (let [to-frame (:frame to-src)  to-first (:first-index to-src)
         to-last (:last-index to-src) to-ext (:extent to-src)
         to-prep (:prepare to-src)]
@@ -311,16 +318,21 @@
                        key (key-of i)
                        to (to-frame env (:to-ctx ctx) i)
                        from (get committed key)
-                       ;; §8a: a cell is laid out at its STABLE full main-extent
-                       ;; (:full-main-extent) so its content lays out once at a real
-                       ;; size; :main-extent is the lerped VISIBLE/clip window the
-                       ;; engine paints. They differ only mid enter/exit.
+                       ext-key (if (= :cross collapse-axis) :cross-extent :main-extent)
+                       ;; §8a: a cell is laid out at its STABLE full extent on BOTH
+                       ;; axes (:full-main-extent/:full-cross-extent) so its content
+                       ;; lays out once at a real size; the collapse axis's lerped
+                       ;; VISIBLE window (:main-extent or :cross-extent) is the clip
+                       ;; the engine paints. `full` = the stable collapse-axis extent
+                       ;; (nil ⇒ not collapsing here, full == visible on both axes).
                        [from* to* full] (cond
                                           (contains? entering key)
-                                          [(zero-main to) to (double (or (:main-extent to) 0.0))]
+                                          [(zero-axis to collapse-axis) to
+                                           (double (or (get to ext-key) 0.0))]
                                           (contains? exiting key)
                                           (let [f (or from to)]
-                                            [f (zero-main to) (double (or (:main-extent f) 0.0))])
+                                            [f (zero-axis to collapse-axis)
+                                             (double (or (get f ext-key) 0.0))])
                                           :else
                                           ;; §7b leave-slide: the edge frame beats the
                                           ;; target — bounded translation, size constant.
@@ -328,8 +340,12 @@
                                             [from lv nil]
                                             [from to nil]))
                        fr (or (lerp-frame from* to* (double (:t ctx)))
-                              (zero-frame env))]
-                   (assoc fr :full-main-extent (double (or full (:main-extent fr))))))
+                              (zero-frame env))
+                       ^double vm (double (:main-extent fr))
+                       ^double vc (double (:cross-extent fr))]
+                   (assoc fr
+                          :full-main-extent (if (= :cross collapse-axis) vm (double (or full vm)))
+                          :full-cross-extent (if (= :cross collapse-axis) (double (or full vc)) vc))))
      :first-index (fn [env ^double off]
                     (let [ctx (:ctx env)]
                       (int (or (to-first env (:to-ctx ctx) off) 0))))
@@ -378,16 +394,22 @@
      SMALLER d ⇒ higher frame ⇒ it glides up.
    - a DYING entry answers a synthesized GAP frame: offset = the next live
      survivor's new frame offset (where the gap closes; the pure-new total extent
-     when the dying cell trails all survivors), main-extent 0 (survivors see zero
-     reserved extent), cross/cross-extent from the dying cell's committed rect.
-     The cell's own shrink to 0 comes from keyed-tween-layout's :exiting branch,
-     which zeroes main against this frame; this frame only positions the gap.
+     when the dying cell trails all survivors), the COLLAPSE-axis extent 0
+     (survivors see zero reserved extent along the packing axis), the OTHER extent
+     and cross from the dying cell's committed rect (so a cross-collapsing grid
+     cell keeps its main height while its width wipes shut). The cell's own shrink
+     comes from keyed-tween-layout's :exiting branch, which zeroes the same axis
+     against this frame; this frame only positions the gap.
+
+   `collapse-axis` (`:main` default, `:cross` for grid/wrap) is the layout's own
+   declaration — the engine passes it through, no layout-name switch here.
 
    Windowing answers in SHADOW indices: first/last-index map to-src's pure-new
    window back through live→shadow, widening over the adjacent dying slots so a
    collapsing cell in view is materialized; extent is the pure-new total (to-src
    at the live count), never the inflated shadow count."
-  [to-src shadow-entries]
+  ([to-src shadow-entries] (shadow-frame-source to-src shadow-entries :main))
+  ([to-src shadow-entries collapse-axis]
   (let [entries (vec shadow-entries)
         ^int n (count entries)
         to-prep (:prepare to-src)
@@ -413,11 +435,14 @@
                                         (double (:offset surv))
                                         (double (or (to-ext env ctx live-count) 0.0)))
                           cm (:committed (nth entries i))]
-                      {:offset off
-                       :cross (double (or (:cross cm) (:cross surv) 0.0))
-                       :main-extent 0.0
-                       :cross-extent (double (or (:cross-extent cm) (:cross-extent surv)
-                                                 (:cross-extent env) 0.0))}))]
+                      ;; the OTHER extent is kept from committed so a cross-collapsing
+                      ;; grid cell keeps its main height; the collapse axis is zeroed.
+                      (assoc {:offset off
+                              :cross (double (or (:cross cm) (:cross surv) 0.0))
+                              :main-extent (double (or (:main-extent cm) 0.0))
+                              :cross-extent (double (or (:cross-extent cm) (:cross-extent surv)
+                                                        (:cross-extent env) 0.0))}
+                             (if (= :cross collapse-axis) :cross-extent :main-extent) 0.0)))]
     {:prepare (fn [env] (to-prep env))
      :frame (fn [env ctx ^int i]
               (when (and (>= i 0) (< i n))
@@ -440,7 +465,7 @@
                              ^int s1 (nth live->shadow d)]
                          (loop [^int s s1]
                            (if (and (< s (dec n)) (not (nth live-mask (inc s)))) (recur (inc s)) s))))))
-     :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))}))
+     :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))})))
 
 ;; @ai-generated(solo)
 (defn slide-out-frame
