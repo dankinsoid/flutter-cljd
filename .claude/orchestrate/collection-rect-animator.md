@@ -139,25 +139,36 @@ from+target visible sets exceed a viewport.
 `widen-window!` union (for indexed).
 
 ### Phase 2 checklist (refined by fable memo — collapse=remap in-tree, slide=overlay)
-- [x] 2a. Design note §7a/§7b — DONE (docs/CollectionRectAnimator.md).
-- [x] 2b. Indexed `to-src` from pure new data (drop dying reinsert) — survivors glide
-        on remove. DONE + verified on-device (neighbors slide up). NOTE: 2b's
-        drop-dying branch is REVERTED by 2c-2 (replaced by the remap).
-- [ ] 2c-1. Pure core in tween.cljd: `classify-cell` (§7a matrix, 5 classes),
-        `shadow-frame-source` (collapse remap: live idx→to-frame(data-idx),
-        dying slot→zero-extent gap frame), `slide-out-frame` (edge-clamped) + tests.
-- [ ] 2c-2. exit-collapse: revert indexed drop-dying in rebuild-shadow!; wire
-        `shadow-frame-source` remap into segment-start! (render.cljd). Verify remove
-        now COLLAPSES (dying shrinks) while survivors glide. AnimatedList model.
-- [ ] 2c-3. keepAlive PROBE (~20 lines): confirm cljd can write
-        SliverMultiBoxAdaptorParentData.keepAlive + paintChild a bucket child without
-        needsLayout/ownership asserts. Gate for 2c-4.
-- [ ] 2c-4. leave-slide overlay (§7b): `overlays` field + keepAlive before GC + paint
-        override + evict-on-reentry guard. Fixes shuffle bounce.
-- [ ] 2d. box host consumes shared core → gains enter/exit; span-cap → snap when
-        visible-from ∪ visible-target exceeds a viewport.
-- [ ] 2e. Verify on-device: remove (collapse + slide-up), shuffle (no bounce, first
-        shuffle animates), insert, list↔grid morph anchor stable. bin/check + tests.
+- [x] 2a. Design note §7a/§7b — DONE.
+- [x] 2b. Indexed `to-src` pure new data — survivors glide on remove. DONE (reverted by 2c-2).
+- [x] 2c-1/2. Pure core (classify-cell, shadow-frame-source, slide-out-frame) + remap
+        wiring. Remove COLLAPSES + survivors glide. DONE, verified on-device. 191 tests.
+- [x] 2c-fix. collapse-wrap exit pinned at committed extent (was loose → snapped to text
+        height); alignment center. DONE, verified. (Interim — §8a moves clip to engine.)
+
+### Phase 3 — engine owns enter/exit visual + full from/to layout (§7c, §8a)
+On-device revealed the widget-side collapse-wrap can't pin an INSERT's target size
+(host has no target at build), and grid2→grid4 viewport-entering cells pop in (no from).
+Both point to the engine owning more: the visual (paint-clip) and the full from-layout.
+- [ ] 3a. `prevLayout` field + from = committed ∪ old-layout math (§7c). update-render!
+        keeps prev layout at gen bump; segment-start! from-fallback to old-layout
+        indexed math when committed empty. Fixes grid2→grid4 glide-in. Unit test:
+        empty-committed cell gets from = old-layout(i), not target. (render.cljd,
+        field vector 21→22, ctor line 962.)
+- [ ] 3b. Engine paint override (§8a): override `paint` — normal children default,
+        animating (entering/exiting) children `pushClipRect` to lerped window + paint
+        full-size child clipped, anchored gap-side (start). Lay animating cells at full
+        stable extent (committed exit / target enter) at the layout sites (744/758/775/
+        777/847). Retire widget-side collapse-wrap. Add hitTest/applyPaintTransform.
+        Fixes insert-grid reflow. Shares machinery with 2c-slide (§7b). Probe keepAlive
+        first (was 2c-3).
+- [ ] 3c. Collapse toward gap-point + start align (§8a): clip window shrinks toward the
+        survivor-convergence slot (grid = sideways), not just main-axis in place.
+- [ ] 2c-slide (§7b). leave-slide overlay on the 3b paint override: `overlays` field +
+        keepAlive before GC + evict-on-reentry. Fixes shuffle bounce.
+- [ ] 2d. box host consumes shared core → gains enter/exit; span-cap snap.
+- [ ] 2e. Verify on-device: remove/insert (collapse both), shuffle (no bounce), morph,
+        grid2→grid4 glide-in. bin/check + tests. Revert repl.cljd TEMP slow/remove-start.
 
 ## Step results
 

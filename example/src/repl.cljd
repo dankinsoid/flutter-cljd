@@ -755,12 +755,12 @@
   ;; insert/remove animates the right cell. :animate true drives all of it —
   ;; move, layout/grid morph and insert/remove — off the one rect animator.
   (if (= mode :list)
-    (ui/sliver-collection items :key-fn :id :spacing 8 :animate true
+    (ui/sliver-collection items :key-fn :id :spacing 8 :animate {:duration 2500} ; TEMP slow
       (fn [_ item] (ui/sized {:h 56} (morph-tile item))))
     (let [n (case mode :grid2 2 :grid3 3 4)]
       (ui/sliver-collection items :key-fn :id :layout :grid
         :columns {:count n :gap 8} :rows {:size {:aspect 1} :gap 8}
-        :animate true
+        :animate {:duration 2500} ; TEMP slow
         (fn [_ item] (morph-tile item))))))
 
 (defn layout-tween-preview
@@ -796,7 +796,7 @@
            (btn "Remove"
                 (fn []
                   (when (seq items)
-                    (let [idx (rand-int (count items))]
+                    (let [idx (rand-int (min 3 (count items)))] ; TEMP: remove near start
                       (swap! $items #(vec (concat (subvec % 0 idx) (subvec % (inc idx)))))))))))
          (ui/padding {:h 8 :v 8})
          (ui/colored (c/CupertinoColors.systemGrey6)))

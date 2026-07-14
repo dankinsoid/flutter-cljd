@@ -69,23 +69,31 @@
 
 ;; @ai-generated(solo)
 (defn ^w/Widget collapse-wrap
-  "Wraps `child` so the engine can grow/shrink its outer rect along `axis`
-   without the content ever reflowing through intermediate sizes. OverflowBox
-   relaxes the MAIN axis to [0, ∞] (nil on the cross axis inherits the parent's
-   tight cross constraint), so the child lays out once at its NATURAL final size
-   regardless of the shrinking tight main constraint the engine feeds; ClipRect
-   reveals/hides it as the outer box grows/shrinks. Aligned to the START of the
-   main axis. Does NOT animate size — the engine owns the rect."
-  [^w/Axis axis ^w/Widget child]
-  (let [vertical? (identical? axis w/Axis.vertical)]
-    (w/ClipRect
-     .child (w/OverflowBox
-             .minWidth (when-not vertical? 0.0)
-             .maxWidth (when-not vertical? dc/double.infinity)
-             .minHeight (when vertical? 0.0)
-             .maxHeight (when vertical? dc/double.infinity)
-             .alignment (if vertical? w/Alignment.topCenter w/Alignment.centerLeft)
-             .child child))))
+  "Wraps `child` so the engine can grow/shrink its outer rect along `axis` without
+   the content ever reflowing through intermediate sizes. OverflowBox pins the MAIN
+   axis to a constant size (nil on the cross axis inherits the parent's tight cross
+   constraint), so the child lays out once regardless of the shrinking tight main
+   constraint the engine feeds; ClipRect reveals/hides it as the outer box
+   grows/shrinks. Aligned to CENTER so the clip eats symmetrically. Does NOT animate
+   size — the engine owns the rect.
+
+   EXIT: pass `main-extent` = the cell's committed full main size, so the content
+   stays pinned at that size and CLIPS instead of collapsing to its natural (e.g.
+   text) height. ENTER: omit it — main relaxes to [0, ∞] so the content lays at its
+   natural final size (natural == target for an insert)."
+  ([^w/Axis axis ^w/Widget child] (collapse-wrap axis child nil))
+  ([^w/Axis axis ^w/Widget child ^double? main-extent]
+   (let [vertical? (identical? axis w/Axis.vertical)
+         ^double mn (if main-extent (double main-extent) 0.0)
+         ^double mx (if main-extent (double main-extent) dc/double.infinity)]
+     (w/ClipRect
+      .child (w/OverflowBox
+              .minWidth (when-not vertical? mn)
+              .maxWidth (when-not vertical? mx)
+              .minHeight (when vertical? mn)
+              .maxHeight (when vertical? mx)
+              .alignment w/Alignment.center
+              .child child)))))
 
 ;; --- Shadow Data ---
 ;;

@@ -183,7 +183,7 @@
                                   content)]
                     (w/KeyedSubtree
                      .key (w/ValueKey k)
-                     .child (an/collapse-wrap (an/scroll-axis ctx) content)))
+                     .child (an/collapse-wrap (an/scroll-axis ctx) content (:extent entry))))
                   (let [child (item-builder ctx (int (:data-index entry)))
                         child (if (contains? inserts k)
                                 (let [c (if (and insert-builder seg-anim)
@@ -285,11 +285,18 @@
   (let [{:keys [inserts removes]} (diff/compute-diff old-data new-data key-fn)
         insert-keys (into #{} (map :key) inserts)
         remove-keys (into #{} (map :key) removes)
+        ;; snapshot each dying cell's committed full main-extent (last alive pass)
+        ;; so collapse-wrap can pin its content and clip instead of reflowing to
+        ;; natural size (docs §8). nil when it was off-screen / never committed.
+        committed (let [ro (.findRenderObject (.-context this))]
+                    (when (instance? render/CollectionRenderSliver ro)
+                      (render/committed-rects ^render/CollectionRenderSliver ro)))
         kept-dying (vec (remove #(or (contains? remove-keys (:key %))
                                      (contains? insert-keys (:key %)))
                                 (.-dyingItems this)))
         new-dying (for [{:keys [key old-index item]} removes]
-                    {:key key :item item :old-index old-index})]
+                    {:key key :item item :old-index old-index
+                     :extent (:main-extent (get committed key))})]
     (.-dyingItems! this (into kept-dying new-dying))
     (.-activeInserts! this
       (into (reduce disj (.-activeInserts this) remove-keys) insert-keys))))

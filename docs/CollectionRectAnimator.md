@@ -335,12 +335,36 @@ GCs, then `paintChild`s the bucket child — confirms cljd can write
 `SliverMultiBoxAdaptorParentData.keepAlive` and that a bucket child paints without
 `needsLayout` / ownership asserts.
 
+## 7c. `from` = committed ∪ old-layout math (glide cells entering the viewport)
+
+`from` was sourced **only** from `committed` — the rects of cells that were on-screen
+last pass. A cell that was *below* the old viewport and lands *inside* the new one
+(e.g. grid2→grid4 packs more per row, pulling formerly-below cells up into view) has
+no `committed` ⇒ `keyed-tween` returns its target directly ⇒ it **pops in without a
+glide**. Wrong: it should slide up from where it sat under the old layout.
+
+Fix: at segment start `from[key]` falls back to the **old layout's math** when
+`committed` is absent. For an indexed layout the old-layout frame is exact pure math,
+so a cell entering the viewport gets a real off-screen `from` and glides in. This
+requires retaining the **previous layout** across the segment — `update-render!`
+currently overwrites `layoutModel` with the new target and discards the old, so a
+`prevLayout` field is added and captured at the gen bump.
+
+This is the same requirement as *computing the whole layout before painting*: the
+engine resolves the full from/to layouts up front (indexed = cheap math), which both
+animates viewport-entering cells and is the precondition for a future optimization —
+running the diff **only over what lands in the viewport** (the off-screen from/to are
+math, not materialized cells). Layout-only changes (same data) map old-index = new-
+index directly; a data change that also moves a cell in from off-screen needs its
+old data-index (follow-up).
+
 ## 8. Enter / exit (constraint 4)
 
-> **Exit is revised by §7a.** "Exit" splits into *data collapse* (key left the data →
-> shrink in place) and *viewport slide* (key reindexed off-screen → full-size slide,
-> no shrink). The `ClipRect > OverflowBox` wrap below is the **collapse** driver; the
-> slide driver keeps the cell at final size and relies on the viewport clip.
+> **Exit is revised by §7a; the collapse *mechanism* is revised by §8a.** "Exit"
+> splits into *data collapse* (key left the data → shrink toward its gap point) and
+> *viewport slide* (key reindexed off-screen → full-size slide). The widget-side
+> `ClipRect > OverflowBox` wrap below was the first collapse driver; §8a moves that
+> clip into the engine (the widget can't know an *insert*'s target size at build).
 
 The diff still runs — but only to classify **enter** (key present in new data,
 absent in old) and **exit** (key absent in new data, present in old). Note the
@@ -364,6 +388,38 @@ outer box, so the content keeps constant constraints (no per-tick cascade relayo
 while the engine's clip reveals/hides it. Per-section policy `:clip` (default) or
 `:scale`; custom `:insert`/`:remove` `:builder` (opacity/transform) is preserved,
 with *size* owned by the engine (the builder no longer drives `SizeTransition`).
+
+## 8a. The engine owns the enter/exit visual (paint-clip)
+
+The widget-side `ClipRect > OverflowBox` of §8 has a fatal gap: **it must know the
+cell's stable full size to pin the content, and for an *insert* that size is the
+target — which the host does not have at build time** (the target is captured by the
+engine during layout, *after* build; §4.1, §timing). A `remove` works only because
+its stable size is `committed`, which the host *can* snapshot. So collapse ownership
+belongs where the size lives: the engine.
+
+**Mechanism.** During a segment the engine lays each animating cell at its **full
+stable main-extent** — `committed` for exit, `target` for enter, `lerp(from,to)` for a
+stay whose size changes — never the shrinking lerped extent. So the content lays out
+once at a real size and never reflows to its natural (e.g. text) height. The cell's
+**scroll contribution** (what closes the gap for neighbors) and its **painted window**
+are then decoupled at PAINT: the engine overrides `paint` and, for each animating
+cell, `pushClipRect` to the cell's **lerped visible window** and paints the full-size
+child clipped to it (translated so the reveal anchors at the correct side).
+
+- **exit-collapse** — full size `committed`, clip window shrinks `committed → 0` toward
+  the **gap point** (where survivors converge: main-axis for a list, the neighbour
+  slot for a grid), anchored at the gap side (**start**, not center).
+- **enter-collapse** — full size `target`, clip window grows `0 → target` from the same
+  side. No build-time size needed — the engine holds `target`.
+- The widget-side `collapse-wrap` (ClipRect>OverflowBox) is **retired**; `:insert`/
+  `:remove` `:builder` (opacity/transform) still wraps the content, size owned by the
+  engine.
+
+This `paint` override is the **same machinery §7b needs** for leave-slide overlays
+(`pushClipRect` + `paintChild` per engine-tracked child) — built once, it hosts both
+the collapse clip and the slide overlays. `hitTest`/`applyPaintTransform` grow the
+matching per-child transform.
 
 ## 9. Scroll correction (the gotcha, tested first)
 
