@@ -198,8 +198,13 @@
 
 (defn- indexed-anchor-cells
   "Cells for tw/anchor-delta this pass: each attached child's committed OLD
-   offset/main (last pass) paired with its freshly-laid NEW content-space offset."
-  [^CollectionRenderSliver rs]
+   offset/main (last pass) paired with its freshly-laid NEW content-space offset.
+   Restricted to cells whose OLD rect overlaps the current scroll window [ws, we]:
+   a key that shuffled in from a far index carries a committed offset far outside
+   the window, so without this filter it could win the anchor and drag the viewport
+   toward its old position (drift). Structural changes (grid reflow / remove /
+   insert) keep the top keys' old offsets inside the window, so they still qualify."
+  [^CollectionRenderSliver rs ^double ws ^double we]
   (let [committed (.-committed rs)]
     (loop [child (.-firstChild rs) out []]
       (if child
@@ -207,11 +212,13 @@
               ^r/SliverGridParentData pd (.-parentData ch)
               old (get committed (key-for rs (.indexOf rs ch)))]
           (recur (.childAfter rs ch)
-                 (if old
-                   (conj out {:old-off (double (:offset old))
-                              :old-main (double (:main-extent old))
-                              :new-off (double (or (.-layoutOffset pd) 0.0))})
-                   out)))
+                 (let [cell (when old
+                              {:old-off (double (:offset old))
+                               :old-main (double (:main-extent old))
+                               :new-off (double (or (.-layoutOffset pd) 0.0))})]
+                   (if (and cell (tw/window-overlaps? cell ws we))
+                     (conj out cell)
+                     out))))
         out))))
 
 (defn- set-tween-anim!
@@ -776,7 +783,7 @@
                 ;; geometry directly, so when content above collapses mid-morph
                 ;; the anchored child jumps unless we follow it. One per pass.
                 corr (when (and (.-tweenAnim rs) (.-segCorrect rs))
-                       (tw/anchor-delta (indexed-anchor-cells rs) (.-scrollOffset c)))]
+                       (tw/anchor-delta (indexed-anchor-cells rs ws we) (.-scrollOffset c)))]
             (if corr
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                   (.didFinishLayout mgr))

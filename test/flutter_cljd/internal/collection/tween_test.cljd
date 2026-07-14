@@ -215,6 +215,33 @@
     (is (nil? (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off 10.0}]
                                100.0)))))
 
+;; window-overlaps? gates the anchor candidates so a simultaneous shuffle+grid
+;; change (extent changes → segCorrect opens the correction) can't anchor on a
+;; key that shuffled in from a far index and drag the viewport toward its old
+;; position. Only cells whose OLD rect overlaps the current scroll window qualify.
+(deftest window-overlaps-gates-shuffled-in-anchors
+  (let [ws 0.0 we 200.0]
+    (testing "a near-top cell qualifies"
+      (is (tw/window-overlaps? {:old-off 100.0 :old-main 40.0} ws we)))
+    (testing "a key that shuffled in from a far index is excluded"
+      (is (not (tw/window-overlaps? {:old-off 5000.0 :old-main 40.0} ws we))))
+    (testing "a remove-above cell straddling the leading edge still qualifies"
+      ;; old-off -10 sits above ws 0 but its old span (-10..30) reaches past it.
+      (is (tw/window-overlaps? {:old-off -10.0 :old-main 40.0} ws we)))
+    (testing "filtered candidates: shuffled-in far cell dropped, near-top drives delta"
+      (let [cells [{:key :top :old-off 20.0 :old-main 40.0 :new-off 8.0}
+                   {:key :shuffled :old-off 5000.0 :old-main 40.0 :new-off 5.0}]
+            kept (filterv #(tw/window-overlaps? % ws we) cells)]
+        (is (= 1 (count kept)))
+        ;; the shuffled key's huge -4995 delta is gone; anchor is the near-top cell.
+        (is (close? -12.0 (tw/anchor-delta kept 10.0)))))
+    (testing "all top candidates far → empty → no correction"
+      (let [cells [{:key :a :old-off 5000.0 :old-main 40.0 :new-off 5.0}
+                   {:key :b :old-off 6000.0 :old-main 40.0 :new-off 6.0}]
+            kept (filterv #(tw/window-overlaps? % ws we) cells)]
+        (is (empty? kept))
+        (is (nil? (tw/anchor-delta kept 10.0)))))))
+
 ;; --- keyed combinator (v2): the `from` side is key-addressed ---
 
 (defn- keyed-geo [to-src committed ^double from-extent key-of ^double t ^int i]

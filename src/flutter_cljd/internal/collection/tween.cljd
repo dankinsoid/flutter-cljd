@@ -99,6 +99,17 @@
       (let [^double d (- (double (:new-off anchor)) (double (:old-off anchor)))]
         (when (> (.abs d) 1e-3) d)))))
 
+(defn window-overlaps?
+  "True when a cell's OLD rect [:old-off, :old-off+:old-main) overlaps the scroll
+   window [ws, we]. Anchor-candidate gate for the rect-animator's scroll
+   correction: only cells that genuinely sat near the viewport last pass may
+   anchor it, so a key that shuffled in from a far index (its committed offset far
+   outside the window) can't win the anchor and drag the viewport toward it."
+  [cell ^double ws ^double we]
+  (let [^double oo (double (:old-off cell))
+        ^double om (double (:old-main cell))]
+    (and (< oo we) (> (+ oo om) ws))))
+
 (defn- min-some [a b] (cond (nil? a) b (nil? b) a :else (min ^int a ^int b)))
 (defn- max-some [a b] (cond (nil? a) b (nil? b) a :else (max ^int a ^int b)))
 
