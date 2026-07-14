@@ -419,14 +419,20 @@
   ;; vs the committed span [2,3]. Universal: no old layout, no exact old position.
   (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
         key-of (fn [^int i] (nth [:a :b :c :d :e :f] i))
-        committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200)}
+        ;; :e carries a STALE committed rect but is NOT on-screen (it reindexed
+        ;; off-screen last segment); it must get an edge, not keep the stale rect.
+        committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200) :e (fr 999 0 100 200)}
+        on-screen #{:c :d}   ; the attached/visible keys — ground truth for `from`
         env (assoc base-env :item-count 6)
         ctx ((:prepare to) env)
         ws 200.0 we 400.0
-        result (tw/augment-from-edges committed to env ctx key-of 0 5 ws we)]
+        result (tw/augment-from-edges committed on-screen to env ctx key-of 0 5 ws we)]
     (testing "committed (on-screen) keys keep their rects"
       (is (frame= (fr 200 0 100 200) (get result :c)))
       (is (frame= (fr 300 0 100 200) (get result :d))))
+    (testing "stale committed key NOT on-screen is overridden with an edge frame"
+      (is (close? 400.0 (:offset (get result :e))))     ; index 4 > cmax=3 → bottom edge
+      (is (not (close? 999.0 (:offset (get result :e))))))
     (testing "index > cmax came from BELOW → bottom edge (offset == we), target extent kept"
       (is (close? 400.0 (:offset (get result :f))))     ; index 5
       (is (close? 100.0 (:main-extent (get result :f)))))

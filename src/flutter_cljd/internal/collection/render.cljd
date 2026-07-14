@@ -1015,6 +1015,19 @@
           (range n))))
 
 ;; @ai-generated(solo)
+(defn- attached-keys
+  "Keys of the children ATTACHED right now — the genuinely on-screen set. Captured
+   at segment start (before the driver materializes the new window) it is the
+   `from`-visible set: the ground truth for which cells were on-screen before the
+   change, unlike the persistent (stale-prone) committed map (docs §7c)."
+  [^CollectionRenderSliver rs]
+  (loop [child (.-firstChild rs) ks (transient #{})]
+    (if child
+      (let [^r/RenderBox ch child]
+        (recur (.childAfter rs ch) (conj! ks (key-for rs (.indexOf rs ch)))))
+      (persistent! ks))))
+
+;; @ai-generated(solo)
 (defn- segment-start!
   "First pass of a new segment (docs §4.1/§6). Freezes the OLD committed rects as
    the `from` side, captures the target from the NEW tree, builds the keyed
@@ -1032,6 +1045,9 @@
   (let [layout (.-layoutModel rs)
         indexed (some? (:geometry layout))
         committed-from (committed-rects rs)                              ; (a)
+        ;; the genuinely on-screen set BEFORE the driver rematerializes (old tree
+        ;; still attached) — the ground-truth `from`-visible set (docs §7c)
+        on-screen (attached-keys rs)
         ^double from-extent (if-let [^r/SliverGeometry g (.-geometry rs)] ; (b)
                               (.-scrollExtent g) 0.0)
         ;; §7a: each branch emits a PURE-NEW-DATA (live-only) frame source and the
@@ -1060,7 +1076,7 @@
         li (when (.-isFinite we) ((:last-index to-src) env ctx we))
         from-rects (if (and fi li)
                      (tw/augment-from-edges
-                      committed-from to-src env ctx #(key-for rs %)
+                      committed-from on-screen to-src env ctx #(key-for rs %)
                       (int fi) (int li) ws we)
                      committed-from)                                     ; (a')
         seg-tween (tw/keyed-tween-layout                                 ; (d)

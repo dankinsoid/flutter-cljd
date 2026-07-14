@@ -455,27 +455,34 @@
    so its `from` = its own TARGET frame slid to that edge (an arrive-slide). No
    old layout, no exact old math.
 
+   `on-screen` is the set of keys ACTUALLY attached (visible) just before this
+   segment — the ground truth for `from`, NOT `committed`. `committed` is a
+   persistent cache (survives GC, re-stamped every pass including animating ones),
+   so a cell that scrolled/reindexed off-screen keeps a STALE rect there; keying
+   'entering' off `committed` makes such a cell look on-screen and pop at target
+   on the next segment. Keying off the attached set fixes that.
+
    Two passes over [first-idx, last-idx]. Pass 1 finds cmin/cmax = the min/max
-   index whose key is already in `committed` (the on-screen span), nil if none.
-   Pass 2, for each index whose key is NOT in `committed`, takes its target frame
-   `((:frame to-src) env ctx i)` and picks the edge by index vs that span: above
-   the on-screen max → came from BELOW (:trailing); below the min → came from
-   ABOVE (:leading); interleaved (or nothing on-screen) → the nearer edge,
-   defaulting to :trailing. Committed entries WIN — an on-screen cell's real rect
-   is never overwritten. Pure."
-  [committed to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
+   index whose key is in `on-screen` (the visible span), nil if none. Pass 2, for
+   each index whose key is NOT on-screen, takes its target frame and picks the edge
+   by index vs that span: above the max → came from BELOW (:trailing); below the
+   min → came from ABOVE (:leading); interleaved (or nothing on-screen) → the
+   nearer edge, defaulting to :trailing; then OVERRIDES any stale `committed`
+   entry. On-screen cells keep their real committed rect. Pure."
+  [committed on-screen to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
   (let [frame (:frame to-src)
         idxs (range first-idx (inc last-idx))
-        ;; Pass 1: the on-screen (committed) index span.
+        ;; Pass 1: the visible (attached) index span.
         [cmin cmax] (reduce (fn [[mn mx] ^int i]
-                              (if (contains? committed (key-of i))
+                              (if (contains? on-screen (key-of i))
                                 [(min-some mn i) (max-some mx i)]
                                 [mn mx]))
                             [nil nil] idxs)]
-    ;; Pass 2: an edge `from` for every viewport-entering (non-committed) cell.
+    ;; Pass 2: an edge `from` for every viewport-entering (off-screen) cell,
+    ;; overriding any stale committed rect it may carry.
     (reduce (fn [m ^int i]
               (let [k (key-of i)]
-                (if (contains? m k)
+                (if (contains? on-screen k)
                   m
                   (if-let [fr (frame env ctx i)]
                     (let [dir (cond
