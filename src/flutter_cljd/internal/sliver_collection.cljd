@@ -176,20 +176,18 @@
               (let [entry (nth shadow index)
                     k (:key entry)]
                 (if (= :dying (:type entry))
-                  ;; the engine collapses the outer rect; collapse-wrap clips
+                  ;; §8a: the engine lays the cell at its full committed size and
+                  ;; paint-clips the collapse — no widget-side collapse-wrap.
                   (let [content (user-builder ctx (:item entry))
                         content (if (and remove-builder seg-anim)
                                   (remove-builder content (a/ReverseAnimation seg-anim))
                                   content)]
                     (w/KeyedSubtree
                      .key (w/ValueKey k)
-                     .child (an/collapse-wrap (an/scroll-axis ctx) content (:extent entry))))
+                     .child content))
                   (let [child (item-builder ctx (int (:data-index entry)))
-                        child (if (contains? inserts k)
-                                (let [c (if (and insert-builder seg-anim)
-                                          (insert-builder child seg-anim)
-                                          child)]
-                                  (an/collapse-wrap (an/scroll-axis ctx) c))
+                        child (if (and (contains? inserts k) insert-builder seg-anim)
+                                (insert-builder child seg-anim)
                                 child)]
                     (w/KeyedSubtree .key (w/ValueKey k) .child child)))))
             ;; no shadow — plain builder, keyed when possible

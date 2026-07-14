@@ -38,7 +38,7 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare flow-layout! indexed-layout! commit-pass! segment-start!)
+(declare flow-layout! indexed-layout! commit-pass! segment-start! child-cross-extent)
 
 ;; --- Render object ---
 
@@ -68,8 +68,10 @@
                            ;; frozen in segment-start!, self-nullifying when the slot doesn't move
    ^:mutable restingTop    ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
                            ;; each resting pass (indices consistent); seeds segAnchor at segment start
-   ^:mutable prevLayout]   ;; layout impl live BEFORE the current segment; supplies old-layout math for
-                           ;; `from` of cells entering the viewport on a layout change (docs §7c)
+   ^:mutable prevLayout   ;; layout impl live BEFORE the current segment; supplies old-layout math for
+                          ;; `from` of cells entering the viewport on a layout change (docs §7c)
+   ^:mutable clips]        ;; {child-index -> visible-main-extent} for cells laid at full but painted
+                           ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -81,6 +83,56 @@
   (childCrossAxisPosition [_this ^r/RenderBox child]
     (let [^r/SliverGridParentData pd (.-parentData child)]
       (or (.-crossAxisOffset pd) 0.0)))
+
+  ;; §8a: replicates RenderSliverMultiBoxAdaptor.paint's child-paint offset math
+  ;; verbatim, then — for any child whose index is in `clips` — pushClipRect to the
+  ;; cell's lerped VISIBLE main window (anchored at the child's main-start corner,
+  ;; full cross) so a cell laid out at its full stable size is REVEALED to `visible`.
+  ;; The main-start corner is the pre-addExtent childOffset (== top-left for down/
+  ;; right; the far edge for up/left), so the reveal always grows from the scroll-
+  ;; start edge of the cell (3c will move the anchor toward the gap).
+  (paint [^CollectionRenderSliver this ^r/PaintingContext context ^ui/Offset offset]
+    (when (.-firstChild this)
+      (let [^r/SliverConstraints c (.-constraints this)
+            ad (r/applyGrowthDirectionToAxisDirection (.-axisDirection c) (.-growthDirection c))
+            up (= ad r/AxisDirection.up)
+            down (= ad r/AxisDirection.down)
+            left (= ad r/AxisDirection.left)
+            ^double mux (cond left -1.0 (= ad r/AxisDirection.right) 1.0 :else 0.0)
+            ^double muy (cond up -1.0 down 1.0 :else 0.0)
+            ^double cux (if (or up down) 1.0 0.0)
+            ^double cuy (if (or up down) 0.0 1.0)
+            add-extent (or up left)
+            ^double paint-extent (let [^r/SliverGeometry g (.-geometry this)] (.-paintExtent g))
+            ^double ox (+ (.-dx offset) (if left paint-extent 0.0))
+            ^double oy (+ (.-dy offset) (if up paint-extent 0.0))
+            clips (.-clips this)
+            ^double rpe (.-remainingPaintExtent c)]
+        (loop [child (.-firstChild this)]
+          (when child
+            (let [^r/RenderBox ch child
+                  ^double md (.childMainAxisPosition this ch)
+                  ^double cd (.childCrossAxisPosition this ch)
+                  ^double pe (.paintExtentOf this ch)
+                  ;; base = main-start corner (framework childOffset before addExtent)
+                  ^double bx (+ ox (* mux md) (* cux cd))
+                  ^double by (+ oy (* muy md) (* cuy cd))
+                  ^ui/Offset child-off (if add-extent
+                                         (ui/Offset (+ bx (* mux pe)) (+ by (* muy pe)))
+                                         (ui/Offset bx by))]
+              (when (and (< md rpe) (> (+ md pe) 0.0))
+                (if-let [visible (get clips (.indexOf this ch))]
+                  (let [^double vis (double visible)
+                        ^double cf (child-cross-extent c ch)
+                        clip-rect (ui/Rect.fromPoints
+                                   (ui/Offset bx by)
+                                   (ui/Offset (+ bx (* mux vis) (* cux cf))
+                                              (+ by (* muy vis) (* cuy cf))))]
+                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect
+                                   (fn [^r/PaintingContext ctx _o] (.paintChild ctx ch child-off))))
+                  (.paintChild context ch child-off)))
+              (recur (.childAfter this ch)))))))
+    nil)
 
   (performLayout [this]
     (let [^r/SliverConstraints c (.-constraints this)]
@@ -631,6 +683,9 @@
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
     (.setDidUnderflow mgr false)
+    ;; §8a: flow children are never engine-clipped — clear any stale clip map
+    ;; left by a prior indexed segment so it doesn't paint-clip this flow pass.
+    (.-clips! rs {})
     (let [env (lay/make-env c (.-itemCount rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
@@ -693,16 +748,28 @@
                              (.-scrollOffset c))))
 
 (defn- ^r/BoxConstraints geo-constraints [env gm]
-  (let [^double me (double (:main-extent gm))
+  ;; §8a: lay each cell at its STABLE full main-extent (falls back to :main-extent
+  ;; for resting/non-tween frames) so content lays out once at a real size; the
+  ;; lerped VISIBLE window is applied as a paint-clip, not a layout size.
+  (let [^double me (double (:full-main-extent gm (:main-extent gm)))
         ^double ce (double (:cross-extent gm))]
     (if (= :vertical (:axis env))
       (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
       (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
 
+(defn- ^double child-cross-extent
+  "Full cross-axis size of a laid-out child in this sliver's axis (§8a paint-clip
+   keeps cross unclipped)."
+  [^r/SliverConstraints c ^r/RenderBox child]
+  (let [^ui/Size s (.-size child)]
+    (if (= r/Axis.vertical (.-axis c)) (.-width s) (.-height s))))
+
 (defn- indexed-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
     (.setDidUnderflow mgr false)
+    ;; §8a: fresh clip map each pass; a resting/non-collapsing frame leaves it {}.
+    (.-clips! rs {})
     (let [env (lay/make-env c (.-itemCount rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           geo-fn (:geometry layout)
@@ -803,6 +870,21 @@
                   .to trail-end)
                 ^double cache-extent
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
+                ;; §8a: record each animating cell's paint-clip window. A cell laid
+                ;; at full main (:full-main-extent) but with a smaller lerped visible
+                ;; window (:main-extent) is painted clipped to `visible`.
+                _clips
+                (.-clips! rs
+                  (loop [child (.-firstChild rs) m (transient {})]
+                    (if child
+                      (let [^r/RenderBox ch child
+                            ^int idx (.indexOf rs ch)
+                            gm (geo-fn env idx)
+                            ^double fm (double (:full-main-extent gm (:main-extent gm)))
+                            ^double vm (double (:main-extent gm))]
+                        (recur (.childAfter rs ch)
+                               (if (> (.abs (- fm vm)) 1e-3) (assoc! m idx vm) m)))
+                      (persistent! m))))
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses/rescales
                 ;; mid-segment the viewport-top slot jumps unless we follow it.
@@ -984,7 +1066,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil nil)]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil nil {})]
       (set-tween-anim! rs tweenAnim)
       rs))
 

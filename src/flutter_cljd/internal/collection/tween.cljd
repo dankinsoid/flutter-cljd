@@ -308,12 +308,20 @@
                        key (key-of i)
                        to (to-frame env (:to-ctx ctx) i)
                        from (get committed key)
-                       [from* to*] (cond
-                                     (contains? entering key) [(zero-main to) to]
-                                     (contains? exiting key) [(or from to) (zero-main to)]
-                                     :else [from to])]
-                   (or (lerp-frame from* to* (double (:t ctx)))
-                       (zero-frame env))))
+                       ;; §8a: a cell is laid out at its STABLE full main-extent
+                       ;; (:full-main-extent) so its content lays out once at a real
+                       ;; size; :main-extent is the lerped VISIBLE/clip window the
+                       ;; engine paints. They differ only mid enter/exit.
+                       [from* to* full] (cond
+                                          (contains? entering key)
+                                          [(zero-main to) to (double (or (:main-extent to) 0.0))]
+                                          (contains? exiting key)
+                                          (let [f (or from to)]
+                                            [f (zero-main to) (double (or (:main-extent f) 0.0))])
+                                          :else [from to nil])
+                       fr (or (lerp-frame from* to* (double (:t ctx)))
+                              (zero-frame env))]
+                   (assoc fr :full-main-extent (double (or full (:main-extent fr))))))
      :first-index (fn [env ^double off]
                     (let [ctx (:ctx env)]
                       (int (or (to-first env (:to-ctx ctx) off) 0))))

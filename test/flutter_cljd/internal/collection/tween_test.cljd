@@ -392,6 +392,25 @@
       (is (frame= (fr 100 0 80 150) (keyed-geo* to committed 300.0 key-of opts 0.5 0)))
       (is (frame= (fr 0 0 60 100) (keyed-geo* to committed 300.0 key-of opts 1.0 0))))))
 
+;; --- §8a: lay-at (:full-main-extent) decoupled from visible (:main-extent) ---
+
+(deftest full-main-extent-decouples-lay-at-from-visible
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x (fr 40 20 60 100)}]
+    (testing "entering: full == target, visible == target*progress"
+      (let [g (keyed-geo* to {} 180.0 (fn [^int _i] :x) {:entering #{:x}} 0.25 0)]
+        (is (close? 60.0 (:full-main-extent g)))
+        (is (close? 15.0 (:main-extent g)))))
+    (testing "exiting: full == committed, visible == committed*(1-progress)"
+      (let [g (keyed-geo* to committed 180.0 (fn [^int _i] :x) {:exiting #{:x}} 0.25 0)]
+        (is (close? 60.0 (:full-main-extent g)))
+        (is (close? 45.0 (:main-extent g)))))
+    (testing "stay: full == visible (a size-morphing stay reflows, no clip)"
+      (let [g (keyed-geo* to {:x (fr 0 20 100 100)} 180.0 (fn [^int _i] :x) {} 0.5 0)]
+        (is (close? 80.0 (:main-extent g)))          ; lerp(100, 60, 0.5)
+        (is (close? (:main-extent g) (:full-main-extent g)))))))
+
 ;; --- §7c: from = committed ∪ old-layout math (viewport-entering cells glide) ---
 
 (deftest augment-from-rects-glides-entering-cell
