@@ -885,8 +885,8 @@
           (ui/padding 12
             (let [chips (map morph-chip tags)]
               (if (= mode :wrap)
-                (apply ui/collection :wrap :spacing 8 :run-spacing 8 :animate true chips)
-                (apply ui/collection :list :spacing 6 :animate true chips)))))
+                (apply ui/collection :wrap :spacing 8 :run-spacing 8 :animate {:duration 2500} chips) ; TEMP slow
+                (apply ui/collection :list :spacing 6 :animate {:duration 2500} chips)))))          ; TEMP slow
          (ui/expanded)))))
 
 ;; ====== PREVIEW SWITCHER ======
