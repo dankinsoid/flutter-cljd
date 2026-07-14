@@ -260,20 +260,18 @@
   "Rebuilds shadowData from current user-data + dying items.
 
    The shadow vec is the index space that feeds BOTH the render tree (childCount,
-   builder, key-of) AND — through the engine's key-of + item-count — the indexed
-   target frame source. For a FLOW layout the dying cell must occupy its old slot
-   so the flow reflows around its collapse and the survivors glide (see §7a). For
-   an INDEXED layout a reinserted dying slot freezes the index space, so
-   `to-frame(i) == committed(i)` for every survivor and stay-glide dies (§7a);
-   there the target must be PURE NEW DATA, so dying cells are dropped from the
-   index space entirely. In 2b that means an indexed remove's dying cell vanishes
-   (the overlay collapse path is 2c) while its survivors reindex up and glide."
+   builder, key-of) AND — through the engine's key-of + item-count — the target
+   frame source. Dying cells stay IN-TREE for both hosts (a FLOW layout reflows
+   around the collapse; an INDEXED layout's engine remaps the shadow indices via
+   `tw/shadow-frame-source`, docs §7a): a live shadow index answers its pure-new
+   frame so survivors glide up, a dying shadow slot answers a zero-extent gap so
+   it reserves nothing while the cell shrinks in place. A pure shuffle has no
+   dying entries, so the remap is an identity — no regression."
   [^SliverCollectionState state]
   (let [^SliverCollection widget (.-widget state)
         data (.-data widget)
         key-fn (.-keyFn widget)
-        indexed? (some? (:geometry (.-layoutImpl widget)))
-        dying (if indexed? [] (.-dyingItems state))]
+        dying (.-dyingItems state)]
     (if (and key-fn data)
       (.-shadowData! state (an/build-shadow-data data key-fn dying))
       (.-shadowData! state nil))))

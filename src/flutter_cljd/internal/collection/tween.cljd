@@ -325,3 +325,115 @@
                      (lerp from-extent
                            (double (or (to-ext env (:to-ctx ctx) n) 0.0))
                            (double (:t ctx)))))})))
+
+;; --- §7a shared core: classify + collapse-remap + slide-out ---
+;;
+;; Three pure functions both hosts consume (docs §7a "Shared core"): a per-cell
+;; classifier, the collapse REMAP that makes an indexed remove actually collapse
+;; (survivors glide, dying slot reserves zero extent), and the leave-slide edge
+;; target. See docs/CollectionRectAnimator.md §7a.
+
+;; @ai-generated(solo)
+(defn classify-cell
+  "§7a per-cell segment class from four booleans (docs §7a matrix). `old?`/`new?`
+   = key present in the OLD/NEW data; `target-in-window?`/`from-in-window?` = the
+   cell's target/committed rect overlaps the live window. Returns one of
+   :stay-glide :exit-collapse :leave-slide :arrive-slide :enter-collapse."
+  [old? new? target-in-window? from-in-window?]
+  (cond
+    (not new?) :exit-collapse            ; left the data → shrink in place
+    (not old?) :enter-collapse           ; joined the data → grow from 0
+    target-in-window? (if from-in-window? :stay-glide :arrive-slide)
+    from-in-window? :leave-slide         ; on-screen, reindexed off-screen
+    :else :stay-glide))                  ; off-screen both sides → not materialized
+
+;; @ai-generated(solo)
+(defn shadow-frame-source
+  "Frame source over the SHADOW index space (live survivors + in-tree dying
+   cells) that bakes in the §7a collapse remap, so a host driver consumes it
+   unchanged (same shape as `frozen-frame-source`). `to-src` is a frame source
+   over the PURE NEW DATA (the live-only sequence); `shadow-entries` is the
+   shadow vec in shadow order, each entry {:type :live|:dying :key k} and, for a
+   dying entry, :committed <its content-space rect>.
+
+   For shadow index i:
+   - a LIVE entry maps to its pure-new-data index d = the count of live entries
+     before i and answers `(to-src d)` — so a survivor below a removal maps to a
+     SMALLER d ⇒ higher frame ⇒ it glides up.
+   - a DYING entry answers a synthesized GAP frame: offset = the next live
+     survivor's new frame offset (where the gap closes; the pure-new total extent
+     when the dying cell trails all survivors), main-extent 0 (survivors see zero
+     reserved extent), cross/cross-extent from the dying cell's committed rect.
+     The cell's own shrink to 0 comes from keyed-tween-layout's :exiting branch,
+     which zeroes main against this frame; this frame only positions the gap.
+
+   Windowing answers in SHADOW indices: first/last-index map to-src's pure-new
+   window back through live→shadow, widening over the adjacent dying slots so a
+   collapsing cell in view is materialized; extent is the pure-new total (to-src
+   at the live count), never the inflated shadow count."
+  [to-src shadow-entries]
+  (let [entries (vec shadow-entries)
+        ^int n (count entries)
+        to-prep (:prepare to-src)
+        to-frame (:frame to-src)
+        to-first (:first-index to-src)
+        to-last (:last-index to-src)
+        to-ext (:extent to-src)
+        live-mask (mapv #(= :live (:type %)) entries)
+        ;; live-before[i] = number of live entries strictly before i
+        live-before (loop [i 0 c 0 acc (transient [])]
+                      (if (< i n)
+                        (recur (inc i) (if (nth live-mask i) (inc c) c) (conj! acc c))
+                        (persistent! acc)))
+        ;; live->shadow[d] = shadow index of the d-th live entry
+        live->shadow (loop [i 0 acc (transient [])]
+                       (if (< i n)
+                         (recur (inc i) (if (nth live-mask i) (conj! acc i) acc))
+                         (persistent! acc)))
+        ^int live-count (count live->shadow)
+        gap-frame (fn [env ctx ^int i ^int d]
+                    (let [surv (when (< d live-count) (to-frame env ctx d))
+                          ^double off (if surv
+                                        (double (:offset surv))
+                                        (double (or (to-ext env ctx live-count) 0.0)))
+                          cm (:committed (nth entries i))]
+                      {:offset off
+                       :cross (double (or (:cross cm) (:cross surv) 0.0))
+                       :main-extent 0.0
+                       :cross-extent (double (or (:cross-extent cm) (:cross-extent surv)
+                                                 (:cross-extent env) 0.0))}))]
+    {:prepare (fn [env] (to-prep env))
+     :frame (fn [env ctx ^int i]
+              (when (and (>= i 0) (< i n))
+                (let [^int d (nth live-before i)]
+                  (if (nth live-mask i)
+                    (to-frame env ctx d)
+                    (gap-frame env ctx i d)))))
+     :first-index (fn [env ctx ^double off]
+                    (when (pos? live-count)
+                      (when-let [d0 (to-first env ctx off)]
+                        (let [^int d (max 0 (min (int d0) (dec live-count)))
+                              ^int s0 (nth live->shadow d)]
+                          ;; include the dying slots collapsing just above the survivor
+                          (loop [^int s s0]
+                            (if (and (> s 0) (not (nth live-mask (dec s)))) (recur (dec s)) s))))))
+     :last-index (fn [env ctx ^double off]
+                   (when (pos? live-count)
+                     (when-let [d1 (to-last env ctx off)]
+                       (let [^int d (max 0 (min (int d1) (dec live-count)))
+                             ^int s1 (nth live->shadow d)]
+                         (loop [^int s s1]
+                           (if (and (< s (dec n)) (not (nth live-mask (inc s)))) (recur (inc s)) s))))))
+     :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))}))
+
+;; @ai-generated(solo)
+(defn slide-out-frame
+  "§7a leave-slide target: `from-rect` translated along the main axis to the near
+   window edge, main-extent and cross UNCHANGED (the viewport clips the overflow).
+   `dir` picks the edge — :leading slides fully past `ws` (offset = ws −
+   main-extent), :trailing slides fully past `we` (offset = we)."
+  [from-rect ^double ws ^double we dir]
+  (let [^double me (double (:main-extent from-rect))]
+    (assoc from-rect :offset (case dir
+                               :leading (- ws me)
+                               :trailing we))))

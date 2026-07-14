@@ -866,6 +866,22 @@
        .hasVisualOverflow (or (> total paint-extent) (pos? (.-scrollOffset c)))))))
 
 ;; @ai-generated(solo)
+(defn- shadow-entries
+  "Reconstructs the shadow index space as {:type :key (:committed)} entries for
+   `tw/shadow-frame-source`'s collapse remap. A key in the engine's `exiting` set
+   is a dying slot (carrying its frozen committed rect for the gap's cross); every
+   other index is a live survivor. Order is the shadow order (key-of over indices)."
+  [^CollectionRenderSliver rs from-rects]
+  (let [^int n (int (or (.-itemCount rs) 0))
+        exiting (.-exiting rs)]
+    (mapv (fn [^int i]
+            (let [k (key-for rs i)]
+              (if (contains? exiting k)
+                {:type :dying :key k :committed (get from-rects k)}
+                {:type :live :key k})))
+          (range n))))
+
+;; @ai-generated(solo)
 (defn- segment-start!
   "First pass of a new segment (docs §4.1/§6). Freezes the OLD committed rects as
    the `from` side, captures the target from the NEW tree, builds the keyed
@@ -886,7 +902,10 @@
         ^double from-extent (if-let [^r/SliverGeometry g (.-geometry rs)] ; (b)
                               (.-scrollExtent g) 0.0)
         to-src (if indexed                                               ; (c)
-                 (tw/indexed-frame-source layout)
+                 ;; §7a collapse remap: survivors map to pure-new indices (glide
+                 ;; up) and dying slots present zero-extent gaps (shrink in place)
+                 (tw/shadow-frame-source (tw/indexed-frame-source layout)
+                                         (shadow-entries rs from-rects))
                  (do (flow-layout! rs layout c)
                      (tw/frozen-frame-source (snapshot-window rs))))
         seg-tween (tw/keyed-tween-layout                                 ; (d)

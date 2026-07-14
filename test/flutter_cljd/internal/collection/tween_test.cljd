@@ -392,6 +392,71 @@
       (is (frame= (fr 100 0 80 150) (keyed-geo* to committed 300.0 key-of opts 0.5 0)))
       (is (frame= (fr 0 0 60 100) (keyed-geo* to committed 300.0 key-of opts 1.0 0))))))
 
+;; --- §7a shared core: classify-cell / shadow-frame-source / slide-out-frame ---
+
+(deftest classify-cell-matrix
+  (testing "removed from data → exit-collapse regardless of window"
+    (is (= :exit-collapse (tw/classify-cell true false true true)))
+    (is (= :exit-collapse (tw/classify-cell true false false false))))
+  (testing "joined the data → enter-collapse"
+    (is (= :enter-collapse (tw/classify-cell false true true false)))
+    (is (= :enter-collapse (tw/classify-cell false true true true))))
+  (testing "in both, target visible, from visible → stay-glide"
+    (is (= :stay-glide (tw/classify-cell true true true true))))
+  (testing "in both, target visible, from off-screen → arrive-slide"
+    (is (= :arrive-slide (tw/classify-cell true true true false))))
+  (testing "in both, target off-screen, from visible → leave-slide"
+    (is (= :leave-slide (tw/classify-cell true true false true)))))
+
+(deftest shadow-frame-source-collapse-remap
+  ;; Data [a b c d] (indexed list, extent 50 → old offsets 0/50/100/150) removes
+  ;; the MIDDLE `b`. The shadow order keeps b in-tree as a dying slot; the pure
+  ;; new data is [a c d]. Survivors must map to the compacted pure-new indices
+  ;; (glide UP) and the dying slot must reserve zero extent at the gap.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        entries [{:type :live :key :a}
+                 {:type :dying :key :b :committed (fr 50 0 50 200)}
+                 {:type :live :key :c}
+                 {:type :live :key :d}]
+        src (tw/shadow-frame-source to entries)
+        env (assoc base-env :item-count 4)
+        ctx ((:prepare src) env)
+        frame (fn [^int i] ((:frame src) env ctx i))]
+    (testing "live survivors map to pure-new-data indices (compacted, higher up)"
+      (is (close? 0.0 (:offset (frame 0))))     ; a → d0 → 0
+      (is (close? 50.0 (:offset (frame 2))))    ; c → d1 → 50 (was committed 100)
+      (is (close? 100.0 (:offset (frame 3)))))  ; d → d2 → 100 (was committed 150)
+    (testing "survivor frames sit HIGHER (smaller offset) than committed"
+      (is (< (:offset (frame 2)) 100.0))        ; c new 50 < old 100
+      (is (< (:offset (frame 3)) 150.0)))       ; d new 100 < old 150
+    (testing "dying slot is a zero-extent gap at the next survivor's new offset"
+      (let [g (frame 1)]
+        (is (close? 50.0 (:offset g)))          ; == c's new offset (gap closes here)
+        (is (close? 0.0 (:main-extent g)))      ; zero reserved extent to survivors
+        (is (close? 0.0 (:cross g)))            ; from the dying cell's committed rect
+        (is (close? 200.0 (:cross-extent g)))))
+    (testing "extent is the pure-new (live) total, not the inflated shadow count"
+      (is (close? 150.0 ((:extent src) env ctx 4))))   ; 3 live × 50
+    (testing "first-index answers in shadow space, widening over the dying slot"
+      (is (= 0 ((:first-index src) env ctx 40.0)))     ; window at a → shadow 0
+      (is (= 1 ((:first-index src) env ctx 60.0)))))   ; window at c → include dying b (shadow 1)
+  (testing "a dying cell trailing all survivors gaps to the pure-new total extent"
+    (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+          entries [{:type :live :key :a}
+                   {:type :live :key :b}
+                   {:type :dying :key :c :committed (fr 100 0 50 200)}]
+          src (tw/shadow-frame-source to entries)
+          env (assoc base-env :item-count 3)
+          ctx ((:prepare src) env)]
+      (is (close? 100.0 (:offset ((:frame src) env ctx 2)))))))  ; live total = 2×50
+
+(deftest slide-out-frame-clamps-to-edge
+  (let [rect (fr 100 10 20 50)]
+    (testing ":leading slides fully above ws, extent & cross unchanged"
+      (is (frame= (fr -20 10 20 50) (tw/slide-out-frame rect 0.0 200.0 :leading))))
+    (testing ":trailing slides fully below we, extent & cross unchanged"
+      (is (frame= (fr 200 10 20 50) (tw/slide-out-frame rect 0.0 200.0 :trailing))))))
+
 (deftest tween-between-two-grids-endpoints-exact
   (let [g2 (lay/resolve-layout :grid {:columns 2 :rows {:size 50}})
         g3 (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})
