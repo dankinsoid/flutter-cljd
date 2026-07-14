@@ -260,6 +260,25 @@
       (is (frame= (fr 400 0 40 80) (keyed-geo to committed 300.0 key-of 0.0 1)))
       (is (frame= (fr 230 0 50 90) (keyed-geo to committed 300.0 key-of 0.5 1))))))
 
+(deftest keyed-tween-reindex-on-remove-glides-survivor-up
+  ;; §7a root-cause guard. Data [a b c d] (offsets 0/50/100/150) removes the
+  ;; MIDDLE `b`; the INDEXED target is built over the PURE NEW DATA [a c d]
+  ;; (offsets 0/50/100) — no dying reinsert. Survivor `c` was at old index 2
+  ;; (committed offset 100) and now maps to new index 1, whose target sits HIGHER
+  ;; (smaller offset), so the cell glides up instead of committed==target — the
+  ;; bug the dying reinsert used to cause.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        committed {:a (fr 0 0 50 200) :c (fr 100 0 50 200) :d (fr 150 0 50 200)}
+        key-of (fn [^int i] (nth [:a :c :d] i))]  ; new index space, `b` gone
+    (testing "reindexed survivor's target is above its committed position"
+      (let [c-target (:offset (keyed-geo to committed 300.0 key-of 1.0 1))]
+        (is (< c-target (:offset (get committed :c))))  ; 50 < 100 → real slide-up
+        (is (close? 50.0 c-target))))
+    (testing "mid-glide the survivor is strictly between committed and target"
+      (is (frame= (fr 75 0 50 200) (keyed-geo to committed 300.0 key-of 0.5 1))))
+    (testing "the cell above the removal (a, index 0) does not move"
+      (is (frame= (fr 0 0 50 200) (keyed-geo to committed 300.0 key-of 0.5 0))))))
+
 (deftest keyed-tween-extent-lerps
   (let [to (tw/frozen-frame-source {:base 0 :extent 180.0 :frames [(fr 0 0 60 200)]})
         ext (fn [^double t]

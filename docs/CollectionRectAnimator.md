@@ -185,7 +185,95 @@ viewport. That bounds shuffle cost to cells with live history.
 Because a simultaneous data + layout change is *also* just a per-key rect change,
 it no longer needs to snap (constraint 6): both hosts animate it cleanly.
 
+> **Superseded by §7a for indexed layouts.** The `widen-window!`/attached-children
+> union above was the first cut. Runtime testing (2026-07-13) showed it can't hold:
+> it leaves the *from*-visible cells unmaterialized during a large non-monotonic move
+> (shuffle) — viewport-top goes empty → overscroll bounce — and it interacts fatally
+> with the reserve-slot exit of §8 to make indexed remove animate *nothing*. §7a is
+> the canonical model; it subsumes both windowing and enter/exit for indexed hosts.
+
+## 7a. Segment mechanics, canonical: pure-new-data target + overlay exits
+
+Two runtime bugs turned out to share one root cause:
+
+- **Indexed remove animates nothing.** The host reinserts the dying cell at its
+  *old index* in shadow-data (to keep it in the tree for the collapse). That leaves
+  the index space unchanged, so `indexed-frame-source` yields `to-frame(i) ==
+  committed(i)` for every live cell ⇒ **stay-glide is dead** (nothing below slides
+  up), and the collapse shrinks inside a *reserved slot no neighbor vacates* ⇒ reads
+  as "vanish + snap." A flow layout reflows the collapsed cell out and glides;
+  indexed never does, because the reinsert freezes the indices.
+- **Shuffle bounces.** The segment materializes only the *target* window; the
+  *from*-visible cells (old on-screen keys, scattered to new indices by the shuffle)
+  are never laid at their committed positions ⇒ viewport-top empty ⇒ bounce.
+
+Both are the same defect: **cells that are leaving the on-screen window still occupy
+the indexed target's index space.** The fix removes them from it.
+
+### Principle
+
+> During a segment the indexed `to-src` is built from the **pure new data** — no
+> dying-cell reinsert, no reserved slots. Any cell present in the *old* tree that
+> leaves the target's on-screen window — whether because its key was **removed from
+> the data** or because its key **reindexed off-screen** (shuffle) — is rendered as
+> an **overlay** at its committed position, outside the index space. Live survivors
+> get their new (shifted) indices, so `to-frame` shifts and **stay-glide revives on
+> its own** — for remove, shuffle, and insert alike.
+
+This is why §7's brute-force `[min..max]` span is unnecessary: leaving cells never
+need their scattered real indices materialized. They're overlays; arriving cells are
+the ordinary **contiguous** window near `scrollOffset`.
+
+### Two exit/enter semantics (do not conflate)
+
+A cell crosses the window edge for two different reasons, animated two different ways:
+
+1. **Data collapse** — key genuinely appeared in / disappeared from the *data*.
+   Animate **main-extent 0 ↔ final** in place (the `collapse-wrap` of §8). The cell
+   grows/shrinks; neighbors track the closing/opening gap.
+2. **Viewport slide** — key exists both before and after; it only crossed the
+   viewport edge because reindexing moved it. Animate a **full-size slide** from the
+   committed rect toward/from the edge, **no size change** — the viewport already
+   clips it. (This is the user's constraint: *slide does not squeeze the size.*)
+
+### Classifier (per cell, per segment)
+
+`from = committed[key]`, `target = to-src(index)`, both content-space; window `[ws,we]`.
+
+| old→ / new↓ | key ∉ new (removed) | key ∈ new, target ∉ window | key ∈ new, target ∈ window | key ∈ new, from ∉ window |
+|---|---|---|---|---|
+| **key ∈ old** | **exit-collapse** (→0, in place) | **leave-slide** (overlay→edge) | **stay-glide** (lerp from→target) | **arrive-slide** (offscreen from→target) |
+| **key ∉ old** | — | — | **enter-collapse** (0→final) | enter-collapse (0→final) |
+
+- **arrive-slide** needs **zero new machinery**: it's an ordinary indexed child of
+  the contiguous target window, laid at `t≈0` on its off-screen `committed[key]`,
+  lerping to its on-screen target, clipped by the viewport until it crosses the edge.
+- **leave-slide** and **exit-collapse** share **one overlay path**, two drivers
+  (slide vs. collapse). Overlays are painted at their committed rect, outside the
+  index space, so they neither reserve a slot nor block survivor reindexing.
+- **stay-glide** and **enter-collapse** are unchanged from §6/§8.
+
+### What this removes
+
+- `build-shadow-data`'s **reinsert-dying-at-old-index** and the reserved-slot exit —
+  replaced by the overlay path. The indexed `to-src` is built from new data only.
+- §7's `widen-window!` / attached-children union (for indexed hosts) — leaving cells
+  are overlays, arriving cells are the contiguous window, so no scattered union.
+
+### Span cap (unbounded shuffle)
+
+A full-list shuffle makes *every* on-screen key a leave-slide overlay; the overlay
+set is bounded by the viewport (≈ one screenful of leaving + one of arriving), so
+virtualization holds. If the from-visible **and** target-visible sets together
+exceed a threshold (e.g. a viewport can't host them), the segment **snaps** that
+change rather than animating — logged, not silent.
+
 ## 8. Enter / exit (constraint 4)
+
+> **Exit is revised by §7a.** "Exit" splits into *data collapse* (key left the data →
+> shrink in place) and *viewport slide* (key reindexed off-screen → full-size slide,
+> no shrink). The `ClipRect > OverflowBox` wrap below is the **collapse** driver; the
+> slide driver keeps the cell at final size and relies on the viewport clip.
 
 The diff still runs — but only to classify **enter** (key present in new data,
 absent in old) and **exit** (key absent in new data, present in old). Note the

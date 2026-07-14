@@ -2,7 +2,8 @@
 
 **Slug**: collection-rect-animator
 **Started**: 2026-07-13
-**Status**: DONE (bin/check --clean 0 errors; 186 tests green; all commits landed)
+**Status**: Phase 1 DONE (bin/check --clean 0 errors; 186 tests green; landed).
+Phase 2 IN PROGRESS — runtime bugs found on-device, §7a redesign (see below).
 
 ## Goal
 Replace v1's three animation paths (MoveRender position-glide, tween-layout
@@ -111,6 +112,46 @@ non-goal; box shares the core minus windowing+correction). Every subagent reads 
 - [x] 9. Demos: repl.cljd Morph + Box Morph exercise shuffle + simultaneous
         data+layout — agent: general-purpose
 - [x] 10. Final verify: bin/check --clean + full test run — coordinator
+
+## Phase 2 — §7a redesign (runtime fixes, 2026-07-13)
+
+On-device testing of the Morph demo surfaced two bugs with ONE root cause, plus the
+design fix. Design authority: `docs/CollectionRectAnimator.md` §7a (canonical).
+
+**Bugs (both = leaving cells still occupy the indexed target's index space):**
+- Indexed REMOVE animates nothing. `build-shadow-data` reinserts the dying cell at
+  its old index → index space frozen → `indexed-frame-source` gives `to-frame(i) ==
+  committed(i)` → stay-glide dead (nothing slides up); collapse shrinks in a reserved
+  slot that never vacates → "vanish + snap". (diag: render.cljd:863-864 +
+  animation.cljd:108-116; tween.cljd:291-292 else-branch is committed→committed.)
+- SHUFFLE bounces. Segment materializes only the target window; from-visible cells
+  (scattered to new indices) never laid at committed → viewport-top empty → bounce.
+
+**Fix (§7a):** indexed `to-src` built from PURE NEW DATA (no dying reinsert). Cells
+leaving the on-screen window → OVERLAYS at committed pos, outside index space →
+survivors reindex → stay-glide revives. Two exit/enter semantics: data-collapse
+(0↔final in place) vs viewport-slide (full-size slide, no squeeze, viewport clips).
+leave-slide + exit-collapse = one overlay path, two drivers. arrive-slide = ordinary
+contiguous indexed child laid at offscreen committed → target. Span-cap → snap if
+from+target visible sets exceed a viewport.
+
+**Retires:** `build-shadow-data` reinsert-at-old-index / reserved-slot exit;
+`widen-window!` union (for indexed).
+
+### Phase 2 checklist
+- [ ] 2a. Design note §7a — DONE (docs/CollectionRectAnimator.md).
+- [ ] 2b. Engine: indexed `to-src` from pure new data (drop dying reinsert in the
+        target index space); survivors reindex so stay-glide/remove/insert glide.
+        Files: render.cljd (segment-start!/indexed path), animation.cljd
+        (build-shadow-data). Verify remove: below-items slide up.
+- [ ] 2c. Overlay path: leaving cells (exit-collapse + leave-slide) rendered as
+        overlays at committed rect, outside index space; two drivers (collapse=0↔final,
+        slide=full-size→edge+clip). Host (sliver_collection.cljd dyingItems) +
+        engine paint. Classifier per §7a matrix.
+- [ ] 2d. Span-cap → snap when visible-from ∪ visible-target exceeds a viewport.
+- [ ] 2e. Verify on-device: remove (below slides up + collapse), shuffle (no bounce,
+        first shuffle animates), insert, list↔grid morph anchor stable. bin/check
+        clean + tests green + tween/render unit tests for reindex-on-remove.
 
 ## Step results
 
