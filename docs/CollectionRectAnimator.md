@@ -212,29 +212,41 @@ the indexed target's index space.** The fix removes them from it.
 
 ### Principle
 
-> During a segment the indexed `to-src` is built from the **pure new data** — no
-> dying-cell reinsert, no reserved slots. Any cell present in the *old* tree that
-> leaves the target's on-screen window — whether because its key was **removed from
-> the data** or because its key **reindexed off-screen** (shuffle) — is rendered as
-> an **overlay** at its committed position, outside the index space. Live survivors
-> get their new (shifted) indices, so `to-frame` shifts and **stay-glide revives on
-> its own** — for remove, shuffle, and insert alike.
+> During a segment the indexed target must present **zero reserved extent** for a
+> leaving cell, so survivors get their new (shifted) target frames and **stay-glide
+> revives on its own** — remove, shuffle, insert alike. But a leaving cell leaves for
+> two different reasons, and each keeps that principle a **different** way (below).
 
-This is why §7's brute-force `[min..max]` span is unnecessary: leaving cells never
-need their scattered real indices materialized. They're overlays; arriving cells are
-the ordinary **contiguous** window near `scrollOffset`.
+This is why §7's brute-force `[min..max]` span is unnecessary: a leaving cell never
+needs its scattered real index materialized. It is either a zero-extent shadow slot
+(data-remove) or an off-index overlay (reindex); arriving cells are the ordinary
+**contiguous** window near `scrollOffset`.
 
-### Two exit/enter semantics (do not conflate)
+### Two exit/enter semantics — different reasons, different mechanisms
 
-A cell crosses the window edge for two different reasons, animated two different ways:
+A cell crosses the window edge for two different reasons; conflating them was the v1
+mistake. They use **different** mechanisms, each validated by a real framework:
 
-1. **Data collapse** — key genuinely appeared in / disappeared from the *data*.
-   Animate **main-extent 0 ↔ final** in place (the `collapse-wrap` of §8). The cell
-   grows/shrinks; neighbors track the closing/opening gap.
-2. **Viewport slide** — key exists both before and after; it only crossed the
-   viewport edge because reindexing moved it. Animate a **full-size slide** from the
-   committed rect toward/from the edge, **no size change** — the viewport already
-   clips it. (This is the user's constraint: *slide does not squeeze the size.*)
+1. **Data collapse** (key removed from / added to the *data*) → **deferred-delete +
+   remapped target, in-tree — NOT an overlay.** Keep the dying cell as an ordinary
+   shadow child (it is built by the user builder, hit-tested, GC'd, contiguous — no
+   adaptor fight). The fix is in the *target source*, not the tree: wrap `to-src` so a
+   live shadow index `i` answers `to-frame(data-index i)` (pure-new-data math ⇒
+   survivors glide) and a dying slot answers a **synthesized gap frame** (offset = the
+   next survivor's new frame, cross from committed, `main-extent → 0` via the existing
+   `:exiting` path). Net: the dying slot presents zero reserved extent to survivors
+   while the cell itself shrinks in place. This is exactly Flutter `AnimatedList`'s
+   `_itemIndexToIndex` remap; the un-remapped version is `AnimatedGrid`'s
+   neighbors-don't-glide bug — i.e. our 2b symptom. The `collapse-wrap` of §8 owns the
+   shrink; **enter** is the same, `0 → final`.
+2. **Viewport slide** (key exists both before and after; only *reindexing* pushed it
+   off-screen — shuffle) → **overlay outside the index space** (§7a keeps this).
+   Deferred-delete cannot apply: the key is live at a real off-window index, and
+   materializing it there breaks the contiguous window (the whole point of §7a).
+   Animate a **full-size slide** from the committed rect to the near window edge, **no
+   size change** — the viewport clips it. This is `UICollectionView`'s
+   `finalLayoutAttributesForDisappearingItem`; Framer Motion has both modes explicitly
+   (default reserves space = deferred-delete; `popLayout` = out-of-flow overlay).
 
 ### Classifier (per cell, per segment)
 
@@ -245,20 +257,46 @@ A cell crosses the window edge for two different reasons, animated two different
 | **key ∈ old** | **exit-collapse** (→0, in place) | **leave-slide** (overlay→edge) | **stay-glide** (lerp from→target) | **arrive-slide** (offscreen from→target) |
 | **key ∉ old** | — | — | **enter-collapse** (0→final) | enter-collapse (0→final) |
 
-- **arrive-slide** needs **zero new machinery**: it's an ordinary indexed child of
-  the contiguous target window, laid at `t≈0` on its off-screen `committed[key]`,
-  lerping to its on-screen target, clipped by the viewport until it crosses the edge.
-- **leave-slide** and **exit-collapse** share **one overlay path**, two drivers
-  (slide vs. collapse). Overlays are painted at their committed rect, outside the
-  index space, so they neither reserve a slot nor block survivor reindexing.
+- **exit-collapse** — deferred-delete + remap (semantics §1): in-tree shadow child,
+  zero-extent gap frame; no overlay, no adaptor fight.
+- **leave-slide** — overlay (semantics §2): off-index kept-alive child, full-size
+  slide to the edge, viewport clips. The only new sliver machinery (see §7b).
+- **arrive-slide** — **zero new machinery**: an ordinary indexed child of the
+  contiguous target window, laid at `t≈0` on its off-screen `committed[key]`, lerping
+  to its on-screen target, clipped by the viewport until it crosses the edge.
 - **stay-glide** and **enter-collapse** are unchanged from §6/§8.
 
-### What this removes
+### Shared core (both hosts, no duplication)
 
-- `build-shadow-data`'s **reinsert-dying-at-old-index** and the reserved-slot exit —
-  replaced by the overlay path. The indexed `to-src` is built from new data only.
-- §7's `widen-window!` / attached-children union (for indexed hosts) — leaving cells
-  are overlays, arriving cells are the contiguous window, so no scattered union.
+Three pure functions in `tween.cljd` express all of the above once; both hosts consume
+them (§10):
+
+- `(classify-cell old? new? target-in-window? from-in-window?)` → one of the five
+  classes above (the matrix; trivially unit-testable).
+- `(shadow-frame-source to-src shadow-entries)` → a frame source with the collapse
+  remap baked in (same shape as `frozen-frame-source`, so each host's driver consumes
+  it unchanged).
+- `(slide-out-frame from-rect ws we dir)` → the edge-clamped slide target (committed
+  rect translated to the near window edge, main-extent unchanged).
+
+Host-supplied: **sliver** — `[ws,we]` from constraints, the overlay child management +
+paint of §7b, scroll correction (exists), GC exemption for sliding keys. **box** —
+infinite window (so the classifier degenerates: no slide classes, collapse only),
+`key-of` over child widgets, own-size lerp (exists). Box therefore **gains enter/exit
+for free** from this core, but wiring its host side is a separate step (2d); 2c ships
+the core + sliver.
+
+### What this removes / revises
+
+- 2b's indexed `rebuild-shadow!` **drop-dying** branch is **reverted**: the dying cell
+  returns to shadow-data (in-tree), and the collapse comes from the `shadow-frame-source`
+  remap instead. (2b proved survivors glide under pure-new-data indices; the remap
+  achieves that *while* keeping the cell in-tree to shrink.)
+- `build-shadow-data`'s old reinsert kept the dying cell at a *full-extent* old slot;
+  the remap makes that slot **zero-extent** to survivors. No reserved gap.
+- §7's `widen-window!` / attached-children union (indexed hosts) — leaving cells are
+  either zero-extent shadow slots or off-index overlays, arriving cells the contiguous
+  window, so no scattered union.
 
 ### Span cap (unbounded shuffle)
 
@@ -267,6 +305,35 @@ set is bounded by the viewport (≈ one screenful of leaving + one of arriving),
 virtualization holds. If the from-visible **and** target-visible sets together
 exceed a threshold (e.g. a viewport can't host them), the segment **snaps** that
 change rather than animating — logged, not silent.
+
+## 7b. Sliver overlay mechanism (leave-slide only)
+
+Only leave-slide needs off-index rendering (exit-collapse stays in-tree, §7a). The
+mechanism is a **kept-alive live child, engine-tracked, painted from an overridden
+`paint`** — not a paint snapshot (`toImage` mid-layout is forbidden and loses
+fidelity) and not a fake contiguous index (corrupts reconciliation):
+
+1. Before `collectGarbage` in a segment pass, set `parentData.keepAlive! true` for
+   each leave-slide key and stash `{key → RenderBox}` in a `^:mutable overlays` field.
+   `collectGarbage` then parks them in the adaptor's **keep-alive bucket** — attached,
+   element alive, exempt from the contiguity invariant (which governs only the main
+   child list).
+2. Each `performLayout`, lay each overlay at its **frozen committed size** (slide never
+   resizes ⇒ identical tight constraints ⇒ `RenderObject.layout` early-returns per tick
+   — free) and record its lerped `committed → slide-out-frame` offset.
+3. Override `paint`: `super.paint`, then `context.paintChild` each overlay at its
+   recorded offset (the viewport already clips past the edge).
+4. At `t=1` clear the flag; the next GC drops them.
+
+**The one adaptor risk:** scrolling mid-segment can bring a sliding key's *real* index
+back into the window ⇒ `SliverMultiBoxAdaptorElement` re-adopts the bucket child into
+the main list ⇒ double-paint / double-manage. **Guard:** each pass, evict from
+`overlays` any child whose index re-entered the main window (it then simply *arrives*,
+which is correct). A **probe experiment settles feasibility before building** (can't be
+verified by reading cljd): a ~20-line render object that sets `keepAlive` from itself,
+GCs, then `paintChild`s the bucket child — confirms cljd can write
+`SliverMultiBoxAdaptorParentData.keepAlive` and that a bucket child paints without
+`needsLayout` / ownership asserts.
 
 ## 8. Enter / exit (constraint 4)
 

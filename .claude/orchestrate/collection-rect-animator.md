@@ -138,20 +138,26 @@ from+target visible sets exceed a viewport.
 **Retires:** `build-shadow-data` reinsert-at-old-index / reserved-slot exit;
 `widen-window!` union (for indexed).
 
-### Phase 2 checklist
-- [ ] 2a. Design note §7a — DONE (docs/CollectionRectAnimator.md).
-- [ ] 2b. Engine: indexed `to-src` from pure new data (drop dying reinsert in the
-        target index space); survivors reindex so stay-glide/remove/insert glide.
-        Files: render.cljd (segment-start!/indexed path), animation.cljd
-        (build-shadow-data). Verify remove: below-items slide up.
-- [ ] 2c. Overlay path: leaving cells (exit-collapse + leave-slide) rendered as
-        overlays at committed rect, outside index space; two drivers (collapse=0↔final,
-        slide=full-size→edge+clip). Host (sliver_collection.cljd dyingItems) +
-        engine paint. Classifier per §7a matrix.
-- [ ] 2d. Span-cap → snap when visible-from ∪ visible-target exceeds a viewport.
-- [ ] 2e. Verify on-device: remove (below slides up + collapse), shuffle (no bounce,
-        first shuffle animates), insert, list↔grid morph anchor stable. bin/check
-        clean + tests green + tween/render unit tests for reindex-on-remove.
+### Phase 2 checklist (refined by fable memo — collapse=remap in-tree, slide=overlay)
+- [x] 2a. Design note §7a/§7b — DONE (docs/CollectionRectAnimator.md).
+- [x] 2b. Indexed `to-src` from pure new data (drop dying reinsert) — survivors glide
+        on remove. DONE + verified on-device (neighbors slide up). NOTE: 2b's
+        drop-dying branch is REVERTED by 2c-2 (replaced by the remap).
+- [ ] 2c-1. Pure core in tween.cljd: `classify-cell` (§7a matrix, 5 classes),
+        `shadow-frame-source` (collapse remap: live idx→to-frame(data-idx),
+        dying slot→zero-extent gap frame), `slide-out-frame` (edge-clamped) + tests.
+- [ ] 2c-2. exit-collapse: revert indexed drop-dying in rebuild-shadow!; wire
+        `shadow-frame-source` remap into segment-start! (render.cljd). Verify remove
+        now COLLAPSES (dying shrinks) while survivors glide. AnimatedList model.
+- [ ] 2c-3. keepAlive PROBE (~20 lines): confirm cljd can write
+        SliverMultiBoxAdaptorParentData.keepAlive + paintChild a bucket child without
+        needsLayout/ownership asserts. Gate for 2c-4.
+- [ ] 2c-4. leave-slide overlay (§7b): `overlays` field + keepAlive before GC + paint
+        override + evict-on-reentry guard. Fixes shuffle bounce.
+- [ ] 2d. box host consumes shared core → gains enter/exit; span-cap → snap when
+        visible-from ∪ visible-target exceeds a viewport.
+- [ ] 2e. Verify on-device: remove (collapse + slide-up), shuffle (no bounce, first
+        shuffle animates), insert, list↔grid morph anchor stable. bin/check + tests.
 
 ## Step results
 
