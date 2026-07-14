@@ -392,6 +392,26 @@
       (is (frame= (fr 100 0 80 150) (keyed-geo* to committed 300.0 key-of opts 0.5 0)))
       (is (frame= (fr 0 0 60 100) (keyed-geo* to committed 300.0 key-of opts 1.0 0))))))
 
+;; --- §7c: from = committed ∪ old-layout math (viewport-entering cells glide) ---
+
+(deftest augment-from-rects-glides-entering-cell
+  ;; A cell below the old viewport lands inside the new one on a layout change and
+  ;; has NO committed rect. augment-from-rects must give it its OLD-layout frame (a
+  ;; real off-screen offset), NOT its target — so it glides in instead of popping.
+  (let [prev (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
+        committed {:a (fr 0 0 100 200)}          ; only index 0 was on-screen
+        key-of (fn [^int i] (nth [:a :b :c :d :e] i))
+        env (assoc base-env :item-count 5)
+        result (tw/augment-from-rects committed prev env key-of 0 4)]
+    (testing "the committed (on-screen) key keeps its committed rect"
+      (is (frame= (fr 0 0 100 200) (get result :a))))
+    (testing "an off-screen entering key gets its OLD-layout frame, not target"
+      ;; index 4 sat at old offset 400 under the 100px list — a real off-screen from
+      (is (close? 400.0 (:offset (get result :e))))
+      (is (close? 100.0 (:main-extent (get result :e)))))
+    (testing "every window index now has a from (glide, not pop)"
+      (is (= #{:a :b :c :d :e} (set (keys result)))))))
+
 ;; --- §7a shared core: classify-cell / shadow-frame-source / slide-out-frame ---
 
 (deftest classify-cell-matrix

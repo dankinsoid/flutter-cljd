@@ -66,8 +66,10 @@
    ^:mutable segAnchor     ;; nil | {:from ^double :to ^double :screen ^double} — the viewport-top
                            ;; INDEX SLOT set-point that drives this segment's scroll correction (docs §9);
                            ;; frozen in segment-start!, self-nullifying when the slot doesn't move
-   ^:mutable restingTop]   ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
+   ^:mutable restingTop    ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
                            ;; each resting pass (indices consistent); seeds segAnchor at segment start
+   ^:mutable prevLayout]   ;; layout impl live BEFORE the current segment; supplies old-layout math for
+                           ;; `from` of cells entering the viewport on a layout change (docs §7c)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -229,10 +231,17 @@
         layout-changed (or (nil? (:id target-layout))
                            (not= (:id old) (:id target-layout)))
         count-changed (not= item-count (.-itemCount rs))
-        seg-start (and tween-anim (not= gen (.-segGen rs)))]
+        seg-start (and tween-anim (not= gen (.-segGen rs)))
+        gen-bumped (not= gen (.-curGen rs))]
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
+    ;; §7c: on a real new segment retain the layout live before it, so segment-start!
+    ;; can source `from` for viewport-entering cells from old-layout math. Only a
+    ;; layout change needs it; a pure data move clears it (augmentation then skipped).
+    ;; Gated on curGen (not segGen) so intra-segment rebuilds don't recapture.
+    (when gen-bumped
+      (.-prevLayout! rs (when layout-changed old)))
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs target-layout)
     (.-itemCount! rs item-count)
@@ -898,16 +907,33 @@
   [^CollectionRenderSliver rs ^r/SliverConstraints c]
   (let [layout (.-layoutModel rs)
         indexed (some? (:geometry layout))
-        from-rects (committed-rects rs)                                   ; (a)
+        committed-from (committed-rects rs)                              ; (a)
         ^double from-extent (if-let [^r/SliverGeometry g (.-geometry rs)] ; (b)
                               (.-scrollExtent g) 0.0)
         to-src (if indexed                                               ; (c)
                  ;; §7a collapse remap: survivors map to pure-new indices (glide
                  ;; up) and dying slots present zero-extent gaps (shrink in place)
                  (tw/shadow-frame-source (tw/indexed-frame-source layout)
-                                         (shadow-entries rs from-rects))
+                                         (shadow-entries rs committed-from))
                  (do (flow-layout! rs layout c)
                      (tw/frozen-frame-source (snapshot-window rs))))
+        env (lay/make-env c (.-itemCount rs))
+        ctx ((:prepare to-src) env)
+        ;; §7c: `from` = committed ∪ old-layout math. A cell entering the viewport
+        ;; on a layout change has no committed rect; source its `from` from the
+        ;; PREVIOUS layout's frame at that index so it glides in instead of popping.
+        ;; Indexed layout-change only (prevLayout is nil for a pure data move).
+        from-rects (if (and indexed (.-prevLayout rs))
+                     (let [^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+                           ^double we (+ ws (.-remainingCacheExtent c))
+                           fi ((:first-index to-src) env ctx ws)
+                           li (when (.-isFinite we) ((:last-index to-src) env ctx we))]
+                       (if (and fi li)
+                         (tw/augment-from-rects
+                          committed-from (tw/indexed-frame-source (.-prevLayout rs))
+                          env #(key-for rs %) (int fi) (int li))
+                         committed-from))
+                     committed-from)                                     ; (a')
         seg-tween (tw/keyed-tween-layout                                 ; (d)
                    [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
                    (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
@@ -917,8 +943,6 @@
         ;; its offset in the NEW target layout. Index-based ⇒ immune to which keys
         ;; shuffled where; nil when nothing was resting or the slot's target frame
         ;; is off the (flow) snapshot window ⇒ no correction this segment.
-        env (lay/make-env c (.-itemCount rs))
-        ctx ((:prepare to-src) env)
         resting (.-restingTop rs)
         seg-anchor (when resting
                      (let [^int raw (int (:idx resting))
@@ -960,7 +984,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil)]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
