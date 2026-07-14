@@ -20,7 +20,7 @@
   "Builds a RenderCollectionBox over fixed-size children and lays it out
    detached. Returns the render box."
   [layout axis children ^double max-w ^double max-h]
-  (let [rb (box/RenderCollectionBox layout axis nil nil nil {} {} nil {} nil 0 -1)]
+  (let [rb (box/RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} nil {})]
     (doseq [c children] (.add rb c))
     (.layout rb (r/BoxConstraints .maxWidth max-w .maxHeight max-h))
     rb))
@@ -101,7 +101,7 @@
 ;; via getDryLayout — RenderObject.layout swallows performLayout exceptions
 ;; into FlutterError.reportError, the dry path propagates them
 (deftest unbounded-cross-throws
-  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil nil {} {} nil {} nil 0 -1)]
+  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil nil {} {} nil nil 0 -1 #{} #{} nil {})]
     (.add rb (fixed-child 10 10))
     (is (thrown? Exception
                  (.getDryLayout rb (r/BoxConstraints .maxWidth ##Inf .maxHeight 100.0))))))
@@ -219,3 +219,55 @@
           (relayout-at! rb t 100.0 500.0)))
       (testing "no further performLayout on a stable-size cell (identity constraints)"
         (is (= after-first (.-layouts c1)))))))
+
+;; --- enter/exit COLLAPSE (step 2d) ---
+;;
+;; The engine keeps the dying cell in-tree and remaps the target so survivors
+;; gap-close (`shadow-frame-source` over pure-live data) while the dying cell is
+;; laid at its full stable size and paint-clipped to a shrinking window. An insert
+;; is the mirror: the cell grows 0 → full. key-of = the child index here; the
+;; `exiting`/`entering` sets are stamped straight onto the detached render object.
+
+(defn- start-collapse!
+  "Begins an animating segment held at `t` with explicit enter/exit key sets
+   (key = child index). Mirrors `start-anim!` but for the collapse path: the
+   layout is unchanged, only the data (a keyed remove/insert) drives it."
+  [^box/RenderCollectionBox rb entering exiting ^double t ^double mw ^double mh]
+  (.-keyOf! rb (fn [^int i] i))
+  (.-entering! rb entering)
+  (.-exiting! rb exiting)
+  (.-tweenAnim! rb (w/AlwaysStoppedAnimation t))
+  (.-curGen! rb (inc (.-curGen rb)))
+  (.markNeedsLayout rb)
+  (.layout rb (r/BoxConstraints .maxWidth mw .maxHeight mh)))
+
+(deftest box-remove-collapse
+  ;; list spacing 0: three 40×20 cells at y 0/20/40. Remove the MIDDLE (index 1).
+  ;; The survivor below glides up (y40 → y20, half = y30); the dying cell is laid
+  ;; at its full 20 but clipped to a shrinking main window (visible 10 at t=0.5);
+  ;; the box own-size shrinks toward the two-survivor height (60 → 40, half = 50).
+  ;; box cross-max = 40 so the list doesn't stretch cells past their own width.
+  (let [rb (laid-out (l/list :spacing 0) :vertical
+                     [(fixed-child 40 20) (fixed-child 40 20) (fixed-child 40 20)]
+                     40.0 500.0)]
+    (start-collapse! rb #{} #{1} 0.5 40.0 500.0)
+    (testing "survivor below the removal glides up to the midpoint (y30)"
+      (is (offsets≈ [[0.0 0.0] [0.0 20.0] [0.0 30.0]] (child-offsets rb))))
+    (testing "the dying cell is clipped along the collapse (main) axis: visible 10, full 20"
+      (is (offsets≈ [[10.0 40.0]] [(get (.-clips rb) 1)])))
+    (testing "the box shrinks toward the survivors-only size"
+      (is (size? rb 40 50)))))
+
+(deftest box-insert-collapse
+  ;; two 40×20 cells (y 0/20), then append a third that ENTERS (index 2): it grows
+  ;; from 0 along the main axis (visible 10 at t=0.5, laid full 20), and the box
+  ;; grows toward the three-cell height (40 → 60, half = 50).
+  (let [rb (laid-out (l/list :spacing 0) :vertical
+                     [(fixed-child 40 20) (fixed-child 40 20)]
+                     40.0 500.0)]
+    (.add rb (fixed-child 40 20))          ; the entering cell, now attached
+    (start-collapse! rb #{2} #{} 0.5 40.0 500.0)
+    (testing "the entering cell is clipped to a growing main window: visible 10, full 20"
+      (is (offsets≈ [[10.0 40.0]] [(get (.-clips rb) 2)])))
+    (testing "survivors keep their rects and the box grows toward three cells"
+      (is (size? rb 40 50)))))
