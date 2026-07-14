@@ -63,8 +63,11 @@
    ^:mutable entering       ;; set of keys wiping open this segment
    ^:mutable exiting        ;; set of keys wiping shut this segment
    ^:mutable segTween      ;; the built keyed-tween-layout for the current segment, or nil
-   ^:mutable ^bool segCorrect] ;; emit scroll correction this segment? only when total extent changed
-                               ;; (insert/remove/morph) — NOT on a pure reorder/shuffle (extent stable)
+   ^:mutable segAnchor     ;; nil | {:from ^double :to ^double :screen ^double} — the viewport-top
+                           ;; INDEX SLOT set-point that drives this segment's scroll correction (docs §9);
+                           ;; frozen in segment-start!, self-nullifying when the slot doesn't move
+   ^:mutable restingTop]   ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
+                           ;; each resting pass (indices consistent); seeds segAnchor at segment start
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -195,31 +198,6 @@
                              out)))
                   out))]
     (widen-window-indices first-index target-last cells ws we)))
-
-(defn- indexed-anchor-cells
-  "Cells for tw/anchor-delta this pass: each attached child's committed OLD
-   offset/main (last pass) paired with its freshly-laid NEW content-space offset.
-   Restricted to cells whose OLD rect overlaps the current scroll window [ws, we]:
-   a key that shuffled in from a far index carries a committed offset far outside
-   the window, so without this filter it could win the anchor and drag the viewport
-   toward its old position (drift). Structural changes (grid reflow / remove /
-   insert) keep the top keys' old offsets inside the window, so they still qualify."
-  [^CollectionRenderSliver rs ^double ws ^double we]
-  (let [committed (.-committed rs)]
-    (loop [child (.-firstChild rs) out []]
-      (if child
-        (let [^r/RenderBox ch child
-              ^r/SliverGridParentData pd (.-parentData ch)
-              old (get committed (key-for rs (.indexOf rs ch)))]
-          (recur (.childAfter rs ch)
-                 (let [cell (when old
-                              {:old-off (double (:offset old))
-                               :old-main (double (:main-extent old))
-                               :new-off (double (or (.-layoutOffset pd) 0.0))})]
-                   (if (and cell (tw/window-overlaps? cell ws we))
-                     (conj out cell)
-                     out))))
-        out))))
 
 (defn- set-tween-anim!
   "Registers/updates the per-tick relayout listener. While a layout morph runs
@@ -653,6 +631,10 @@
       (seed-cache! rs layout env)
       (normalize-cache! rs layout env)
       (let [anchor (anchor-before rs so)]
+        ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
+        ;; set-point. During a segment flow-layout! runs to capture the target.
+        (when (nil? (.-tweenAnim rs))
+          (.-restingTop! rs anchor))
         (if-not (align-start! rs layout env ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr))
@@ -669,6 +651,37 @@
 ;; ============================================================
 ;; Indexed driver
 ;; ============================================================
+
+;; @ai-generated(solo)
+(defn- capture-resting-top!
+  "Records the OLD viewport top for the next segment's set-point: the first laid
+   child whose content-space span reaches past `scroll-off`, as {:idx :off} in
+   content space. Called only on a RESTING indexed pass, while indices are
+   consistent. Stores nil when no attached child overlaps."
+  [^CollectionRenderSliver rs env ^double scroll-off]
+  (.-restingTop! rs
+    (loop [child (.-firstChild rs)]
+      (when child
+        (let [^r/RenderBox ch child
+              ^r/SliverGridParentData pd (.-parentData ch)
+              ^double off (double (or (.-layoutOffset pd) 0.0))
+              ^double me (if (.-hasSize ch) (lay/size-main env (.-size ch)) 0.0)]
+          (if (> (+ off me) scroll-off)
+            {:idx (.indexOf rs ^r/RenderBox ch) :off off}
+            (recur (.childAfter rs ^r/RenderBox ch))))))))
+
+;; @ai-generated(solo)
+(defn- seg-scroll-correction
+  "Set-point scroll correction for the animating/indexed path (docs §9): drives
+   scrollOffset so the captured viewport-top slot tracks its lerped OLD→NEW
+   position. Active whenever a segment plays and an anchor was captured; the
+   set-point is self-nullifying (converges within a frame, ≈0 when the slot does
+   not move). Returns the correction delta or nil."
+  [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  (when (and (.-tweenAnim rs) (.-segAnchor rs))
+    (tw/set-point-correction (.-segAnchor rs)
+                             (.-value ^a/Animation (.-tweenAnim rs))
+                             (.-scrollOffset c))))
 
 (defn- ^r/BoxConstraints geo-constraints [env gm]
   (let [^double me (double (:main-extent gm))
@@ -717,6 +730,8 @@
                                   (double ((:max-extent layout) env (int item-count)))
                                   0.0)]
             (.-geometry! rs (r/SliverGeometry .scrollExtent max-ext .maxPaintExtent max-ext))
+            (when (nil? (.-tweenAnim rs))
+              (capture-resting-top! rs env (.-scrollOffset c)))
             (.didFinishLayout mgr))
 
           (let [^double leading-off (double (:offset gm-first))
@@ -780,10 +795,10 @@
                 ^double cache-extent
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
                 ;; Scroll correction (animating only): the indexed path writes
-                ;; geometry directly, so when content above collapses mid-morph
-                ;; the anchored child jumps unless we follow it. One per pass.
-                corr (when (and (.-tweenAnim rs) (.-segCorrect rs))
-                       (tw/anchor-delta (indexed-anchor-cells rs ws we) (.-scrollOffset c)))]
+                ;; geometry directly, so when content above collapses/rescales
+                ;; mid-segment the viewport-top slot jumps unless we follow it.
+                ;; Set-point model (docs §9) — absolute per pass, self-nullifying.
+                corr (seg-scroll-correction rs c)]
             (if corr
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                   (.didFinishLayout mgr))
@@ -799,6 +814,9 @@
                                           (not (zero? (.-overlap c))))))
                 (when (or reached (= total trail-end))
                   (.setDidUnderflow mgr true))
+                ;; RESTING only: record the OLD viewport top for the next segment.
+                (when (nil? (.-tweenAnim rs))
+                  (capture-resting-top! rs env (.-scrollOffset c)))
                 (.didFinishLayout mgr)))))))))
 
 ;; ============================================================
@@ -871,26 +889,34 @@
                  (tw/indexed-frame-source layout)
                  (do (flow-layout! rs layout c)
                      (tw/frozen-frame-source (snapshot-window rs))))
-        ;; correct scroll only when the TOTAL extent changed (content added/removed/
-        ;; morphed above the anchor). A pure reorder/shuffle keeps the extent (grid
-        ;; math is index-based; a list's summed height is order-independent), so the
-        ;; per-pass anchor-follow would otherwise chase the shuffled anchor and drift.
-        ^double target-extent (if indexed
-                                (let [env (lay/make-env c (.-itemCount rs))
-                                      env (if-let [prep (:prepare layout)]
-                                            (assoc env :ctx (prep env)) env)
-                                      ^int n (int (or (:item-count env) 0))]
-                                  (if (pos? n) (double ((:max-extent layout) env n)) 0.0))
-                                (if-let [^r/SliverGeometry g (.-geometry rs)]
-                                  (.-scrollExtent g) 0.0))
         seg-tween (tw/keyed-tween-layout                                 ; (d)
                    [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
                    (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
-                   {:entering (.-entering rs) :exiting (.-exiting rs)})]
+                   {:entering (.-entering rs) :exiting (.-exiting rs)})
+        ;; Set-point anchor from the viewport-top INDEX SLOT captured at the last
+        ;; resting pass (docs §9): fromSlot = its OLD content-space offset, toSlot =
+        ;; its offset in the NEW target layout. Index-based ⇒ immune to which keys
+        ;; shuffled where; nil when nothing was resting or the slot's target frame
+        ;; is off the (flow) snapshot window ⇒ no correction this segment.
+        env (lay/make-env c (.-itemCount rs))
+        ctx ((:prepare to-src) env)
+        resting (.-restingTop rs)
+        seg-anchor (when resting
+                     (let [^int raw (int (:idx resting))
+                           ^int n (int (or (.-itemCount rs) 0))
+                           ^int idx (if (pos? n)
+                                      (math/max 0 (math/min raw (dec n)))
+                                      (math/max 0 raw))
+                           tgt ((:frame to-src) env ctx idx)]
+                       (when tgt
+                         (let [^double from-slot (double (:off resting))
+                               ^double to-slot (double (:offset tgt))]
+                           {:from from-slot :to to-slot
+                            :screen (- from-slot (.-scrollOffset c))}))))]
     (.-fromRects! rs from-rects)
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
-    (.-segCorrect! rs (< 1.0 (.abs (- from-extent target-extent))))
+    (.-segAnchor! rs seg-anchor)
     (.-segGen! rs (.-curGen rs))
     (if indexed                                                          ; (e)
       (indexed-layout! rs seg-tween c)
@@ -915,7 +941,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil false)]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

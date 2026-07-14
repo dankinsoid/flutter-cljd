@@ -215,32 +215,33 @@
     (is (nil? (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off 10.0}]
                                100.0)))))
 
-;; window-overlaps? gates the anchor candidates so a simultaneous shuffle+grid
-;; change (extent changes → segCorrect opens the correction) can't anchor on a
-;; key that shuffled in from a far index and drag the viewport toward its old
-;; position. Only cells whose OLD rect overlaps the current scroll window qualify.
-(deftest window-overlaps-gates-shuffled-in-anchors
-  (let [ws 0.0 we 200.0]
-    (testing "a near-top cell qualifies"
-      (is (tw/window-overlaps? {:old-off 100.0 :old-main 40.0} ws we)))
-    (testing "a key that shuffled in from a far index is excluded"
-      (is (not (tw/window-overlaps? {:old-off 5000.0 :old-main 40.0} ws we))))
-    (testing "a remove-above cell straddling the leading edge still qualifies"
-      ;; old-off -10 sits above ws 0 but its old span (-10..30) reaches past it.
-      (is (tw/window-overlaps? {:old-off -10.0 :old-main 40.0} ws we)))
-    (testing "filtered candidates: shuffled-in far cell dropped, near-top drives delta"
-      (let [cells [{:key :top :old-off 20.0 :old-main 40.0 :new-off 8.0}
-                   {:key :shuffled :old-off 5000.0 :old-main 40.0 :new-off 5.0}]
-            kept (filterv #(tw/window-overlaps? % ws we) cells)]
-        (is (= 1 (count kept)))
-        ;; the shuffled key's huge -4995 delta is gone; anchor is the near-top cell.
-        (is (close? -12.0 (tw/anchor-delta kept 10.0)))))
-    (testing "all top candidates far → empty → no correction"
-      (let [cells [{:key :a :old-off 5000.0 :old-main 40.0 :new-off 5.0}
-                   {:key :b :old-off 6000.0 :old-main 40.0 :new-off 6.0}]
-            kept (filterv #(tw/window-overlaps? % ws we) cells)]
-        (is (empty? kept))
-        (is (nil? (tw/anchor-delta kept 10.0)))))))
+;; set-point-correction drives scrollOffset so the captured viewport-top INDEX
+;; SLOT tracks its lerped OLD→NEW position (docs §9). Index-based ⇒ immune to
+;; which keys shuffled where; absolute per pass ⇒ converges without drift; and
+;; self-nullifying when the slot doesn't move (plain shuffle).
+(deftest set-point-correction-tracks-anchor-slot
+  (testing "grid rescale: slot moves 100→140, correction lerps then converges"
+    (let [anchor {:from 100.0 :to 140.0 :screen 0.0}]
+      ;; t=0: desired = lerp(100,140,0) − 0 = 100 == scrollOffset0 → no jump
+      (is (nil? (tw/set-point-correction anchor 0.0 100.0)))
+      ;; t=0.5: desired = 120; scrollOffset still 100 → +20
+      (is (close? 20.0 (tw/set-point-correction anchor 0.5 100.0)))
+      ;; t=1: desired = 140; scrollOffset caught up to 120 → +20
+      (is (close? 20.0 (tw/set-point-correction anchor 1.0 120.0)))
+      ;; converged: scrollOffset already at the set-point → ≈0 → nil
+      (is (nil? (tw/set-point-correction anchor 1.0 140.0)))))
+  (testing "plain shuffle: slot does not move (from==to) → no correction at any t"
+    (let [anchor {:from 100.0 :to 100.0 :screen 20.0}]
+      ;; desired = 100 − 20 = 80 for every t; scrollOffset sits at 80 → nil
+      (is (nil? (tw/set-point-correction anchor 0.0 80.0)))
+      (is (nil? (tw/set-point-correction anchor 0.5 80.0)))
+      (is (nil? (tw/set-point-correction anchor 1.0 80.0)))))
+  (testing "screen offset: slot below the viewport top keeps t=0 jump-free"
+    ;; slot's from=200 sits 50 below the viewport top (screen=50) at segment
+    ;; start ⇒ scrollOffset0 = from − screen = 150.
+    (is (nil? (tw/set-point-correction {:from 200.0 :to 260.0 :screen 50.0} 0.0 150.0)))
+    ;; t=1: desired = 260 − 50 = 210; from scrollOffset 150 → +60
+    (is (close? 60.0 (tw/set-point-correction {:from 200.0 :to 260.0 :screen 50.0} 1.0 150.0)))))
 
 ;; --- keyed combinator (v2): the `from` side is key-addressed ---
 

@@ -99,16 +99,28 @@
       (let [^double d (- (double (:new-off anchor)) (double (:old-off anchor)))]
         (when (> (.abs d) 1e-3) d)))))
 
-(defn window-overlaps?
-  "True when a cell's OLD rect [:old-off, :old-off+:old-main) overlaps the scroll
-   window [ws, we]. Anchor-candidate gate for the rect-animator's scroll
-   correction: only cells that genuinely sat near the viewport last pass may
-   anchor it, so a key that shuffled in from a far index (its committed offset far
-   outside the window) can't win the anchor and drag the viewport toward it."
-  [cell ^double ws ^double we]
-  (let [^double oo (double (:old-off cell))
-        ^double om (double (:old-main cell))]
-    (and (< oo we) (> (+ oo om) ws))))
+;; @ai-generated(solo)
+(defn set-point-correction
+  "Absolute scroll set-point for the animating/indexed path (docs §9). Given the
+   segment anchor `{:from :to :screen}` (content-space main axis: the captured
+   viewport-top slot's OLD offset, its NEW offset in the target layout, and its
+   screen position = OLD offset − scrollOffset at segment start), the current
+   curved tween value `t`, and the live `scroll-off`, returns how far scrollOffset
+   must move so the slot tracks its lerped OLD→NEW position, or nil when |delta|
+   ≤ 1e-3.
+
+   Absolute per pass, never summed: `desired = lerp(from, to, t) − screen`,
+   `delta = desired − scroll-off`. At t=0 desired == the segment-start scrollOffset
+   ⇒ no jump; at t=1 the slot lands index-stable; a slot that does not move
+   (from==to, plain shuffle) yields a constant desired ⇒ ≈0 at any t. The set-point
+   converges within a frame (re-run with the corrected offset ⇒ delta→0), so there
+   is no cumulative drift."
+  [{:keys [from to screen]} ^double t ^double scroll-off]
+  (let [^double from (double from)
+        ^double to (double to)
+        desired (- (+ from (* (- to from) t)) (double screen))
+        d (- desired scroll-off)]
+    (when (> (.abs d) 1e-3) d)))
 
 (defn- min-some [a b] (cond (nil? a) b (nil? b) a :else (min ^int a ^int b)))
 (defn- max-some [a b] (cond (nil? a) b (nil? b) a :else (max ^int a ^int b)))
