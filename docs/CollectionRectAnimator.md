@@ -349,28 +349,33 @@ GCs, then `paintChild`s the bucket child — confirms cljd can write
 `SliverMultiBoxAdaptorParentData.keepAlive` and that a bucket child paints without
 `needsLayout` / ownership asserts.
 
-## 7c. `from` = committed ∪ old-layout math (glide cells entering the viewport)
+## 7c. `from` = committed ∪ edge slide (glide cells entering the viewport)
 
 `from` was sourced **only** from `committed` — the rects of cells that were on-screen
 last pass. A cell that was *below* the old viewport and lands *inside* the new one
 (e.g. grid2→grid4 packs more per row, pulling formerly-below cells up into view) has
 no `committed` ⇒ `keyed-tween` returns its target directly ⇒ it **pops in without a
-glide**. Wrong: it should slide up from where it sat under the old layout.
+glide**. Wrong: it should slide in from the edge it came in through.
 
-Fix: at segment start `from[key]` falls back to the **old layout's math** when
-`committed` is absent. For an indexed layout the old-layout frame is exact pure math,
-so a cell entering the viewport gets a real off-screen `from` and glides in. This
-requires retaining the **previous layout** across the segment — `update-render!`
-currently overwrites `layoutModel` with the new target and discards the old, so a
-`prevLayout` field is added and captured at the gen bump.
+Fix — **universal**, layout-agnostic: an off-screen cell entering the viewport only
+needs the SIDE it came from, not its exact old position. So at segment start
+`from[key]` falls back to the cell's own **target rect slid to the near viewport
+edge** (an arrive-slide) when `committed` is absent. The edge is chosen by the cell's
+index relative to the on-screen (committed) index range: an index **above** the
+committed max came from **below** (bottom edge); **below** the committed min came from
+**above** (top edge); interleaved (or nothing on-screen) picks the nearer edge. This
+is `augment-from-edges` in `tween.cljd`, wired unconditionally in `segment-start!`
+(both the flow and indexed branches).
 
-This is the same requirement as *computing the whole layout before painting*: the
-engine resolves the full from/to layouts up front (indexed = cheap math), which both
-animates viewport-entering cells and is the precondition for a future optimization —
-running the diff **only over what lands in the viewport** (the off-screen from/to are
-math, not materialized cells). Layout-only changes (same data) map old-index = new-
-index directly; a data change that also moves a cell in from off-screen needs its
-old data-index (follow-up).
+Because the `from` is derived from the cell's *own target frame* — which every layout
+kind already produces — this works **identically for flow and indexed** (list, wrap,
+grid, masonry). There is no old-layout math and no `prevLayout` field: the previous
+resolved layout is neither retained nor consulted.
+
+Tradeoff vs. the earlier indexed-only approach (which sourced `from` from the exact
+old-layout frame): the glide now starts at the viewport edge, not at the cell's exact
+prior position — a shorter path, but smooth, and universal across every layout kind
+and across simultaneous data + layout changes (no old data-index to disambiguate).
 
 ## 8. Enter / exit (constraint 4)
 

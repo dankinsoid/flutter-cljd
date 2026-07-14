@@ -411,25 +411,30 @@
         (is (close? 80.0 (:main-extent g)))          ; lerp(100, 60, 0.5)
         (is (close? (:main-extent g) (:full-main-extent g)))))))
 
-;; --- §7c: from = committed ∪ old-layout math (viewport-entering cells glide) ---
+;; --- §7c: from = committed ∪ edge slide (viewport-entering cells glide) ---
 
-(deftest augment-from-rects-glides-entering-cell
-  ;; A cell below the old viewport lands inside the new one on a layout change and
-  ;; has NO committed rect. augment-from-rects must give it its OLD-layout frame (a
-  ;; real off-screen offset), NOT its target — so it glides in instead of popping.
-  (let [prev (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
-        committed {:a (fr 0 0 100 200)}          ; only index 0 was on-screen
-        key-of (fn [^int i] (nth [:a :b :c :d :e] i))
-        env (assoc base-env :item-count 5)
-        result (tw/augment-from-rects committed prev env key-of 0 4)]
-    (testing "the committed (on-screen) key keeps its committed rect"
-      (is (frame= (fr 0 0 100 200) (get result :a))))
-    (testing "an off-screen entering key gets its OLD-layout frame, not target"
-      ;; index 4 sat at old offset 400 under the 100px list — a real off-screen from
-      (is (close? 400.0 (:offset (get result :e))))
-      (is (close? 100.0 (:main-extent (get result :e)))))
+(deftest augment-from-edges-glides-entering-cell
+  ;; window indices 0..5; only 2,3 were on-screen (committed). A cell entering the
+  ;; viewport gets its TARGET frame slid to the NEAR edge — the side chosen by index
+  ;; vs the committed span [2,3]. Universal: no old layout, no exact old position.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
+        key-of (fn [^int i] (nth [:a :b :c :d :e :f] i))
+        committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200)}
+        env (assoc base-env :item-count 6)
+        ctx ((:prepare to) env)
+        ws 200.0 we 400.0
+        result (tw/augment-from-edges committed to env ctx key-of 0 5 ws we)]
+    (testing "committed (on-screen) keys keep their rects"
+      (is (frame= (fr 200 0 100 200) (get result :c)))
+      (is (frame= (fr 300 0 100 200) (get result :d))))
+    (testing "index > cmax came from BELOW → bottom edge (offset == we), target extent kept"
+      (is (close? 400.0 (:offset (get result :f))))     ; index 5
+      (is (close? 100.0 (:main-extent (get result :f)))))
+    (testing "index < cmin came from ABOVE → top edge (offset == ws - main-extent)"
+      (is (close? 100.0 (:offset (get result :a))))     ; index 0: 200 - 100
+      (is (close? 100.0 (:main-extent (get result :a)))))
     (testing "every window index now has a from (glide, not pop)"
-      (is (= #{:a :b :c :d :e} (set (keys result)))))))
+      (is (= #{:a :b :c :d :e :f} (set (keys result)))))))
 
 ;; --- §7a shared core: classify-cell / shadow-frame-source / slide-out-frame ---
 

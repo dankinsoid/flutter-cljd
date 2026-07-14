@@ -334,36 +334,6 @@
                            (double (or (to-ext env (:to-ctx ctx) n) 0.0))
                            (double (:t ctx)))))})))
 
-;; @ai-generated(solo)
-(defn augment-from-rects
-  "§7c: widens the KEYED `from` map with old-layout math for cells entering the
-   viewport on a layout change. For each index in [first-idx, last-idx] whose key
-   is absent from `committed`, adds `prev-src`'s frame at that index — the cell's
-   position under the layout live BEFORE the segment — under that key, so a cell
-   pulled into view from below the old viewport glides up from its old spot
-   instead of popping at target. Indices already in `committed` keep it (their
-   on-screen history wins). `prev-src` is an `indexed-frame-source` over the old
-   layout; `key-of` maps an index to its animation key. Pure.
-
-   Scope: exact for LAYOUT-ONLY changes (same data ⇒ old-index == index ⇒ the
-   old-layout frame at i is the cell's true old position). A simultaneous data
-   change makes index i ambiguous (shadow index ≠ old data index) — accepted
-   follow-up; the caller invokes this only on a layout change, and only off-screen
-   (no-committed) cells are augmented."
-  [committed prev-src env key-of ^int first-idx ^int last-idx]
-  (let [prep (:prepare prev-src)
-        frame (:frame prev-src)
-        ctx (prep env)]
-    (reduce (fn [m ^int i]
-              (let [k (key-of i)]
-                (if (contains? m k)
-                  m
-                  (if-let [fr (frame env ctx i)]
-                    (assoc m k fr)
-                    m))))
-            committed
-            (range first-idx (inc last-idx)))))
-
 ;; --- §7a shared core: classify + collapse-remap + slide-out ---
 ;;
 ;; Three pure functions both hosts consume (docs §7a "Shared core"): a per-cell
@@ -475,3 +445,46 @@
     (assoc from-rect :offset (case dir
                                :leading (- ws me)
                                :trailing we))))
+
+;; @ai-generated(solo)
+(defn augment-from-edges
+  "§7c UNIVERSAL viewport-enter `from`: widens the KEYED `from` map so a cell
+   entering the viewport on a layout change glides in from the near window edge
+   instead of popping at target. Layout-agnostic (list/wrap/grid/masonry) — an
+   off-screen cell only needs the SIDE it came from, not its exact old position,
+   so its `from` = its own TARGET frame slid to that edge (an arrive-slide). No
+   old layout, no exact old math.
+
+   Two passes over [first-idx, last-idx]. Pass 1 finds cmin/cmax = the min/max
+   index whose key is already in `committed` (the on-screen span), nil if none.
+   Pass 2, for each index whose key is NOT in `committed`, takes its target frame
+   `((:frame to-src) env ctx i)` and picks the edge by index vs that span: above
+   the on-screen max → came from BELOW (:trailing); below the min → came from
+   ABOVE (:leading); interleaved (or nothing on-screen) → the nearer edge,
+   defaulting to :trailing. Committed entries WIN — an on-screen cell's real rect
+   is never overwritten. Pure."
+  [committed to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
+  (let [frame (:frame to-src)
+        idxs (range first-idx (inc last-idx))
+        ;; Pass 1: the on-screen (committed) index span.
+        [cmin cmax] (reduce (fn [[mn mx] ^int i]
+                              (if (contains? committed (key-of i))
+                                [(min-some mn i) (max-some mx i)]
+                                [mn mx]))
+                            [nil nil] idxs)]
+    ;; Pass 2: an edge `from` for every viewport-entering (non-committed) cell.
+    (reduce (fn [m ^int i]
+              (let [k (key-of i)]
+                (if (contains? m k)
+                  m
+                  (if-let [fr (frame env ctx i)]
+                    (let [dir (cond
+                                (and cmax (> i (int cmax))) :trailing
+                                (and cmin (< i (int cmin))) :leading
+                                (< (- i (int (or cmin i)))
+                                   (- (int (or cmax i)) i)) :leading
+                                :else :trailing)]
+                      (assoc m k (slide-out-frame fr ws we dir)))
+                    m))))
+            committed
+            idxs)))
