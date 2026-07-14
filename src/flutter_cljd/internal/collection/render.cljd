@@ -62,6 +62,8 @@
    ^:mutable ^double fromExtent ;; scroll extent frozen at segment start
    ^:mutable entering       ;; set of keys wiping open this segment
    ^:mutable exiting        ;; set of keys wiping shut this segment
+   ^:mutable leaving        ;; {key -> edge frame} leave-slide `to`s this segment (§7b);
+                            ;; also the GC exemption set for kept out-of-window cells
    ^:mutable segTween      ;; the built keyed-tween-layout for the current segment, or nil
    ^:mutable segAnchor     ;; nil | {:from ^double :to ^double :screen ^double} — the viewport-top
                            ;; INDEX SLOT set-point that drives this segment's scroll correction (docs §9);
@@ -235,13 +237,18 @@
 
 (defn- widen-window!
   "widen-window-indices over this sliver's attached children, keyed via key-of
-   into the committed map for each child's last content-space rect."
+   into the committed map for each child's last content-space rect. Exiting
+   (data-removed) keys are skipped: they collapse in place at their in-window
+   shadow slot (§7a) and must not pin the kept range when reindexing pushed
+   their slot out of it."
   [^CollectionRenderSliver rs ^int first-index target-last ^double ws ^double we]
   (let [committed (.-committed rs)
+        exiting (.-exiting rs)
         cells (loop [child (.-firstChild rs) out []]
                 (if child
                   (let [^r/RenderBox ch child
-                        rect (get committed (key-for rs (.indexOf rs ch)))]
+                        k (key-for rs (.indexOf rs ch))
+                        rect (when-not (contains? exiting k) (get committed k))]
                     (recur (.childAfter rs ch)
                            (if rect
                              (conj out {:index (.indexOf rs ch)
@@ -295,7 +302,8 @@
     (set-tween-anim! rs tween-anim)
     (when-not tween-anim  ;; back to resting — forget the segment
       (.-segGen! rs -1)
-      (.-segTween! rs nil))
+      (.-segTween! rs nil)
+      (.-leaving! rs {}))
     (when (or layout-changed count-changed seg-start)
       (.markNeedsLayout rs))))
 
@@ -377,11 +385,17 @@
         env (if-let [prep (:prepare to-layout)] (assoc env :ctx (prep env)) env)
         exiting (.-exiting rs)
         exiting-key? (fn [^int i] (contains? exiting (key-for rs i)))
+        ;; Only the cache-backed (just-walked) window feeds the re-flow: kept
+        ;; out-of-window leave-slides (§7b) still sit attached beyond it with
+        ;; STALE sizes and would corrupt the contiguous reindex.
+        ^int cf (.-cacheFirst rs)
+        ^int clen (count (.-cache rs))
+        walked? (fn [^int i] (and (>= i cf) (< (- i cf) clen)))
         [survivors first-off ^double dying-ext]
         (loop [child (.-firstChild rs) surv [] first-off nil ^double dext 0.0]
           (if child
             (let [^r/RenderBox ch child ^int i (.indexOf rs ch)]
-              (if (.-hasSize ch)
+              (if (and (.-hasSize ch) (walked? i))
                 (if (exiting-key? i)
                   (recur (.childAfter rs ch) surv first-off
                          (+ dext (lay/size-main env (.-size ch))))
@@ -744,8 +758,17 @@
         (if-not (align-start! rs layout env ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr))
-          (let [walked (walk! rs layout env we)]
-            (post-gc! rs (int (:last-i walked)) ws)
+          (let [walked (walk! rs layout env we)
+                ^int last-i (int (:last-i walked))
+                ;; §7b: this branch runs mid-segment only as the CAPTURE pass
+                ;; (segment-start!). Attached cells whose committed rect still
+                ;; overlaps the window are leave-slides — keep them past the
+                ;; walked window so they stay materialized and glide out.
+                ^int keep-last (if (.-tweenAnim rs)
+                                 (let [[_ kl] (widen-window! rs last-i last-i ws we)]
+                                   (int kl))
+                                 last-i)]
+            (post-gc! rs keep-last ws)
             (if-let [corr (backfill-leading! rs layout env ws)]
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                   (.didFinishLayout mgr))
@@ -880,28 +903,48 @@
                 ^double start-end (let [^int sidx (.indexOf rs start-child)
                                         gm (geo-fn env sidx)]
                                     (+ ^double (:offset gm) ^double (:main-extent gm)))
-                ;; forward
+                ;; forward: create children only inside the TRUE target window
+                ;; [first-index0, target-last0]; attached cells outside it (§7b
+                ;; leave-slides kept by the widened GC bounds) are (re)laid at
+                ;; their lerped frames but never bridged with created cells —
+                ;; a shuffle must not materialize the span to a scattered index.
                 [^double trail-end ^bool reached]
                 (loop [^int idx (inc (.indexOf rs start-child))
                        ^r/RenderBox prev start-child
                        ^double trail-end start-end]
-                  (if (or (nil? target-last) (<= idx ^int target-last))
-                    (let [gm (geo-fn env idx)
-                          ^r/BoxConstraints bc (geo-constraints env gm)
-                          existing (.childAfter rs prev)
-                          child (if (and existing (= (.indexOf rs ^r/RenderBox existing) idx))
-                                  (do (.layout ^r/RenderBox existing bc .parentUsesSize true)
-                                      existing)
-                                  (.insertAndLayoutChild rs bc .after prev .parentUsesSize true))]
-                      (if (nil? child)
-                        [trail-end true]
-                        (do (set-layout-offset! ^r/RenderBox child (double (:offset gm)))
-                            (set-cross-axis-offset! ^r/RenderBox child (double (:cross gm)))
-                            (recur (inc idx) ^r/RenderBox child
-                                   (double (math/max trail-end
-                                                     (+ ^double (:offset gm)
-                                                        ^double (:main-extent gm))))))))
-                    [trail-end false]))
+                  (let [existing (.childAfter rs prev)
+                        at-idx (boolean (and existing
+                                             (= (.indexOf rs ^r/RenderBox existing) idx)))
+                        in-window (and (>= idx first-index0)
+                                       (or (nil? target-last0) (<= idx ^int target-last0)))]
+                    (cond
+                      (or at-idx in-window)
+                      (let [gm (geo-fn env idx)
+                            ^r/BoxConstraints bc (geo-constraints env gm)
+                            child (if at-idx
+                                    (do (.layout ^r/RenderBox existing bc .parentUsesSize true)
+                                        existing)
+                                    (.insertAndLayoutChild rs bc .after prev .parentUsesSize true))]
+                        (if (nil? child)
+                          [trail-end true]
+                          (do (set-layout-offset! ^r/RenderBox child (double (:offset gm)))
+                              (set-cross-axis-offset! ^r/RenderBox child (double (:cross gm)))
+                              (recur (inc idx) ^r/RenderBox child
+                                     (double (math/max trail-end
+                                                       (+ ^double (:offset gm)
+                                                          ^double (:main-extent gm))))))))
+                      ;; out-of-window gap: jump to the next attached child (a
+                      ;; kept leave-slide) or into the window start — no bridges.
+                      :else
+                      (let [nxt (cond
+                                  (and existing (< idx first-index0))
+                                  (math/min (.indexOf rs ^r/RenderBox existing) first-index0)
+                                  existing (.indexOf rs ^r/RenderBox existing)
+                                  (< idx first-index0) first-index0
+                                  :else nil)]
+                        (if nxt
+                          (recur (int nxt) prev trail-end)
+                          [trail-end false])))))
                 ^double total (cond
                                 item-count (double ((:max-extent layout) env (int item-count)))
                                 reached trail-end
@@ -962,8 +1005,9 @@
    writes sliver geometry — WITHOUT a childManager create/GC cycle, so it triggers
    no didStartLayout/didFinishLayout. Used to display a FLOW segment's first pass
    at its `from` rects (t≈0) after the flow capture walk already ran one lifecycle
-   cycle; a second full driver would double it. Only the target window flow just
-   materialized is relaid — at t≈0 that is exactly the visible set."
+   cycle; a second full driver would double it. Relaid: the target window flow
+   just materialized plus the kept leave-slides (§7b) — at t≈0 exactly the
+   visible set (a leaving cell's lerp starts at its committed rect)."
   [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
   (let [env (lay/make-env c (.-itemCount rs))
         env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
@@ -1079,10 +1123,6 @@
                       committed-from on-screen to-src env ctx #(key-for rs %)
                       (int fi) (int li) ws we)
                      committed-from)                                     ; (a')
-        seg-tween (tw/keyed-tween-layout                                 ; (d)
-                   [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
-                   (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
-                   {:entering (.-entering rs) :exiting (.-exiting rs)})
         ;; Set-point anchor from the viewport-top INDEX SLOT captured at the last
         ;; resting pass (docs §9): fromSlot = its OLD content-space offset, toSlot =
         ;; its offset in the NEW target layout. Index-based ⇒ immune to which keys
@@ -1100,11 +1140,43 @@
                          (let [^double from-slot (double (:off resting))
                                ^double to-slot (double (:offset tgt))]
                            {:from from-slot :to to-slot
-                            :screen (- from-slot (.-scrollOffset c))}))))]
+                            :screen (- from-slot (.-scrollOffset c))}))))
+        ;; §7b: leave-slide `to`s. The segment's scroll set-point moves the
+        ;; window by (to − from) at t=1; a cell whose target index falls outside
+        ;; the UNION of the current and end-of-segment window spans is leaving —
+        ;; its `to` = committed slid past the near END-window edge. Cells inside
+        ;; the union are normal stay/arrive machinery (a cell the viewport
+        ;; naturally scrolls away from must NOT be edge-dragged).
+        ^double shift (if seg-anchor
+                        (- (double (:to seg-anchor)) (double (:from seg-anchor)))
+                        0.0)
+        ^double end-ws (+ ws shift)
+        ^double end-we (+ we shift)
+        end-fi (or ((:first-index to-src) env ctx end-ws) fi)
+        end-li (or (when (.-isFinite end-we) ((:last-index to-src) env ctx end-we)) li)
+        leaving (if (and fi li end-fi end-li)
+                  (let [cells (loop [child (.-firstChild rs) out []]
+                                (if child
+                                  (let [^r/RenderBox ch child
+                                        ^int i (.indexOf rs ch)]
+                                    (recur (.childAfter rs ch)
+                                           (conj out {:index i :key (key-for rs i)})))
+                                  out))]
+                    (tw/augment-to-edges committed-from cells (.-exiting rs)
+                                         (math/min (int fi) (int end-fi))
+                                         (math/max (int li) (int end-li))
+                                         ws we end-ws end-we))
+                  {})
+        seg-tween (tw/keyed-tween-layout                                 ; (d)
+                   [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
+                   (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
+                   {:entering (.-entering rs) :exiting (.-exiting rs)
+                    :leaving leaving})]
     (.-fromRects! rs from-rects)
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
     (.-segAnchor! rs seg-anchor)
+    (.-leaving! rs leaving)
     (.-segGen! rs (.-curGen rs))
     (if indexed                                                          ; (e)
       (indexed-layout! rs seg-tween c)
@@ -1129,7 +1201,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) nil nil nil {})]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil nil {})]
       (set-tween-anim! rs tweenAnim)
       rs))
 

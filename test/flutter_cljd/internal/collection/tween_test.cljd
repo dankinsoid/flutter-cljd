@@ -533,6 +533,70 @@
     (testing "extent is the pure-live total (dying cell excluded)"
       (is (close? 170.0 ((:extent src) venv ctx 4))))))
 
+;; --- §7b: leave-slide (leaving key lerps committed -> edge frame) ---
+
+(deftest keyed-tween-leaving-key-slides-to-edge
+  ;; key :l reindexed outside the target window: the frozen to-src has NO frame
+  ;; at its index, which used to freeze the cell at committed and pop it at GC.
+  ;; With a :leaving `to` (committed slid past the trailing edge) it glides out.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 0 0 60 100)]})
+        committed {:l (fr 100 0 100 200)}
+        edge (tw/slide-out-frame (fr 100 0 100 200) 0.0 400.0 :trailing)
+        key-of (fn [^int _i] :l)
+        opts {:leaving {:l edge}}]
+    (testing "t=0 sits exactly at committed (no jump at segment start)"
+      (is (frame= (fr 100 0 100 200) (keyed-geo* to committed 300.0 key-of opts 0.0 5))))
+    (testing "t=1 sits fully past the trailing edge"
+      (is (frame= (fr 400 0 100 200) (keyed-geo* to committed 300.0 key-of opts 1.0 5))))
+    (testing "mid-glide is a pure translation: size constant, no paint clip"
+      (let [g (keyed-geo* to committed 300.0 key-of opts 0.5 5)]
+        (is (frame= (fr 250 0 100 200) g))
+        (is (close? (:main-extent g) (:full-main-extent g)))))))
+
+(deftest keyed-tween-leaving-overrides-far-target
+  ;; an INDEXED to-src answers an exact frame at any index; a leaving key must
+  ;; ignore that far frame and take the bounded edge slide instead (a shuffle
+  ;; must not drag a cell across the whole list).
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        committed {:l (fr 100 0 50 200)}
+        edge (tw/slide-out-frame (fr 100 0 50 200) 0.0 400.0 :trailing)
+        key-of (fn [^int _i] :l)]
+    (testing "t=1 lands at the edge, not at index 9's exact frame (450)"
+      (is (frame= (fr 400 0 50 200)
+                  (keyed-geo* to committed 500.0 key-of {:leaving {:l edge}} 1.0 9))))
+    (testing "a key NOT in :leaving still aims at the exact indexed target"
+      (is (frame= (fr 450 0 50 200)
+                  (keyed-geo* to committed 500.0 key-of {:leaving {:other (fr 0 0 1 1)}} 1.0 9))))))
+
+;; --- §7b: augment-to-edges (the leave-slide classifier + `to` builder) ---
+
+(deftest augment-to-edges-classifies-leaving-cells
+  ;; window span [lo..hi]=[2..4]; current window [200,400], end window [250,450].
+  ;; Attached cells whose committed rect overlaps the CURRENT window but whose
+  ;; index falls outside the span leave through the near END-window edge.
+  (let [committed {:a (fr 210 0 50 200)   ; index 0 -> leaving :leading
+                   :b (fr 260 0 50 200)   ; index 3 -> in span -> stays
+                   :c (fr 310 0 50 200)   ; index 6 -> leaving :trailing
+                   :d (fr 900 0 50 200)   ; index 5 -> committed off-window -> skip
+                   :x (fr 360 0 50 200)}  ; index 4 -> in span -> stays
+        cells [{:index 0 :key :a} {:index 3 :key :b} {:index 6 :key :c}
+               {:index 5 :key :d} {:index 4 :key :x} {:index 1 :key :nohist}]
+        out (tw/augment-to-edges committed cells #{} 2 4 200.0 400.0 250.0 450.0)]
+    (testing "index below the span slides fully above the END-window leading edge"
+      (is (frame= (fr 200 0 50 200) (get out :a))))    ; end-ws - main = 250-50
+    (testing "index above the span slides fully below the END-window trailing edge"
+      (is (frame= (fr 450 0 50 200) (get out :c))))
+    (testing "in-span, off-window-committed and history-less cells are not leaving"
+      (is (= #{:a :c} (set (keys out)))))))
+
+(deftest augment-to-edges-skips-exiting
+  ;; a data-removed key exit-collapses in place (§7a) — never leave-slides,
+  ;; even when reindexing pushed its shadow slot out of the window span.
+  (let [committed {:e (fr 210 0 50 200)}
+        cells [{:index 9 :key :e}]]
+    (is (= {} (tw/augment-to-edges committed cells #{:e} 2 4 200.0 400.0 200.0 400.0)))))
+
 (deftest slide-out-frame-clamps-to-edge
   (let [rect (fr 100 10 20 50)]
     (testing ":leading slides fully above ws, extent & cross unchanged"

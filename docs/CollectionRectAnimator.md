@@ -240,13 +240,13 @@ mistake. They use **different** mechanisms, each validated by a real framework:
    neighbors-don't-glide bug — i.e. our 2b symptom. The `collapse-wrap` of §8 owns the
    shrink; **enter** is the same, `0 → final`.
 2. **Viewport slide** (key exists both before and after; only *reindexing* pushed it
-   off-screen — shuffle) → **overlay outside the index space** (§7a keeps this).
-   Deferred-delete cannot apply: the key is live at a real off-window index, and
-   materializing it there breaks the contiguous window (the whole point of §7a).
-   Animate a **full-size slide** from the committed rect to the near window edge, **no
-   size change** — the viewport clips it. This is `UICollectionView`'s
-   `finalLayoutAttributesForDisappearingItem`; Framer Motion has both modes explicitly
-   (default reserves space = deferred-delete; `popLayout` = out-of-flow overlay).
+   off-screen — shuffle, or a layout change moved its slot past the edge) → a
+   **full-size slide** from the committed rect past the near window edge, **no size
+   change** — the viewport clips it. This is `UICollectionView`'s
+   `finalLayoutAttributesForDisappearingItem`. Deferred-delete cannot apply: the key
+   is live at a real off-window index. The mechanism shipped IN-TREE, not as an
+   overlay: the child list tolerates index gaps, so the cell stays materialized at
+   its scattered index and the drivers never bridge the gap (§7b).
 
 ### Classifier (per cell, per segment)
 
@@ -259,8 +259,8 @@ mistake. They use **different** mechanisms, each validated by a real framework:
 
 - **exit-collapse** — deferred-delete + remap (semantics §1): in-tree shadow child,
   zero-extent gap frame; no overlay, no adaptor fight.
-- **leave-slide** — overlay (semantics §2): off-index kept-alive child, full-size
-  slide to the edge, viewport clips. The only new sliver machinery (see §7b).
+- **leave-slide** — in-tree kept child at its real (scattered) index, full-size
+  slide to the near window edge, viewport clips. No overlay needed (see §7b).
 - **arrive-slide** — **zero new machinery**: an ordinary indexed child of the
   contiguous target window, laid at `t≈0` on its off-screen `committed[key]`, lerping
   to its on-screen target, clipped by the viewport until it crosses the edge.
@@ -293,8 +293,8 @@ them (§10):
 - `(slide-out-frame from-rect ws we dir)` → the edge-clamped slide target (committed
   rect translated to the near window edge, main-extent unchanged).
 
-Host-supplied: **sliver** — `[ws,we]` from constraints, the overlay child management +
-paint of §7b, scroll correction (exists), GC exemption for sliding keys. **box** —
+Host-supplied: **sliver** — `[ws,we]` from constraints, the in-tree kept-child
+management of §7b, scroll correction (exists), GC exemption for sliding keys. **box** —
 infinite window (so the classifier degenerates: no slide classes, collapse only),
 `key-of` over child widgets, own-size lerp (exists). Box therefore **gains enter/exit
 for free** from this core, but wiring its host side is a separate step (2d); 2c ships
@@ -314,40 +314,54 @@ the core + sliver.
 
 ### Span cap (unbounded shuffle)
 
-A full-list shuffle makes *every* on-screen key a leave-slide overlay; the overlay
-set is bounded by the viewport (≈ one screenful of leaving + one of arriving), so
-virtualization holds. If the from-visible **and** target-visible sets together
+A full-list shuffle makes *every* on-screen key a leave-slide; the kept set is
+bounded by the viewport (≈ one screenful of leaving + one of arriving) and no
+bridge cells are built to reach scattered indices (§7b), so virtualization holds. If the from-visible **and** target-visible sets together
 exceed a threshold (e.g. a viewport can't host them), the segment **snaps** that
 change rather than animating — logged, not silent.
 
-## 7b. Sliver overlay mechanism (leave-slide only)
+## 7b. Leave-slide mechanism: in-tree at the real index (overlay sketch retired)
 
-Only leave-slide needs off-index rendering (exit-collapse stays in-tree, §7a). The
-mechanism is a **kept-alive live child, engine-tracked, painted from an overridden
-`paint`** — not a paint snapshot (`toImage` mid-layout is forbidden and loses
-fidelity) and not a fake contiguous index (corrupts reconciliation):
+The keepAlive-overlay sketch proved unnecessary: the adaptor's child list requires
+only **ascending** indices, not contiguous ones, so a leaving cell stays materialized
+at its real (scattered) index while the drivers simply never bridge the gap. Shipped
+(2026-07-14), universal for flow and indexed targets:
 
-1. Before `collectGarbage` in a segment pass, set `parentData.keepAlive! true` for
-   each leave-slide key and stash `{key → RenderBox}` in a `^:mutable overlays` field.
-   `collectGarbage` then parks them in the adaptor's **keep-alive bucket** — attached,
-   element alive, exempt from the contiguity invariant (which governs only the main
-   child list).
-2. Each `performLayout`, lay each overlay at its **frozen committed size** (slide never
-   resizes ⇒ identical tight constraints ⇒ `RenderObject.layout` early-returns per tick
-   — free) and record its lerped `committed → slide-out-frame` offset.
-3. Override `paint`: `super.paint`, then `context.paintChild` each overlay at its
-   recorded offset (the viewport already clips past the edge).
-4. At `t=1` clear the flag; the next GC drops them.
+- **`to` = edge slide** (`augment-to-edges`, tween.cljd — the mirror of §7c's
+  `augment-from-edges`): at segment start, every attached cell whose committed rect
+  overlaps the current window `[ws,we]` but whose index falls outside the **union of
+  the current and end-of-segment target window index spans** gets
+  `to = slide-out-frame(committed, end-ws, end-we, dir)` — index above the span →
+  `:trailing`, below → `:leading`. The end window is the current one shifted by the
+  §9 set-point delta (`to − from` of `segAnchor`), so a cell the viewport merely
+  scrolls away from keeps its real target and is NOT edge-dragged. Exiting
+  (data-removed) keys are skipped — they exit-collapse in place (§7a).
+  `keyed-tween-layout` takes the map as `:leaving` and lerps committed → edge at
+  constant size (pure translation: no clip, no resize, and it overrides even an
+  exact far indexed frame so a shuffle never drags a cell across the list).
+- **Kept materialized**:
+  - *flow capture pass*: `post-gc!`'s kept range is widened over the attached
+    committed-overlapping cells (`widen-window!`), so the capture no longer GCs them
+    at segment start; `live-only-flow-window` restricts its re-flow to the
+    cache-backed (walked) window so kept cells' stale sizes can't corrupt the
+    pure-live source; `from-relay!` then lays them at `t≈0` = committed (in place —
+    this is what fills the viewport top on a shuffle and kills the bounce).
+  - *indexed passes*: GC bounds were already widened over attached overlapping
+    cells; the forward loop now creates children ONLY inside the true target window
+    `[first-index0, target-last0]` and JUMPS across index gaps to (re)lay kept
+    out-of-window children — no bridge cells are ever built to reach a scattered
+    index, so virtualization holds (the kept set is bounded by one screenful).
+- **GC'd once gone**: `committed` is re-stamped with the lerped rect every pass, so
+  when the glide crosses the window edge the cell drops out of the widened bounds
+  and ordinary GC collects it; returning to resting clears `:leaving`.
 
-**The one adaptor risk:** scrolling mid-segment can bring a sliding key's *real* index
-back into the window ⇒ `SliverMultiBoxAdaptorElement` re-adopts the bucket child into
-the main list ⇒ double-paint / double-manage. **Guard:** each pass, evict from
-`overlays` any child whose index re-entered the main window (it then simply *arrives*,
-which is correct). A **probe experiment settles feasibility before building** (can't be
-verified by reading cljd): a ~20-line render object that sets `keepAlive` from itself,
-GCs, then `paintChild`s the bucket child — confirms cljd can write
-`SliverMultiBoxAdaptorParentData.keepAlive` and that a bucket child paints without
-`needsLayout` / ownership asserts.
+Known edges (accepted, self-healing at settle): scrolling mid-segment can bring a
+leaving key's real index back into the window — the window path then lays it at its
+frozen edge lerp until the segment settles (one snap at rest). A flow end-window
+that falls outside the frozen capture snapshot (large §9 shift on a mid-scroll flow
+switch) falls back to current-window classification — boundary cells may edge-slide
+and re-enter at settle. A leading-scattered kept cell in the flow capture can still
+anchor the walk at a stale offset (pre-existing behavior, unchanged by this).
 
 ## 7c. `from` = committed ∪ edge slide (glide cells entering the viewport)
 
@@ -371,6 +385,12 @@ Because the `from` is derived from the cell's *own target frame* — which every
 kind already produces — this works **identically for flow and indexed** (list, wrap,
 grid, masonry). There is no old-layout math and no `prevLayout` field: the previous
 resolved layout is neither retained nor consulted.
+
+`augment-to-edges` (§7b) is the exact mirror on the LEAVE side: a cell bound
+off-screen only needs the side it leaves through, so its `to` = its own **committed**
+frame slid past that edge. Enter and leave share `slide-out-frame` and the same
+index-vs-span edge choice; the enter side keys off the attached `on-screen` set, the
+leave side off committed-overlap + index-outside-span.
 
 Tradeoff vs. the earlier indexed-only approach (which sourced `from` from the exact
 old-layout frame): the glide now starts at the viewport edge, not at the cell's exact
@@ -435,10 +455,9 @@ child clipped to it (translated so the reveal anchors at the correct side).
   `:remove` `:builder` (opacity/transform) still wraps the content, size owned by the
   engine.
 
-This `paint` override is the **same machinery §7b needs** for leave-slide overlays
-(`pushClipRect` + `paintChild` per engine-tracked child) — built once, it hosts both
-the collapse clip and the slide overlays. `hitTest`/`applyPaintTransform` grow the
-matching per-child transform.
+Leave-slides (§7b) don't need this clip — a slide never resizes, so their
+`full-main-extent == main-extent` and they paint unclipped; the viewport itself
+clips past the edge.
 
 ## 9. Scroll correction (the gotcha, tested first)
 

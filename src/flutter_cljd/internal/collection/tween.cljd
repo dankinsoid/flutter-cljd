@@ -287,15 +287,18 @@
    side is key-addressed with no cheap index inverse, so the driver, not this
    map, unions in overlapping committed cells.
 
-   The 7-arg arity takes an `opts` map `{:entering <set> :exiting <set>}` naming
-   keys mid enter/exit. An entering key wipes open (main-extent 0 → full) at its
+   The 7-arg arity takes an `opts` map `{:entering <set> :exiting <set>
+   :leaving <map>}`. An entering key wipes open (main-extent 0 → full) at its
    target rect; an exiting key wipes shut (natural → 0) in place. Only main-extent
    collapses — offset/cross/cross-extent come from the target frame so the cell
-   stays put while it wipes."
+   stays put while it wipes. `:leaving` is {key → frame}: a leave-slide `to`
+   (docs §7b) that OVERRIDES the target frame — the cell lerps committed → that
+   edge frame at constant size (a pure translation past the viewport edge), even
+   when to-src has no opinion (or a far-off exact frame) at its index."
   ([id to-src committed ^double from-extent key-of progress]
    (keyed-tween-layout id to-src committed from-extent key-of progress {}))
   ([id to-src committed ^double from-extent key-of progress
-    {:keys [entering exiting] :or {entering #{} exiting #{}}}]
+    {:keys [entering exiting leaving] :or {entering #{} exiting #{} leaving {}}}]
   (let [to-frame (:frame to-src)  to-first (:first-index to-src)
         to-last (:last-index to-src) to-ext (:extent to-src)
         to-prep (:prepare to-src)]
@@ -318,7 +321,12 @@
                                           (contains? exiting key)
                                           (let [f (or from to)]
                                             [f (zero-main to) (double (or (:main-extent f) 0.0))])
-                                          :else [from to nil])
+                                          :else
+                                          ;; §7b leave-slide: the edge frame beats the
+                                          ;; target — bounded translation, size constant.
+                                          (if-some [lv (get leaving key)]
+                                            [from lv nil]
+                                            [from to nil]))
                        fr (or (lerp-frame from* to* (double (:t ctx)))
                               (zero-frame env))]
                    (assoc fr :full-main-extent (double (or full (:main-extent fr))))))
@@ -495,3 +503,42 @@
                     m))))
             committed
             idxs)))
+
+;; @ai-generated(solo)
+(defn augment-to-edges
+  "§7b UNIVERSAL leave-slide `to` map — the mirror of `augment-from-edges`. A
+   cell that was on-screen but whose target index falls outside the segment's
+   window span glides OUT through the near edge instead of popping: its `to` =
+   its own COMMITTED rect slid past that edge (`slide-out-frame`), size
+   unchanged. Layout-agnostic — no old-layout math, works for flow and indexed
+   alike, and bounds the glide even when an indexed target has an exact far
+   frame (a shuffle must not drag a cell across the whole list).
+
+   `cells` are the ATTACHED children at segment start, each {:index :key} in the
+   NEW (reconciled) index space. `[lo, hi]` is the union of the current and
+   end-of-segment target window index spans — a cell whose index lands inside it
+   is normal stay/arrive machinery, not a leave. `[ws, we]` is the CURRENT
+   window (the from-visible test: committed must overlap it); `[end-ws, end-we]`
+   is the window where the segment's scroll set-point lands at t=1 — the slide
+   edges, so the cell sits just past the FINAL viewport edge when it settles.
+   The edge is picked by index vs the span: above `hi` → :trailing, below `lo`
+   → :leading. Exiting keys are skipped (they exit-collapse in place, §7a), as
+   are cells with no committed rect (nothing to glide from). Returns
+   {key → frame}. Pure."
+  [committed cells exiting ^int lo ^int hi ^double ws ^double we
+   ^double end-ws ^double end-we]
+  (reduce
+   (fn [m cell]
+     (let [k (:key cell)
+           ^int i (int (:index cell))]
+       (if (or (contains? exiting k) (and (>= i lo) (<= i hi)))
+         m
+         (if-let [cm (get committed k)]
+           (let [^double o (double (:offset cm))
+                 ^double me (double (:main-extent cm))]
+             (if (and (< o we) (> (+ o me) ws))
+               (assoc m k (slide-out-frame cm end-ws end-we
+                                           (if (> i hi) :trailing :leading)))
+               m))
+           m))))
+   {} cells))
