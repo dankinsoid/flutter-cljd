@@ -745,7 +745,6 @@
 
 (def ^:private morph-modes
   [["List"   :list]
-   ["Wrap"   :wrap]   ; TEMP: isolate sliver-flow wrap remove
    ["Grid 2" :grid2]
    ["Grid 3" :grid3]
    ["Grid 4" :grid4]])
@@ -755,19 +754,13 @@
   ;; :key-fn :id gives every cell a stable identity so a shuffle glides and an
   ;; insert/remove animates the right cell. :animate true drives all of it —
   ;; move, layout/grid morph and insert/remove — off the one rect animator.
-  (cond
-    (= mode :list)
-    (ui/sliver-collection items :key-fn :id :spacing 8 :animate {:duration 2500} ; TEMP slow
+  (if (= mode :list)
+    (ui/sliver-collection items :key-fn :id :spacing 8 :animate true
       (fn [_ item] (ui/sized {:h 56} (morph-tile item))))
-    (= mode :wrap)
-    (ui/sliver-collection items :key-fn :id :layout :wrap :spacing 8 :run-spacing 8
-      :animate {:duration 2500} ; TEMP slow
-      (fn [_ item] (ui/sized {:h 56 :w 90} (morph-tile item))))
-    :else
     (let [n (case mode :grid2 2 :grid3 3 4)]
       (ui/sliver-collection items :key-fn :id :layout :grid
         :columns {:count n :gap 8} :rows {:size {:aspect 1} :gap 8}
-        :animate {:duration 2500} ; TEMP slow
+        :animate true
         (fn [_ item] (morph-tile item))))))
 
 (defn layout-tween-preview
@@ -803,7 +796,7 @@
            (btn "Remove"
                 (fn []
                   (when (seq items)
-                    (let [idx (rand-int (min 3 (count items)))] ; TEMP: remove near start
+                    (let [idx (rand-int (count items))]
                       (swap! $items #(vec (concat (subvec % 0 idx) (subvec % (inc idx)))))))))))
          (ui/padding {:h 8 :v 8})
          (ui/colored (c/CupertinoColors.systemGrey6)))
@@ -885,8 +878,8 @@
           (ui/padding 12
             (let [chips (map morph-chip tags)]
               (if (= mode :wrap)
-                (apply ui/collection :wrap :spacing 8 :run-spacing 8 :animate {:duration 2500} chips) ; TEMP slow
-                (apply ui/collection :list :spacing 6 :animate {:duration 2500} chips)))))          ; TEMP slow
+                (apply ui/collection :wrap :spacing 8 :run-spacing 8 :animate true chips)
+                (apply ui/collection :list :spacing 6 :animate true chips)))))
          (ui/expanded)))))
 
 ;; ====== PREVIEW SWITCHER ======
