@@ -142,10 +142,21 @@
                     (.pushClipRect ctx (.-needsCompositing this) ui/Offset.zero clip-rect
                                    (fn [^r/PaintingContext c2 _o]
                                      (if (< op 0.999)
-                                       (.pushOpacity c2 ui/Offset.zero
-                                                     (int (.round (* op 255.0)))
-                                                     (fn [^r/PaintingContext c3 _o2]
-                                                       (.paintChild c3 ch child-off)))
+                                       (if (.-needsCompositing this)
+                                         (.pushOpacity c2 ui/Offset.zero
+                                                       (int (.round (* op 255.0)))
+                                                       (fn [^r/PaintingContext c3 _o2]
+                                                         (.paintChild c3 ch child-off)))
+                                         ;; No compositing: the clip lives in the current
+                                         ;; recording, so a separate OpacityLayer would escape
+                                         ;; it. Stay in-recording with saveLayer over the clip.
+                                         (let [^ui/Canvas canvas (.-canvas c2)
+                                               ^int alpha (int (.round (* op 255.0)))]
+                                           (.saveLayer canvas clip-rect
+                                                       (doto (ui/Paint)
+                                                         (.-color! (ui/Color.fromARGB alpha 0 0 0))))
+                                           (.paintChild c2 ch child-off)
+                                           (.restore canvas)))
                                        (.paintChild c2 ch child-off))
                                      nil)))
                   (.paintChild ctx ch child-off))
