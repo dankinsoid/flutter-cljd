@@ -101,10 +101,10 @@
        (ui/sliver-collection
         items
         :key-fn :id
-        :animate {:duration 400
+        :animate {:duration 1600
                   :insert {:curve :ease-out}
-                  :remove {:duration 300}
-                  :move {:duration 500}}
+                  :remove {:duration 1200}
+                  :move {:duration 2000}}
         (fn [_ item]
           (->> (ui/text (:label item) {:size 16 :weight :bold :color :white})
                (ui/center)
@@ -145,7 +145,7 @@
        (ui/sliver-collection
         items
         :key-fn :id
-        :animate true
+        :animate {:duration 1600 :move {:duration 2000}}
         :layout :grid
         :columns {:count 4 :gap 4}
         :rows {:size {:aspect 1} :gap 4}
