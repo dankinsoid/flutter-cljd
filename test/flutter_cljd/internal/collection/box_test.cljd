@@ -20,7 +20,7 @@
   "Builds a RenderCollectionBox over fixed-size children and lays it out
    detached. Returns the render box."
   [layout axis children ^double max-w ^double max-h]
-  (let [rb (box/RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} nil {})]
+  (let [rb (box/RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {})]
     (doseq [c children] (.add rb c))
     (.layout rb (r/BoxConstraints .maxWidth max-w .maxHeight max-h))
     rb))
@@ -101,7 +101,7 @@
 ;; via getDryLayout — RenderObject.layout swallows performLayout exceptions
 ;; into FlutterError.reportError, the dry path propagates them
 (deftest unbounded-cross-throws
-  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil nil {} {} nil nil 0 -1 #{} #{} nil {})]
+  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {})]
     (.add rb (fixed-child 10 10))
     (is (thrown? Exception
                  (.getDryLayout rb (r/BoxConstraints .maxWidth ##Inf .maxHeight 100.0))))))
@@ -236,6 +236,8 @@
   (.-keyOf! rb (fn [^int i] i))
   (.-entering! rb entering)
   (.-exiting! rb exiting)
+  (.-fadeEnter! rb true)
+  (.-fadeExit! rb true)
   (.-tweenAnim! rb (w/AlwaysStoppedAnimation t))
   (.-curGen! rb (inc (.-curGen rb)))
   (.markNeedsLayout rb)
@@ -255,6 +257,8 @@
       (is (offsets≈ [[0.0 0.0] [0.0 20.0] [0.0 30.0]] (child-offsets rb))))
     (testing "the dying cell is clipped along the collapse (main) axis: visible 10, full 20"
       (is (offsets≈ [[10.0 40.0]] [(get (.-clips rb) 1)])))
+    (testing "the dying cell fades with the collapse fraction (visible/full = 10/20 = 0.5)"
+      (is (close? (nth (get (.-clips rb) 1) 2) 0.5)))
     (testing "the box shrinks toward the survivors-only size"
       (is (size? rb 40 50)))))
 
@@ -269,5 +273,7 @@
     (start-collapse! rb #{2} #{} 0.5 40.0 500.0)
     (testing "the entering cell is clipped to a growing main window: visible 10, full 20"
       (is (offsets≈ [[10.0 40.0]] [(get (.-clips rb) 2)])))
+    (testing "the entering cell fades with the collapse fraction (visible/full = 10/20 = 0.5)"
+      (is (close? (nth (get (.-clips rb) 2) 2) 0.5)))
     (testing "survivors keep their rects and the box grows toward three cells"
       (is (size? rb 40 50)))))
