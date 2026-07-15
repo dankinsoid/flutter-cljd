@@ -1279,6 +1279,16 @@
         ^double end-we (+ we shift)
         end-fi (or ((:first-index to-src) env ctx end-ws) fi)
         end-li (or (when (.-isFinite end-we) ((:last-index to-src) env ctx end-we)) li)
+        ;; §7b leave morph: a leaving cell needs its TARGET size to morph as it
+        ;; slides out. An indexed target answers exactly (to-src); a flow target's
+        ;; to-src snapshot omits off-window cells, so dry-measure ALL attached cells
+        ;; at the target layout (they are still attached this pass) — the mirror of
+        ;; resting-frame-source measuring the OLD layout for arrivals.
+        leave-src (if indexed
+                    to-src
+                    (or (when-let [snap (project-flow-window rs layout)]
+                          (tw/frozen-frame-source snap))
+                        to-src))
         leaving (if (and fi li end-fi end-li)
                   (let [cells (loop [child (.-firstChild rs) out []]
                                 (if child
@@ -1288,7 +1298,7 @@
                                            (conj out {:index i :key (key-for rs i)})))
                                   out))]
                     (tw/augment-to-edges committed-from cells (.-exiting rs)
-                                         to-src env ctx
+                                         leave-src env ((:prepare leave-src) env)
                                          (math/min (int fi) (int end-fi))
                                          (math/max (int li) (int end-li))
                                          ws we end-ws end-we))
