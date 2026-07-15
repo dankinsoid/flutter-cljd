@@ -39,6 +39,13 @@ frame. No velocity/time handoff.
   (c) velocity handoff via spring-simulation instead of a fixed-duration restart (costlier,
       touches the segment controller).
 - Decide after 1.1 lands — the snap fix may make the freeze far less noticeable.
+- **Researched (2026-07-15, see `ws1-2-freeze-research.md`):** `.from 0.0` is REQUIRED — from
+  is re-captured at the current position, so starting mid-value jumps through the curve
+  (t≈0.68 on frame one). Freeze is ~2 vsync, not 1 (first Ticker tick is elapsed=0).
+  Verdict: (a) accept by default (matches ImplicitlyAnimatedWidget / .beginFromCurrentState);
+  fallback (b2) pre-advance controller by one frame's dt (~5 lines × 2 hosts) if the hitch is
+  visible at 60Hz on device; (c) velocity handoff rejected — needs per-item simulations,
+  breaks the single-shared-tween invariant.
 
 ### 1.3 Scroll behaviour during & after a segment — **[bug] (#4, + user pt 5)**
 During a segment `seg-scroll-correction` (render.cljd:807-818) emits an **absolute**
