@@ -559,13 +559,13 @@
 ;; --- §7c: from = committed ∪ edge slide (viewport-entering cells glide) ---
 
 (deftest augment-from-edges-glides-entering-cell
-  ;; window indices 0..5; only 2,3 were on-screen (committed). A cell entering the
-  ;; viewport gets its TARGET frame slid to the NEAR edge — the side chosen by index
-  ;; vs the committed span [2,3]. Universal: no old layout, no exact old position.
+  ;; window indices 0..5; only 2,3 were on-screen (committed). With no old layout each
+  ;; entering cell uses its TARGET frame, and edge-slide-block slides each edge-group
+  ;; in as a BLOCK that keeps relative target spacing (not a single line at the edge).
   (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
         key-of (fn [^int i] (nth [:a :b :c :d :e :f] i))
         ;; :e carries a STALE committed rect but is NOT on-screen (it reindexed
-        ;; off-screen last segment); it must get an edge, not keep the stale rect.
+        ;; off-screen last segment); it must get an edge frame, not keep the stale rect.
         committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200) :e (fr 999 0 100 200)}
         on-screen #{:c :d}   ; the attached/visible keys — ground truth for `from`
         env (assoc base-env :item-count 6)
@@ -575,15 +575,15 @@
     (testing "committed (on-screen) keys keep their rects"
       (is (frame= (fr 200 0 100 200) (get result :c)))
       (is (frame= (fr 300 0 100 200) (get result :d))))
-    (testing "stale committed key NOT on-screen is overridden with an edge frame"
-      (is (close? 400.0 (:offset (get result :e))))     ; index 4 > cmax=3 → bottom edge
+    (testing "stale committed key NOT on-screen is overridden with a block frame"
       (is (not (close? 999.0 (:offset (get result :e))))))
-    (testing "index > cmax came from BELOW → bottom edge (offset == we), target extent kept"
-      (is (close? 400.0 (:offset (get result :f))))     ; index 5
+    (testing "trailing block (idx > cmax) abuts we, keeping target spacing"
+      (is (close? 400.0 (:offset (get result :e))))     ; index 4: target 400, min → we
+      (is (close? 500.0 (:offset (get result :f))))     ; index 5: 400 + 100 spacing
       (is (close? 100.0 (:main-extent (get result :f)))))
-    (testing "index < cmin came from ABOVE → top edge (offset == ws - main-extent)"
-      (is (close? 100.0 (:offset (get result :a))))     ; index 0: 200 - 100
-      (is (close? 100.0 (:main-extent (get result :a)))))
+    (testing "leading block (idx < cmin) abuts ws from above, keeping target spacing"
+      (is (close? 0.0 (:offset (get result :a))))       ; index 0: block far edge at ws
+      (is (close? 100.0 (:offset (get result :b)))))    ; index 1
     (testing "every window index now has a from (glide, not pop)"
       (is (= #{:a :b :c :d :e :f} (set (keys result)))))))
 
