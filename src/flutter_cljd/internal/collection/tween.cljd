@@ -401,6 +401,28 @@
     :else :stay-glide))                  ; off-screen both sides → not materialized
 
 ;; @ai-generated(solo)
+(defn clip-window
+  "§8a per-cell clip+fade decision, host-agnostic. From a cell's geometry `gm`
+   (full vs visible extent on both axes) and whether it should `fade?`, returns
+   `[vis-main vis-cross opacity]` while the cell is mid-collapse (visible < full on
+   some axis), or nil when it rests at full size. opacity = the collapse fraction
+   for a fading enter/exit cell, else 1.0 — so the fade rides the same jump-free
+   window. Both the box and sliver hosts feed it their per-child geo, so the
+   enter/exit collapse and its fade are defined once, not per host."
+  [gm ^bool fade?]
+  (let [^double fm (double (:full-main-extent gm (:main-extent gm)))
+        ^double vm (double (:main-extent gm))
+        ^double fc (double (:full-cross-extent gm (:cross-extent gm)))
+        ^double vc (double (:cross-extent gm))]
+    (when (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
+      (let [^double op (if fade?
+                         (let [^double rm (if (> fm 1e-6) (/ vm fm) 1.0)
+                               ^double rc (if (> fc 1e-6) (/ vc fc) 1.0)]
+                           (double (.clamp (if (< rm rc) rm rc) 0.0 1.0)))
+                         1.0)]
+        [vm vc op]))))
+
+;; @ai-generated(solo)
 (defn shadow-frame-source
   "Frame source over the SHADOW index space (live survivors + in-tree dying
    cells) that bakes in the §7a collapse remap, so a host driver consumes it

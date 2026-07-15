@@ -89,9 +89,11 @@
    ^:mutable ^int segGen  ;; gen the engine last captured a target for; -1 = none
    ^:mutable entering     ;; set of keys wiping open (enter-collapse) this segment
    ^:mutable exiting      ;; set of keys wiping shut (exit-collapse) this segment
+   ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse
+   ^:mutable ^bool fadeExit   ;; fade exiting cells 1→0 with the collapse
    ^:mutable segTween     ;; the built keyed-tween-layout for the current segment, or nil
-   ^:mutable clips]       ;; {child-index -> [vis-main vis-cross]} for cells laid at full
-                          ;; but painted clipped to their lerped visible window (§8a)
+   ^:mutable clips]       ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at
+                          ;; full but painted clipped to their lerped visible window (§8a)
   :extends r/RenderBox
 
   (setupParentData [_this ^r/RenderObject child]
@@ -133,11 +135,19 @@
                 (if-let [vis (get clips i)]
                   (let [^double vm (double (nth vis 0))
                         ^double vc (double (nth vis 1))
+                        ^double op (double (nth vis 2 1.0))
                         ^double w (if vertical? vc vm)
                         ^double h (if vertical? vm vc)
                         clip-rect (ui/Rect.fromLTWH bx by w h)]
                     (.pushClipRect ctx (.-needsCompositing this) ui/Offset.zero clip-rect
-                                   (fn [^r/PaintingContext c2 _o] (.paintChild c2 ch child-off))))
+                                   (fn [^r/PaintingContext c2 _o]
+                                     (if (< op 0.999)
+                                       (.pushOpacity c2 ui/Offset.zero
+                                                     (int (.round (* op 255.0)))
+                                                     (fn [^r/PaintingContext c3 _o2]
+                                                       (.paintChild c3 ch child-off)))
+                                       (.paintChild c2 ch child-off))
+                                     nil)))
                   (.paintChild ctx ch child-off))
                 (recur (.-nextSibling pd) (inc i)))))))))
 
@@ -353,7 +363,11 @@
   (let [^double t (.-value ^a/Animation (.-tweenAnim rb))
         seg-tween (.-segTween rb)
         env' (assoc env :ctx ((:prepare seg-tween) env))
-        geo (:geometry seg-tween)]
+        geo (:geometry seg-tween)
+        entering (.-entering rb)
+        exiting (.-exiting rb)
+        fade-enter (.-fadeEnter rb)
+        fade-exit (.-fadeExit rb)]
     (loop [child (.-firstChild rb) ^int i 0 committed {} clips (transient {})]
       (if (nil? child)
         (do (.-committed! rb committed)
@@ -379,9 +393,11 @@
                  (assoc committed key {:offset off :cross cross
                                        :main-extent vm :cross-extent vc
                                        :full-main fm :full-cross fc})
-                 (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
-                   (assoc! clips i [vm vc])
-                   clips)))))))
+                 (let [fade? (or (and fade-enter (contains? entering key))
+                                 (and fade-exit (contains? exiting key)))]
+                   (if-let [entry (tw/clip-window gm fade?)]
+                     (assoc! clips i entry)
+                     clips))))))))
 
 (defn- ^ui/Size content-size
   "performLayout / computeDryLayout worker. Resting (no tween) runs the natural
@@ -454,7 +470,7 @@
    first pass whose `gen` differs (see `animate-pass!`); with `tween-anim` nil it
    rests and forgets the segment."
   [^RenderCollectionBox rb new-layout axis ^a/Animation? tween-anim ^int gen key-of
-   entering exiting]
+   entering exiting ^bool fade-enter ^bool fade-exit]
   (let [layout-changed (or (nil? (:id new-layout))
                            (not= (:id (.-layoutModel rb)) (:id new-layout))
                            (not= axis (.-axis rb)))
@@ -465,6 +481,8 @@
     (.-curGen! rb gen)
     (.-entering! rb (or entering #{}))
     (.-exiting! rb (or exiting #{}))
+    (.-fadeEnter! rb (boolean fade-enter))
+    (.-fadeExit! rb (boolean fade-exit))
     (set-box-tween-anim! rb tween-anim)
     (when-not tween-anim
       (.-segGen! rb -1)
@@ -481,17 +499,21 @@
    ^int gen      ;; segment generation, bumped once per segment
    keyOf         ;; (fn [^int i] -> key)
    entering      ;; set of keys wiping open this segment
-   exiting]      ;; set of keys wiping shut this segment
+   exiting       ;; set of keys wiping shut this segment
+   ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse
+   ^bool fadeExit]  ;; fade exiting cells 1→0 with the collapse
   :extends (w/MultiChildRenderObjectWidget .key k .children childWidgets)
 
   (createRenderObject [_this ^w/BuildContext _context]
     (let [rb (RenderCollectionBox layoutImpl axisKw nil nil keyOf {} {} nil nil gen -1
-                                  (or entering #{}) (or exiting #{}) nil {})]
+                                  (or entering #{}) (or exiting #{})
+                                  (boolean fadeEnter) (boolean fadeExit) nil {})]
       (set-box-tween-anim! rb tweenAnim)
       rb))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-box! render-object layoutImpl axisKw tweenAnim gen keyOf entering exiting)))
+    (update-box! render-object layoutImpl axisKw tweenAnim gen keyOf entering exiting
+                 fadeEnter fadeExit)))
 
 ;; --- stateful segment driver (mirrors SliverCollectionState, trigger-only) ---
 
@@ -656,7 +678,12 @@
                    (fn [^int i] (:key (nth shadow i)))
                    (fn [^int i] (child-key (nth kids i) i)))
           exiting (if use-shadow (into #{} (map :key) dying) #{})
-          entering (if (and active keyed?) (.-activeInserts this) #{})]
+          entering (if (and active keyed?) (.-activeInserts this) #{})
+          ;; default opacity fade rides the collapse; a disabled :insert/:remove
+          ;; section (`false` in :animate) turns off that direction's fade
+          config (.-animConfig wgt)
+          fade-enter (boolean (:insert config))
+          fade-exit (boolean (:remove config))]
       (CollectionBoxWidget nil
                            children
                            (.-layoutImpl wgt)
@@ -665,7 +692,9 @@
                            (.-tweenGen this)
                            key-of
                            entering
-                           exiting))))
+                           exiting
+                           fade-enter
+                           fade-exit))))
 
 (defn ^w/Widget collection-box
   "Eager box over already-built children driven by a collection layout map.
@@ -688,4 +717,4 @@
                  l)]
       (if anim-config
         (CollectionBox (t/widget-key (:key opts)) layout-impl axis kids anim-config)
-        (CollectionBoxWidget (t/widget-key (:key opts)) kids layout-impl axis nil 0 nil #{} #{})))))
+        (CollectionBoxWidget (t/widget-key (:key opts)) kids layout-impl axis nil 0 nil #{} #{} false false)))))

@@ -912,21 +912,12 @@
           (let [^r/RenderBox ch child
                 ^int idx (.indexOf rs ch)
                 gm (geo-fn env idx)
-                ^double fm (double (:full-main-extent gm (:main-extent gm)))
-                ^double vm (double (:main-extent gm))
-                ^double fc (double (:full-cross-extent gm (:cross-extent gm)))
-                ^double vc (double (:cross-extent gm))]
+                k (key-for rs idx)
+                fade? (or (and fade-enter (contains? entering k))
+                          (and fade-exit (contains? exiting k)))]
             (recur (.childAfter rs ch)
-                   (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
-                     (let [k (key-for rs idx)
-                           fade? (or (and fade-enter (contains? entering k))
-                                     (and fade-exit (contains? exiting k)))
-                           ^double op (if fade?
-                                        (let [^double rm (if (> fm 1e-6) (/ vm fm) 1.0)
-                                              ^double rc (if (> fc 1e-6) (/ vc fc) 1.0)]
-                                          (math/max 0.0 (math/min 1.0 (math/min rm rc))))
-                                        1.0)]
-                       (assoc! m idx [vm vc op]))
+                   (if-let [entry (tw/clip-window gm fade?)]
+                     (assoc! m idx entry)
                      m)))
           (persistent! m))))))
 
