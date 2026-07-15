@@ -893,6 +893,43 @@
       (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
       (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
 
+;; @ai-generated(solo)
+(defn- compute-clips!
+  "§8a: (re)build the `clips` map — {child-index -> [vis-main vis-cross opacity]} — for
+   every attached cell whose lerped VISIBLE extent is smaller than its full laid extent
+   on the collapse axis. Such a cell is laid at full but painted clipped to that
+   window; a faded enter/exit cell also carries opacity = its collapse fraction so the
+   fade rides the same jump-free window. Shared by the indexed driver and the
+   first-pass `from-relay!` so both display an enter/exit collapse without a flash."
+  [^CollectionRenderSliver rs env geo-fn]
+  (let [entering (.-entering rs)
+        exiting (.-exiting rs)
+        fade-enter (.-fadeEnter rs)
+        fade-exit (.-fadeExit rs)]
+    (.-clips! rs
+      (loop [child (.-firstChild rs) m (transient {})]
+        (if child
+          (let [^r/RenderBox ch child
+                ^int idx (.indexOf rs ch)
+                gm (geo-fn env idx)
+                ^double fm (double (:full-main-extent gm (:main-extent gm)))
+                ^double vm (double (:main-extent gm))
+                ^double fc (double (:full-cross-extent gm (:cross-extent gm)))
+                ^double vc (double (:cross-extent gm))]
+            (recur (.childAfter rs ch)
+                   (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
+                     (let [k (key-for rs idx)
+                           fade? (or (and fade-enter (contains? entering k))
+                                     (and fade-exit (contains? exiting k)))
+                           ^double op (if fade?
+                                        (let [^double rm (if (> fm 1e-6) (/ vm fm) 1.0)
+                                              ^double rc (if (> fc 1e-6) (/ vc fc) 1.0)]
+                                          (math/max 0.0 (math/min 1.0 (math/min rm rc))))
+                                        1.0)]
+                       (assoc! m idx [vm vc op]))
+                     m)))
+          (persistent! m))))))
+
 (defn- indexed-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
@@ -1019,40 +1056,8 @@
                   .to trail-end)
                 ^double cache-extent
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
-                ;; §8a: record each animating cell's paint-clip window [vis-main
-                ;; vis-cross opacity]. A cell laid at full extent (:full-main-extent/
-                ;; :full-cross-extent) but with a smaller lerped visible extent on
-                ;; the collapse axis is painted clipped to that window; a faded
-                ;; enter/exit cell also carries opacity = its collapse fraction so the
-                ;; fade rides the SAME jump-free window (a retarget continues it).
-                entering (.-entering rs)
-                exiting (.-exiting rs)
-                fade-enter (.-fadeEnter rs)
-                fade-exit (.-fadeExit rs)
-                _clips
-                (.-clips! rs
-                  (loop [child (.-firstChild rs) m (transient {})]
-                    (if child
-                      (let [^r/RenderBox ch child
-                            ^int idx (.indexOf rs ch)
-                            gm (geo-fn env idx)
-                            ^double fm (double (:full-main-extent gm (:main-extent gm)))
-                            ^double vm (double (:main-extent gm))
-                            ^double fc (double (:full-cross-extent gm (:cross-extent gm)))
-                            ^double vc (double (:cross-extent gm))]
-                        (recur (.childAfter rs ch)
-                               (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
-                                 (let [k (key-for rs idx)
-                                       fade? (or (and fade-enter (contains? entering k))
-                                                 (and fade-exit (contains? exiting k)))
-                                       ^double op (if fade?
-                                                    (let [^double rm (if (> fm 1e-6) (/ vm fm) 1.0)
-                                                          ^double rc (if (> fc 1e-6) (/ vc fc) 1.0)]
-                                                      (math/max 0.0 (math/min 1.0 (math/min rm rc))))
-                                                    1.0)]
-                                   (assoc! m idx [vm vc op]))
-                                 m)))
-                      (persistent! m))))
+                ;; §8a: record each animating cell's paint-clip window (shared helper).
+                _clips (compute-clips! rs env geo-fn)
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses/rescales
                 ;; mid-segment the viewport-top slot jumps unless we follow it.
@@ -1139,6 +1144,9 @@
         ^double paint-extent (.calculatePaintOffset rs c
                               .from (math/min (.-scrollOffset c) lead-off) .to trail-end)
         ^double cache-extent (.calculateCacheOffset rs c .from lead-off .to trail-end)]
+    ;; §8a: enter/exit collapse clips for THIS first pass, same as the indexed driver
+    ;; — so a collapsing cell isn't painted full-size for one frame before it wipes.
+    (compute-clips! rs env geo-fn)
     (.-geometry! rs
       (r/SliverGeometry
        .scrollExtent total
