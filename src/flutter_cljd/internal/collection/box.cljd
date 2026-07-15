@@ -303,10 +303,15 @@
             ^double off (if vertical? (.-dy o) (.-dx o))
             ^double cross (if vertical? (.-dx o) (.-dy o))]
         (recur (.-nextSibling pd) (inc i)
-               (assoc m (key-for rb i)
-                      {:offset off :cross cross
-                       :main-extent (lay/size-main env size)
-                       :cross-extent (lay/size-cross env size)}))))))
+               ;; resting: visible == full on both axes; :full-* mirror the extents
+               ;; so a segment starting from rest reads them uniformly (see the
+               ;; animating commit and keyed-tween-layout's exit branch).
+               (let [^double mm (lay/size-main env size)
+                     ^double cc (lay/size-cross env size)]
+                 (assoc m (key-for rb i)
+                        {:offset off :cross cross
+                         :main-extent mm :cross-extent cc
+                         :full-main mm :full-cross cc})))))))
 
 ;; @ai-generated(guided)
 (defn- ^ui/Size animate-pass!
@@ -367,8 +372,13 @@
           (.layout ch (tight-constraints env' gm))
           (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross)))
           (recur (.-nextSibling pd) (inc i)
+                 ;; :main-extent/:cross-extent = VISIBLE window (partial mid-wipe);
+                 ;; :full-main/:full-cross = the stable full laid extent, so a
+                 ;; retrigger continues the wipe from the current window (see the
+                 ;; sliver's commit-pass! and keyed-tween-layout).
                  (assoc committed key {:offset off :cross cross
-                                       :main-extent vm :cross-extent vc})
+                                       :main-extent vm :cross-extent vc
+                                       :full-main fm :full-cross fc})
                  (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
                    (assoc! clips i [vm vc])
                    clips)))))))

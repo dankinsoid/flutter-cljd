@@ -291,7 +291,12 @@
    The 7-arg arity takes an `opts` map `{:entering <set> :exiting <set>
    :leaving <map> :collapse-axis :main|:cross}`. An entering key wipes open
    (collapse-axis extent 0 → full) at its target rect; an exiting key wipes shut
-   (natural → 0) in place. `:collapse-axis` (the layout's own declaration, default
+   (natural → 0) in place. When a key is re-entered/re-exited while still mid-wipe
+   its captured `from` (the current VISIBLE window, stored by the host's commit) is
+   kept as the wipe's start, so an interrupted segment CONTINUES from the current
+   window instead of snapping back to 0 (enter) or full (exit); the exit lays out
+   at the captured `:full-main`/`:full-cross`, not the partial window.
+   `:collapse-axis` (the layout's own declaration, default
    `:main`) picks WHICH extent collapses — `:main` for a list/masonry, `:cross` for
    a grid/wrap — the other extent and offset/cross come from the target frame so the
    cell stays put while it wipes. The frame carries `:full-main-extent` and
@@ -319,20 +324,29 @@
                        to (to-frame env (:to-ctx ctx) i)
                        from (get committed key)
                        ext-key (if (= :cross collapse-axis) :cross-extent :main-extent)
+                       ;; the captured `from`'s STABLE full extent on the collapse
+                       ;; axis (commit-pass!/animate-pass! store it): an exiting cell
+                       ;; interrupted mid-wipe must lay out at its real size, not the
+                       ;; partial :main-extent/:cross-extent window it was clipped to.
+                       full-ext-key (if (= :cross collapse-axis) :full-cross :full-main)
                        ;; §8a: a cell is laid out at its STABLE full extent on BOTH
                        ;; axes (:full-main-extent/:full-cross-extent) so its content
                        ;; lays out once at a real size; the collapse axis's lerped
                        ;; VISIBLE window (:main-extent or :cross-extent) is the clip
                        ;; the engine paints. `full` = the stable collapse-axis extent
                        ;; (nil ⇒ not collapsing here, full == visible on both axes).
+                       ;; A re-entering / re-exiting cell keeps its captured `from`
+                       ;; (the current visible window) so the wipe CONTINUES from
+                       ;; there instead of snapping back to 0 (enter) or full (exit).
                        [from* to* full] (cond
                                           (contains? entering key)
-                                          [(zero-axis to collapse-axis) to
+                                          [(or from (zero-axis to collapse-axis)) to
                                            (double (or (get to ext-key) 0.0))]
                                           (contains? exiting key)
                                           (let [f (or from to)]
                                             [f (zero-axis to collapse-axis)
-                                             (double (or (get f ext-key) 0.0))])
+                                             (double (or (get f full-ext-key)
+                                                         (get f ext-key) 0.0))])
                                           :else
                                           ;; §7b leave-slide: the edge frame beats the
                                           ;; target — bounded translation, size constant.

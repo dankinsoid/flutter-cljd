@@ -293,8 +293,9 @@
                                      (contains? insert-keys (:key %)))
                                 (.-dyingItems this)))
         new-dying (for [{:keys [key old-index item]} removes]
-                    {:key key :item item :old-index old-index
-                     :extent (:main-extent (get committed key))})]
+                    (let [cm (get committed key)]
+                      {:key key :item item :old-index old-index
+                       :extent (:full-main cm (:main-extent cm))}))]
     (.-dyingItems! this (into kept-dying new-dying))
     (.-activeInserts! this
       (into (reduce disj (.-activeInserts this) remove-keys) insert-keys))))

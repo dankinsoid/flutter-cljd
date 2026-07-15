@@ -6,6 +6,32 @@
   (:require [clojure.test :refer [deftest is testing]]
             [flutter-cljd.internal.collection.render :as render]))
 
+;; --- committed-rect (capture completeness for the wipe) ---
+
+(deftest committed-rect-unclipped-visible-equals-full
+  ;; a resting / non-collapsing child (clip nil) commits visible == full on both
+  ;; axes, so nothing downstream that falls back to :main-extent changes.
+  (let [rect {:offset 10.0 :cross 5.0 :main-extent 60.0 :cross-extent 100.0}
+        c (render/committed-rect rect nil 42)]
+    (is (= 60.0 (:main-extent c)))
+    (is (= 100.0 (:cross-extent c)))
+    (is (= 60.0 (:full-main c)))
+    (is (= 100.0 (:full-cross c)))
+    (is (= 42 (:seen c)))
+    (is (= 10.0 (:offset c)))))
+
+(deftest committed-rect-clipped-stores-visible-window-and-full
+  ;; a cell laid at full 60x100 but painted clipped to a 24-tall main window:
+  ;; committed keeps the VISIBLE extent (so a retrigger continues the wipe) AND
+  ;; the FULL laid extent (so an exit re-lays at the stable size, not the window).
+  (let [rect {:offset 10.0 :cross 5.0 :main-extent 60.0 :cross-extent 100.0}
+        c (render/committed-rect rect [24.0 100.0] 7)]
+    (is (= 24.0 (:main-extent c)))     ; visible window on the collapse axis
+    (is (= 100.0 (:cross-extent c)))   ; non-collapse axis unchanged
+    (is (= 60.0 (:full-main c)))       ; stable full laid extent preserved
+    (is (= 100.0 (:full-cross c)))
+    (is (= 7 (:seen c)))))
+
 ;; --- prune-committed ---
 
 (deftest prune-committed-drops-only-stale

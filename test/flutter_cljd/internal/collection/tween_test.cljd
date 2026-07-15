@@ -411,6 +411,63 @@
         (is (close? 80.0 (:main-extent g)))          ; lerp(100, 60, 0.5)
         (is (close? (:main-extent g) (:full-main-extent g)))))))
 
+;; --- WS1.1: interruption continuity — a retrigger continues the wipe from the
+;;     current visible window, instead of snapping back to 0 (enter) / full (exit).
+
+(deftest keyed-tween-reentering-continues-from-captured-window
+  ;; a cell caught 40% open (visible main 24 of a full 60) is re-entered by a new
+  ;; segment: at t=0 the wipe MUST resume at 24, not restart from 0.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x {:offset 40.0 :cross 20.0 :main-extent 24.0 :cross-extent 100.0
+                       :full-main 60.0 :full-cross 100.0}}
+        key-of (fn [^int _i] :x)
+        opts {:entering #{:x}}]
+    (testing "t=0 resumes at the captured visible window (24), not 0"
+      (let [g (keyed-geo* to committed 180.0 key-of opts 0.0 0)]
+        (is (close? 24.0 (:main-extent g)))
+        (is (close? 60.0 (:full-main-extent g)))))   ; still laid at full
+    (testing "t mid lerps captured-window -> full target"
+      (is (close? 42.0 (:main-extent (keyed-geo* to committed 180.0 key-of opts 0.5 0)))))
+    (testing "t=1 reaches the full target"
+      (is (close? 60.0 (:main-extent (keyed-geo* to committed 180.0 key-of opts 1.0 0)))))))
+
+(deftest keyed-tween-reexiting-continues-from-window-lays-at-full
+  ;; a cell caught mid-collapse (visible main 30 of a full 60) is re-exited: the
+  ;; wipe resumes at 30 (not the full 60), but the cell still LAYS OUT at its
+  ;; captured full 60 — full comes from :full-main, not the partial :main-extent.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x {:offset 40.0 :cross 20.0 :main-extent 30.0 :cross-extent 100.0
+                       :full-main 60.0 :full-cross 100.0}}
+        key-of (fn [^int _i] :x)
+        opts {:exiting #{:x}}]
+    (testing "t=0 resumes at the captured window (30), laid at the captured full (60)"
+      (let [g (keyed-geo* to committed 180.0 key-of opts 0.0 0)]
+        (is (close? 30.0 (:main-extent g)))
+        (is (close? 60.0 (:full-main-extent g)))))
+    (testing "t=1 collapses the window to 0, still laid at full"
+      (let [g (keyed-geo* to committed 180.0 key-of opts 1.0 0)]
+        (is (close? 0.0 (:main-extent g)))
+        (is (close? 60.0 (:full-main-extent g)))))))
+
+(deftest keyed-tween-reexiting-cross-collapse-uses-full-cross
+  ;; cross-collapsing (grid/wrap) retrigger: the exit lay-at size comes from
+  ;; :full-cross, not the partial cross window.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x {:offset 40.0 :cross 20.0 :main-extent 60.0 :cross-extent 40.0
+                       :full-main 60.0 :full-cross 100.0}}
+        key-of (fn [^int _i] :x)
+        opts {:collapse-axis :cross :exiting #{:x}}]
+    (testing "t=0 resumes at the captured cross window (40), laid at full cross (100)"
+      (let [g (keyed-geo* to committed 180.0 key-of opts 0.0 0)]
+        (is (close? 40.0 (:cross-extent g)))
+        (is (close? 100.0 (:full-cross-extent g)))
+        (is (close? 60.0 (:main-extent g)))))       ; non-collapse axis held
+    (testing "t=1 collapses the cross window to 0"
+      (is (close? 0.0 (:cross-extent (keyed-geo* to committed 180.0 key-of opts 1.0 0)))))))
+
 ;; --- 3c: the collapse axis is DECLARED by the layout (main vs cross) ---
 
 (deftest keyed-tween-cross-collapse-wipes-cross-not-main
