@@ -58,6 +58,10 @@ right after a segment.
   (b) **don't touch offset during the segment at all** (let cells animate, leave scroll free).
 - Note: (b) interacts with WS2 — if offset must move to reveal the target window, it can't be
   fully hands-off. Resolve alongside 2.3.
+- **Verdict (2026-07-15, see `ws2-3-offset-refinement-research.md`): (a) relative.** Hands-off
+  contradicts bug #6 (offset must move as survivors shrink); absolute set-point reverts drag.
+  Fix: `seg-scroll-correction` emits the delta `desired(t) − prevDesired` (accumulator field)
+  instead of the absolute — drag composes, segment- and flow-path share one model.
 
 ---
 
@@ -99,6 +103,11 @@ from-0 walk, so any window renders at an approximate offset. Optional user-suppl
 - Scope of the estimate: it only needs to be good enough that (a) the scroll indicator is
   roughly right and (b) scroll-to-offset lands near the target.
 - **Out of scope (noted):** scroll-to-**key** — nice but needs nontrivial changes.
+- **Protocol shape (2026-07-15, from the 2.3 research):** bake in two optional flow hooks from
+  the start — `:renewal-point?` (which indices are exact layout checkpoints: list = all,
+  wrap = `cross == 0`, masonry = none → periodic full-`:state` snapshots) and `:approx-offset`
+  (O(1) main-offset estimate for an arbitrary index, for cold windows / layout remaps).
+  Document `:anchor` as two-mode: exact at renewal points, dead-reckoning elsewhere.
 
 ### 2.3 Progressive offset refinement during scroll — **[design/bug] (user pt 3, 5; fixes #5, #6)**
 When only an approximate window is known (large initial offset, or list→wrap remap), refine the
@@ -110,6 +119,15 @@ aren't).
   (a genuine backward wrap re-flow), likely caching run boundaries.
 - **OPEN QUESTION:** is a correct backward wrap re-flow expressible without walking from index 0,
   given `:place` is inherently forward? May force run-boundary caching. Resolve in design.
+- **ANSWERED (2026-07-15, see `ws2-3-offset-refinement-research.md`): YES.** A run boundary is a
+  renewal point — wrap's `:place` state fully resets there, so `[i..j]` is independent of
+  everything above `i`. Backward re-flow = forward mini-walks per run, seeded from a sparse
+  run-boundary cache (`walk!` already caches per-index `:state`; keep a sparse subset past GC).
+  Caveat: renewal is exact for run STRUCTURE; the absolute main-offset stays a prefix sum from 0
+  and goes stale on mutation above — refinement + offset correction are still required, the
+  cache and the correction complement each other. Refinement runs on every dirty pass within
+  the overscan window, lands exactly at item 0 near the start, and is suppressed during active
+  backward drag/ballistic (cross-framework consensus pattern).
 - May touch scroll physics / the `ScrollPosition`. Research: how RecyclerView, UICollectionView,
   virtualized web lists reconcile estimated vs. measured offsets without visible jumps.
 
