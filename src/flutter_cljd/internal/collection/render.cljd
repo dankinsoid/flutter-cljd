@@ -77,7 +77,11 @@
                           ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass.
                           ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
    ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse (off when a custom :insert builder owns it)
-   ^:mutable ^bool fadeExit]  ;; fade exiting cells 1→0 with the collapse (off when a custom :remove builder owns it)
+   ^:mutable ^bool fadeExit  ;; fade exiting cells 1→0 with the collapse (off when a custom :remove builder owns it)
+   ^:mutable prevLayout]  ;; the layout the cells were resting under just before a layout-change segment (nil
+                          ;; otherwise); an INDEXED prevLayout gives an off-screen cell its OLD size in O(1), so
+                          ;; a cell entering the viewport during list↔grid morphs its size instead of popping in
+                          ;; at target (docs §7c). Flow prevLayout ⇒ no cheap old size ⇒ fall back to target size.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -342,6 +346,10 @@
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
+    ;; Freeze the resting layout as `from` ONLY across a layout change, so the next
+    ;; segment-start! can read an off-screen cell's OLD size; self-clears on same-id
+    ;; passes so a later data-only segment never reads a stale layout (docs §7c).
+    (.-prevLayout! rs (when layout-changed old))
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs target-layout)
     (.-itemCount! rs item-count)
@@ -1195,17 +1203,29 @@
         ctx ((:prepare to-src) env)
         ;; §7c: `from` = committed ∪ edge slide for cells entering the viewport.
         ;; UNIVERSAL (flow + indexed): an entering cell has no committed rect, so
-        ;; its `from` = its own TARGET frame slid to the near window edge (an
-        ;; arrive-slide), the side chosen by index vs the on-screen committed span.
-        ;; Layout-agnostic — no old-layout math, no prevLayout.
+        ;; its `from` = its own frame slid to the near window edge (an arrive-slide),
+        ;; the side chosen by index vs the on-screen committed span.
         ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
         ^double we (+ ws (.-remainingCacheExtent c))
         fi ((:first-index to-src) env ctx ws)
         li (when (.-isFinite we) ((:last-index to-src) env ctx we))
+        ;; §7c size morph: when the segment is a pure layout change (no concurrent
+        ;; data churn) and the PREVIOUS layout is indexed, an off-screen cell's OLD
+        ;; rect is O(1) — feed it so the entering cell slides in at its old size and
+        ;; morphs (list↔grid). Guard on empty enter/exit so shadow index == old-data
+        ;; index; otherwise (or flow prevLayout) old-frame is nil ⇒ arrive at target.
+        old-layout (.-prevLayout rs)
+        old-frame (when (and old-layout (some? (:geometry old-layout))
+                             (not= (:id old-layout) (:id layout))
+                             (empty? (.-entering rs)) (empty? (.-exiting rs)))
+                    (let [osrc (tw/indexed-frame-source old-layout)
+                          octx ((:prepare osrc) env)
+                          ofr (:frame osrc)]
+                      (fn [^int i] (ofr env octx i))))
         from-rects (if (and fi li)
                      (tw/augment-from-edges
                       committed-from on-screen (.-entering rs) to-src env ctx #(key-for rs %)
-                      (int fi) (int li) ws we)
+                      (int fi) (int li) ws we old-frame)
                      committed-from)                                     ; (a')
         ;; Set-point anchor from the viewport-top INDEX SLOT captured at the last
         ;; resting pass (docs §9): fromSlot = its OLD content-space offset, toSlot =
@@ -1294,7 +1314,7 @@
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit)]
+                                     fadeEnter fadeExit nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

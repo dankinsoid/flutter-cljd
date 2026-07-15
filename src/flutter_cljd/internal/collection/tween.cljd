@@ -526,14 +526,26 @@
    it from 0. An entering key still ON-screen (a re-insert mid-exit) keeps its real
    committed rect so the wipe continues from the current window.
 
-   Two passes over [first-idx, last-idx]. Pass 1 finds cmin/cmax = the min/max
-   index whose key is in `on-screen` (the visible span), nil if none. Pass 2, for
-   each index whose key is NOT on-screen, takes its target frame and picks the edge
-   by index vs that span: above the max → came from BELOW (:trailing); below the
-   min → came from ABOVE (:leading); interleaved (or nothing on-screen) → the
-   nearer edge, defaulting to :trailing; then OVERRIDES any stale `committed`
-   entry. On-screen cells keep their real committed rect. Pure."
-  [committed on-screen entering to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
+   Pass 1 finds cmin/cmax = the min/max index whose key is in `on-screen` (the
+   visible span), nil if none. Pass 2, for each index whose key is NOT on-screen,
+   picks the edge by index vs that span: above the max → came from BELOW
+   (:trailing); below the min → came from ABOVE (:leading); interleaved (or nothing
+   on-screen) → the nearer edge, defaulting to :trailing; then OVERRIDES any stale
+   `committed` entry. On-screen cells keep their real committed rect. Pure.
+
+   `old-frame` is `(fn [^int i] -> frame | nil)` or nil — the cell's rect under the
+   PREVIOUS layout (docs §7c). It changes what a viewport-entering cell slides in as:
+
+   - nil (flow prevLayout, or a non-layout-change segment): each cell's `from` = its
+     own TARGET frame slid to the near edge — cells pile in a single line at target
+     size (prior behavior).
+   - non-nil (indexed prevLayout): the cells arriving at ONE edge are laid out
+     RELATIVE TO EACH OTHER under the old layout (their old sizes AND old cross), then
+     the whole block is TRANSLATED along the main axis so it sits just past that edge.
+     The block slides in as a realistic old-layout run and each cell morphs its size —
+     instead of collapsing to a line. Absolute placement is approximate (predecessors
+     outside the animation are ignored), exact in relative shape."
+  [committed on-screen entering to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we old-frame]
   (let [frame (:frame to-src)
         idxs (range first-idx (inc last-idx))
         ;; Pass 1: the visible (attached) index span.
@@ -541,27 +553,53 @@
                               (if (contains? on-screen (key-of i))
                                 [(min-some mn i) (max-some mx i)]
                                 [mn mx]))
-                            [nil nil] idxs)]
-    ;; Pass 2: an edge `from` for every viewport-entering (off-screen) cell,
-    ;; overriding any stale committed rect it may carry. Freshly-DATA-entering
-    ;; cells are excluded — they enter-collapse from 0, not arrive-slide.
-    (reduce (fn [m ^int i]
-              (let [k (key-of i)]
-                (cond
-                  (contains? on-screen k) m
-                  (contains? entering k) (dissoc m k)
-                  :else
-                  (if-let [fr (frame env ctx i)]
-                    (let [dir (cond
-                                (and cmax (> i (int cmax))) :trailing
-                                (and cmin (< i (int cmin))) :leading
-                                (< (- i (int (or cmin i)))
-                                   (- (int (or cmax i)) i)) :leading
-                                :else :trailing)]
-                      (assoc m k (slide-out-frame fr ws we dir)))
-                    m))))
-            committed
-            idxs)))
+                            [nil nil] idxs)
+        ;; which edge a viewport-entering cell came from, by index vs the visible span
+        edge-dir (fn [^int i]
+                   (cond
+                     (and cmax (> i (int cmax))) :trailing
+                     (and cmin (< i (int cmin))) :leading
+                     (< (- i (int (or cmin i))) (- (int (or cmax i)) i)) :leading
+                     :else :trailing))
+        ;; off-screen DATA-entering cells must collapse from 0 — drop any stale
+        ;; committed rect so keyed-tween-layout starts them at the zero-axis endpoint.
+        ;; (on-screen re-inserts keep their committed rect so the wipe continues.)
+        base (reduce (fn [m ^int i]
+                       (let [k (key-of i)]
+                         (if (and (not (contains? on-screen k)) (contains? entering k))
+                           (dissoc m k) m)))
+                     committed idxs)
+        ;; the viewport-entering (off-screen, non-DATA-entering) cells
+        arriving (reduce (fn [acc ^int i]
+                           (let [k (key-of i)]
+                             (if (or (contains? on-screen k) (contains? entering k))
+                               acc
+                               (conj acc {:i i :k k :dir (edge-dir i)}))))
+                         [] idxs)]
+    (if old-frame
+      ;; Grouped arrival: per edge, keep the cells' RELATIVE old layout and translate
+      ;; the block to sit just past that edge (leading block's far edge at ws, trailing
+      ;; block's near edge at we). A cell with no old frame falls back to its target.
+      (let [with-fr (keep (fn [c]
+                            (when-let [fr (or (old-frame (:i c)) (frame env ctx (:i c)))]
+                              (assoc c :fr fr)))
+                          arriving)
+            main-end (fn [fr] (+ (double (:offset fr)) (double (:main-extent fr))))
+            lead (filter #(= :leading (:dir %)) with-fr)
+            trail (filter #(= :trailing (:dir %)) with-fr)
+            ;; translate so the block abuts the edge; nil group ⇒ unused
+            lead-shift (when (seq lead) (- ws (reduce max (map #(main-end (:fr %)) lead))))
+            trail-shift (when (seq trail) (- we (reduce min (map #(double (:offset (:fr %))) trail))))]
+        (reduce (fn [m {:keys [k dir fr]}]
+                  (let [^double sh (double (if (= :leading dir) lead-shift trail-shift))]
+                    (assoc m k (assoc fr :offset (+ (double (:offset fr)) sh)))))
+                base with-fr))
+      ;; No old layout — per-cell edge slide at target size.
+      (reduce (fn [m {:keys [k i dir]}]
+                (if-let [fr (frame env ctx i)]
+                  (assoc m k (slide-out-frame fr ws we dir))
+                  m))
+              base arriving))))
 
 ;; @ai-generated(solo)
 (defn augment-to-edges
