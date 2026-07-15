@@ -140,15 +140,15 @@
                         clip-rect (ui/Rect.fromPoints
                                    (ui/Offset bx by)
                                    (ui/Offset (+ bx (* mux vm) (* cux vc))
-                                              (+ by (* muy vm) (* cuy vc))))
-                        paint-cell (if (< op 0.999)
-                                     (fn [^r/PaintingContext ctx _o]
+                                              (+ by (* muy vm) (* cuy vc))))]
+                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect
+                                   (fn [^r/PaintingContext ctx _o]
+                                     (if (< op 0.999)
                                        (.pushOpacity ctx ui/Offset.zero
                                                      (int (.round (* op 255.0)))
                                                      (fn [^r/PaintingContext c2 _o2]
-                                                       (.paintChild c2 ch child-off))))
-                                     (fn [^r/PaintingContext ctx _o] (.paintChild ctx ch child-off)))]
-                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect paint-cell))
+                                                       (.paintChild c2 ch child-off)))
+                                       (.paintChild ctx ch child-off)))))
                   (.paintChild context ch child-off)))
               (recur (.childAfter this ch)))))))
     nil)
