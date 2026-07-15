@@ -73,8 +73,11 @@
                            ;; with user drag (scrollOffset = drag + Σcorrections); telescopes exactly to to−from
    ^:mutable restingTop    ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
                            ;; each resting pass (indices consistent); seeds segAnchor at segment start
-   ^:mutable clips]        ;; {child-index -> visible-main-extent} for cells laid at full but painted
-                           ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass
+   ^:mutable clips        ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at full but painted
+                          ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass.
+                          ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
+   ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse (off when a custom :insert builder owns it)
+   ^:mutable ^bool fadeExit]  ;; fade exiting cells 1→0 with the collapse (off when a custom :remove builder owns it)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -126,18 +129,26 @@
                                          (ui/Offset bx by))]
               (when (and (< md rpe) (> (+ md pe) 0.0))
                 (if-let [visible (get clips (.indexOf this ch))]
-                  ;; visible = [vis-main vis-cross]; clip anchored at the cell's
+                  ;; visible = [vis-main vis-cross opacity]; clip anchored at the cell's
                   ;; main-start + cross-start corner (bx,by) so the reveal grows
                   ;; from the gap side (start) along WHICHEVER axis its layout
-                  ;; collapses — main for a list, cross for a grid/wrap.
+                  ;; collapses — main for a list, cross for a grid/wrap. opacity < 1
+                  ;; fades the cell with the SAME collapse fraction (enter/exit default).
                   (let [^double vm (double (nth visible 0))
                         ^double vc (double (nth visible 1))
+                        ^double op (double (nth visible 2 1.0))
                         clip-rect (ui/Rect.fromPoints
                                    (ui/Offset bx by)
                                    (ui/Offset (+ bx (* mux vm) (* cux vc))
-                                              (+ by (* muy vm) (* cuy vc))))]
-                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect
-                                   (fn [^r/PaintingContext ctx _o] (.paintChild ctx ch child-off))))
+                                              (+ by (* muy vm) (* cuy vc))))
+                        paint-cell (if (< op 0.999)
+                                     (fn [^r/PaintingContext ctx _o]
+                                       (.pushOpacity ctx ui/Offset.zero
+                                                     (int (.round (* op 255.0)))
+                                                     (fn [^r/PaintingContext c2 _o2]
+                                                       (.paintChild c2 ch child-off))))
+                                     (fn [^r/PaintingContext ctx _o] (.paintChild ctx ch child-off)))]
+                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect paint-cell))
                   (.paintChild context ch child-off)))
               (recur (.childAfter this ch)))))))
     nil)
@@ -321,7 +332,7 @@
    sliver rests on `target-layout` and all segment state is cleared. A changed
    layout :id invalidates the flow geometry cache."
   [^CollectionRenderSliver rs target-layout item-count ^a/Animation? tween-anim
-   ^int gen entering exiting key-of]
+   ^int gen entering exiting key-of ^bool fade-enter ^bool fade-exit]
   (let [old (.-layoutModel rs)
         layout-changed (or (nil? (:id target-layout))
                            (not= (:id old) (:id target-layout)))
@@ -337,6 +348,8 @@
     (.-curGen! rs gen)
     (.-entering! rs (or entering #{}))
     (.-exiting! rs (or exiting #{}))
+    (.-fadeEnter! rs (boolean fade-enter))
+    (.-fadeExit! rs (boolean fade-exit))
     (set-tween-anim! rs tween-anim)
     (when-not tween-anim  ;; back to resting — forget the segment
       (.-segGen! rs -1)
@@ -997,9 +1010,15 @@
                 ^double cache-extent
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
                 ;; §8a: record each animating cell's paint-clip window [vis-main
-                ;; vis-cross]. A cell laid at full extent (:full-main-extent/
+                ;; vis-cross opacity]. A cell laid at full extent (:full-main-extent/
                 ;; :full-cross-extent) but with a smaller lerped visible extent on
-                ;; the collapse axis is painted clipped to that window.
+                ;; the collapse axis is painted clipped to that window; a faded
+                ;; enter/exit cell also carries opacity = its collapse fraction so the
+                ;; fade rides the SAME jump-free window (a retarget continues it).
+                entering (.-entering rs)
+                exiting (.-exiting rs)
+                fade-enter (.-fadeEnter rs)
+                fade-exit (.-fadeExit rs)
                 _clips
                 (.-clips! rs
                   (loop [child (.-firstChild rs) m (transient {})]
@@ -1013,7 +1032,16 @@
                             ^double vc (double (:cross-extent gm))]
                         (recur (.childAfter rs ch)
                                (if (or (> (.abs (- fm vm)) 1e-3) (> (.abs (- fc vc)) 1e-3))
-                                 (assoc! m idx [vm vc]) m)))
+                                 (let [k (key-for rs idx)
+                                       fade? (or (and fade-enter (contains? entering k))
+                                                 (and fade-exit (contains? exiting k)))
+                                       ^double op (if fade?
+                                                    (let [^double rm (if (> fm 1e-6) (/ vm fm) 1.0)
+                                                          ^double rc (if (> fc 1e-6) (/ vc fc) 1.0)]
+                                                      (math/max 0.0 (math/min 1.0 (math/min rm rc))))
+                                                    1.0)]
+                                   (assoc! m idx [vm vc op]))
+                                 m)))
                       (persistent! m))))
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses/rescales
@@ -1256,24 +1284,30 @@
    ^int segGen  ;; host's segment generation, bumped once per segment
    entering     ;; set of keys wiping open this segment
    exiting      ;; set of keys wiping shut this segment
-   keyOf]       ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
+   keyOf        ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
+   ^bool fadeEnter  ;; fade entering cells with the collapse (default enter/exit fade)
+   ^bool fadeExit]  ;; fade exiting cells with the collapse
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {})]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
+                                     fadeEnter fadeExit)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
-    (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf)))
+    (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf
+                    fadeEnter fadeExit)))
 
 (defn ^w/Widget collection-sliver-widget
   "Creates the collection sliver from a builder, item count (nil = infinite),
    the PLAIN target layout map and options {:key :find-child-index :auto-keep-alive
    :repaint-boundaries :semantic-indexes :tween-anim :seg-gen :entering :exiting
-   :key-of}. The engine builds the segment tween itself (see update-render!):
+   :key-of :fade-entering :fade-exiting}. :fade-entering/:fade-exiting fade the
+   collapsing cells with the same window (the default enter/exit opacity), off when
+   a custom builder owns that direction. The engine builds the segment tween itself:
    :tween-anim is the segment Animation, :seg-gen an int bumped once per segment
    (default 0), :entering/:exiting the enter/exit key sets (default empty)."
   [item-builder item-count layout-impl opts]
@@ -1292,4 +1326,6 @@
    (int (:seg-gen opts 0))
    (:entering opts #{})
    (:exiting opts #{})
-   (:key-of opts)))
+   (:key-of opts)
+   (boolean (:fade-entering opts))
+   (boolean (:fade-exiting opts))))
