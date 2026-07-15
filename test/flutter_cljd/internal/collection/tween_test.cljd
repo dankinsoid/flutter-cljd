@@ -571,7 +571,7 @@
         env (assoc base-env :item-count 6)
         ctx ((:prepare to) env)
         ws 200.0 we 400.0
-        result (tw/augment-from-edges committed on-screen to env ctx key-of 0 5 ws we)]
+        result (tw/augment-from-edges committed on-screen #{} to env ctx key-of 0 5 ws we)]
     (testing "committed (on-screen) keys keep their rects"
       (is (frame= (fr 200 0 100 200) (get result :c)))
       (is (frame= (fr 300 0 100 200) (get result :d))))
@@ -586,6 +586,29 @@
       (is (close? 100.0 (:main-extent (get result :a)))))
     (testing "every window index now has a from (glide, not pop)"
       (is (= #{:a :b :c :d :e :f} (set (keys result)))))))
+
+(deftest augment-from-edges-drops-entering-cells
+  ;; A freshly DATA-entering cell (∈ entering, ∉ old) must enter-collapse from 0,
+  ;; not arrive-slide from the edge — the mirror of augment-to-edges skipping
+  ;; exiting keys. It must get NO `from`, even reusing a key with a STALE committed
+  ;; rect left by the cell just removed at that key.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
+        key-of (fn [^int i] (nth [:a :b :c :d :e :f] i))
+        committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200) :e (fr 999 0 100 200)}
+        on-screen #{:c :d}
+        env (assoc base-env :item-count 6)
+        ctx ((:prepare to) env)
+        ws 200.0 we 400.0
+        ;; :a fresh insert (no committed), :e fresh insert REUSING a stale-committed key
+        entering #{:a :e}
+        result (tw/augment-from-edges committed on-screen entering to env ctx key-of 0 5 ws we)]
+    (testing "entering off-screen key gets no from → collapses from 0"
+      (is (not (contains? result :a))))
+    (testing "entering key reusing a stale committed rect is dropped, not slid"
+      (is (not (contains? result :e))))
+    (testing "on-screen and non-entering off-screen cells are unaffected"
+      (is (frame= (fr 200 0 100 200) (get result :c)))
+      (is (close? 400.0 (:offset (get result :f)))))))
 
 ;; --- §7a shared core: classify-cell / shadow-frame-source / slide-out-frame ---
 

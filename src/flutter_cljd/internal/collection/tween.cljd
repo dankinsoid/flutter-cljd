@@ -516,6 +516,16 @@
    'entering' off `committed` makes such a cell look on-screen and pop at target
    on the next segment. Keying off the attached set fixes that.
 
+   `entering` is the set of keys joining the DATA this segment (§7a enter-collapse):
+   they grow from 0 in place and must NOT arrive-slide — the mirror of how the LEAVE
+   side (`augment-to-edges`) skips `exiting`. A fresh insert is off-screen (it wasn't
+   attached), so without this it would be mistaken for a viewport-enter and fly in
+   from the edge; worse, if it REUSES a key just removed, `committed` still carries
+   that dead cell's STALE rect and it flies from there. Both are dropped: an entering
+   off-screen key is `dissoc`ed from the `from` map so `keyed-tween-layout` collapses
+   it from 0. An entering key still ON-screen (a re-insert mid-exit) keeps its real
+   committed rect so the wipe continues from the current window.
+
    Two passes over [first-idx, last-idx]. Pass 1 finds cmin/cmax = the min/max
    index whose key is in `on-screen` (the visible span), nil if none. Pass 2, for
    each index whose key is NOT on-screen, takes its target frame and picks the edge
@@ -523,7 +533,7 @@
    min → came from ABOVE (:leading); interleaved (or nothing on-screen) → the
    nearer edge, defaulting to :trailing; then OVERRIDES any stale `committed`
    entry. On-screen cells keep their real committed rect. Pure."
-  [committed on-screen to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
+  [committed on-screen entering to-src env ctx key-of ^int first-idx ^int last-idx ^double ws ^double we]
   (let [frame (:frame to-src)
         idxs (range first-idx (inc last-idx))
         ;; Pass 1: the visible (attached) index span.
@@ -533,11 +543,14 @@
                                 [mn mx]))
                             [nil nil] idxs)]
     ;; Pass 2: an edge `from` for every viewport-entering (off-screen) cell,
-    ;; overriding any stale committed rect it may carry.
+    ;; overriding any stale committed rect it may carry. Freshly-DATA-entering
+    ;; cells are excluded — they enter-collapse from 0, not arrive-slide.
     (reduce (fn [m ^int i]
               (let [k (key-of i)]
-                (if (contains? on-screen k)
-                  m
+                (cond
+                  (contains? on-screen k) m
+                  (contains? entering k) (dissoc m k)
+                  :else
                   (if-let [fr (frame env ctx i)]
                     (let [dir (cond
                                 (and cmax (> i (int cmax))) :trailing

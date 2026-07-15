@@ -1171,7 +1171,7 @@
         li (when (.-isFinite we) ((:last-index to-src) env ctx we))
         from-rects (if (and fi li)
                      (tw/augment-from-edges
-                      committed-from on-screen to-src env ctx #(key-for rs %)
+                      committed-from on-screen (.-entering rs) to-src env ctx #(key-for rs %)
                       (int fi) (int li) ws we)
                      committed-from)                                     ; (a')
         ;; Set-point anchor from the viewport-top INDEX SLOT captured at the last
