@@ -30,6 +30,19 @@ if ! clojure -M:cljd compile; then
 	exit 1
 fi
 
+# ClojureDart vendors flutter_cljd into .clojuredart/deps/<hash>/ as a thin
+# snapshot: only pubspec files, never the asset dirs. That pubspec still declares
+# shaders/*.frag, so the macOS asset bundling aborts with "No file or variants
+# found for asset: packages/flutter_cljd/shaders/…". Mirror the real shaders/ in
+# after every (re)generation so `flutter run` in example/ bundles cleanly.
+if [ -d ../shaders ]; then
+	for d in .clojuredart/deps/*/; do
+		[ -f "${d}pubspec.yaml" ] || continue
+		rm -rf "${d}shaders"
+		cp -R ../shaders "${d}shaders"
+	done
+fi
+
 echo "▶ Analyzing generated Dart (example/lib/cljd-out)…"
 report=$(dart analyze lib/cljd-out 2>&1)
 errors=$(printf '%s\n' "$report" | grep -E '^[[:space:]]*error ' || true)
