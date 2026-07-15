@@ -743,6 +743,9 @@
          (ui/center)
          (ui/colored (nth colors (mod id (count colors)))))))
 
+;; slowed down (was `:animate true` = 300ms) so insert/remove/morph is easy to debug
+(def ^:private morph-anim {:duration 1600 :move {:duration 2000}})
+
 (def ^:private morph-modes
   [["List"   :list]
    ["Wrap"   :wrap]
@@ -757,18 +760,18 @@
   ;; move, layout/grid morph and insert/remove — off the one rect animator.
   (case mode
     :list
-    (ui/sliver-collection items :key-fn :id :spacing 8 :animate true
+    (ui/sliver-collection items :key-fn :id :spacing 8 :animate morph-anim
       (fn [_ item] (ui/sized {:h 56} (morph-tile item))))
     ;; wrap flows fixed-size cells into rows; self-sizing children so a morph
     ;; from grid/list glides instead of snapping
     :wrap
     (ui/sliver-collection items :key-fn :id :layout :wrap
-      :spacing 8 :run-spacing 8 :animate true
+      :spacing 8 :run-spacing 8 :animate morph-anim
       (fn [_ item] (ui/sized {:w 56 :h 56} (morph-tile item))))
     (let [n (case mode :grid2 2 :grid3 3 4)]
       (ui/sliver-collection items :key-fn :id :layout :grid
         :columns {:count n :gap 8} :rows {:size {:aspect 1} :gap 8}
-        :animate true
+        :animate morph-anim
         (fn [_ item] (morph-tile item))))))
 
 (defn layout-tween-preview
