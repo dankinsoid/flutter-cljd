@@ -82,16 +82,13 @@
 
   (createState [^SliverCollection this]
     (SliverCollectionState
-     (.-data this)  ;; previousUserData
-     #{}            ;; activeInserts (entering keys)
-     []             ;; dyingItems
-     nil            ;; shadowData
-     false          ;; reorderInProgress
-     #{}            ;; prefetched
-     false          ;; segmentActive
-     nil            ;; tweenCtrl
-     nil            ;; tweenAnim
-     0)))           ;; tweenGen
+     (.-data this)      ;; previousUserData
+     #{}                ;; activeInserts (entering keys)
+     []                 ;; dyingItems
+     nil                ;; shadowData
+     false              ;; reorderInProgress
+     #{}                ;; prefetched
+     (an/segment-clock))))
 
 (deftype SliverCollectionState
   [^:mutable previousUserData    ;; user's data from last update (for diffing)
@@ -100,10 +97,7 @@
    ^:mutable shadowData          ;; vec of {:type :live/:dying, :key, ...} or nil
    ^:mutable ^bool reorderInProgress
    ^:mutable prefetched          ;; set of identity keys (indices without key-fn)
-   ^:mutable ^bool segmentActive ;; a rect segment is currently playing
-   ^:mutable ^a/AnimationController? tweenCtrl  ;; the one segment clock, reused across segments
-   ^:mutable ^a/Animation? tweenAnim            ;; curved view of tweenCtrl the engine listens to
-   ^:mutable ^int tweenGen]      ;; segment generation, bumped per (re)start
+   ^an/SegmentClock clock]       ;; the one segment clock (shared host shell)
   :extends (#/(w/State SliverCollection))
   ^:mixin #/(w/TickerProviderStateMixin SliverCollection)
 
@@ -139,14 +133,12 @@
     nil)
 
   (dispose [^SliverCollectionState this]
-    (when-let [^a/CurvedAnimation cv (.-tweenAnim this)]
-      (.dispose cv))
-    (when-let [^a/AnimationController c (.-tweenCtrl this)]
-      (.dispose c))
+    (an/dispose-clock! (.-clock this))
     (.dispose ^super this))
 
   (^w/Widget build [^SliverCollectionState this ^w/BuildContext _context]
     (let [^SliverCollection widget (.-widget this)
+          ^an/SegmentClock clock (.-clock this)
           data (.-data widget)
           key-fn (.-keyFn widget)
           anim-config (.-animConfig widget)
@@ -154,7 +146,7 @@
           user-builder (.-userBuilder widget)
           shadow (.-shadowData this)
           inserts (.-activeInserts this)
-          seg-anim (when (.-segmentActive this) (.-tweenAnim this))
+          seg-anim (when (.-active clock) (.-anim clock))
           reorderable (boolean (and (.-reorderable widget) (.-reorderCallback widget)))
 
           ;; shadow-data (live + dying) is the index space whenever keyed; key-of
@@ -177,7 +169,7 @@
                     k (:key entry)]
                 (if (= :dying (:type entry))
                   ;; §8a: the engine lays the cell at its full committed size and
-                  ;; paint-clips the collapse — no widget-side collapse-wrap.
+                  ;; paint-clips the collapse — no widget-side size wrapper.
                   (let [content (user-builder ctx (:item entry))
                         content (if (and remove-builder seg-anim)
                                   (remove-builder content (a/ReverseAnimation seg-anim))
@@ -247,13 +239,17 @@
          (.-layoutImpl widget)
          (cond-> (assoc opts
                         :key-of key-of
-                        :seg-gen (.-tweenGen this)
+                        :seg-gen (.-gen clock)
                         :entering inserts
                         :exiting exiting
-                        ;; default opacity fade rides the collapse; a custom
-                        ;; :insert/:remove builder owns that direction instead
-                        :fade-entering (nil? insert-builder)
-                        :fade-exiting (nil? remove-builder))
+                        ;; default opacity fade rides the collapse; a disabled
+                        ;; :insert/:remove section (`false` in :animate) turns the
+                        ;; direction's fade off, a custom builder owns it instead
+                        ;; (mirrors the box host)
+                        :fade-entering (boolean (and (:insert anim-config)
+                                                     (nil? insert-builder)))
+                        :fade-exiting (boolean (and (:remove anim-config)
+                                                    (nil? remove-builder))))
            seg-anim (assoc :tween-anim seg-anim)))))))
 
 ;; --- helpers ---
@@ -280,26 +276,19 @@
 
 (defn- apply-diff*
   "Accumulates enter/exit key sets from a key diff. Removes become dying shadow
-   entries (collapsed by the segment clock); inserts join the entering set; a key
+   entries (collapsed by the segment clock — the ENGINE holds their committed
+   rects, the host carries only identity); inserts join the entering set; a key
    re-inserted while still dying moves from dying to entering. No per-cell
    controllers — the one segment clock drives every wipe."
   [^SliverCollectionState this old-data new-data key-fn]
   (let [{:keys [inserts removes]} (diff/compute-diff old-data new-data key-fn)
         insert-keys (into #{} (map :key) inserts)
         remove-keys (into #{} (map :key) removes)
-        ;; snapshot each dying cell's committed full main-extent (last alive pass)
-        ;; so collapse-wrap can pin its content and clip instead of reflowing to
-        ;; natural size (docs §8). nil when it was off-screen / never committed.
-        committed (let [ro (.findRenderObject (.-context this))]
-                    (when (instance? render/CollectionRenderSliver ro)
-                      (render/committed-rects ^render/CollectionRenderSliver ro)))
         kept-dying (vec (remove #(or (contains? remove-keys (:key %))
                                      (contains? insert-keys (:key %)))
                                 (.-dyingItems this)))
         new-dying (for [{:keys [key old-index item]} removes]
-                    (let [cm (get committed key)]
-                      {:key key :item item :old-index old-index
-                       :extent (:full-main cm (:main-extent cm))}))]
+                    {:key key :item item :old-index old-index})]
     (.-dyingItems! this (into kept-dying new-dying))
     (.-activeInserts! this
       (into (reduce disj (.-activeInserts this) remove-keys) insert-keys))))
@@ -311,54 +300,36 @@
    change can't animate (nothing attached / no snapshot). Runs inside
    didUpdateWidget; rebuild-shadow! follows and shows the final state (snap)."
   [^SliverCollectionState this]
-  (.-segmentActive! this false)
+  (an/settle-clock! (.-clock this))
   (.-dyingItems! this [])
-  (.-activeInserts! this #{})
-  (when-let [^a/AnimationController c (.-tweenCtrl this)]
-    (.stop c)))
+  (.-activeInserts! this #{}))
 
 (defn- finish-segment!
   "Runs when the clock reaches 1.0: settle to resting. All enters/exits have
    played and dying cells collapsed to 0, so drop them and rebuild the shadow so
    build swaps the plain layout back in. Endpoints are exact — no visual jump."
   [^SliverCollectionState this]
-  (when (and (.-mounted this) (.-segmentActive this))
-    (.setState this
-      (fn []
-        (.-segmentActive! this false)
-        (.-dyingItems! this [])
-        (.-activeInserts! this #{})
-        (rebuild-shadow! this)))))
+  (let [^an/SegmentClock clock (.-clock this)]
+    (when (and (.-mounted this) (.-active clock))
+      (.setState this
+        (fn []
+          (.-active! clock false)
+          (.-dyingItems! this [])
+          (.-activeInserts! this #{})
+          (rebuild-shadow! this))))))
 
 (defn- start-segment!
   "(Re)starts the one segment clock on any change that could move a cell (data,
-   layout or count). Bumps the generation so the engine freezes the current
-   committed rects as `from` and captures the target from the new tree; the build
-   that follows hands the engine the new gen + segment Animation. At retarget the
-   children sit at interpolated rects, so re-aiming is jump-free. Snaps (settles
-   without animating) when nothing is attached to snapshot."
+   layout or count). The gen bump makes the engine freeze the current committed
+   rects as `from` and capture the target from the new tree (see an/start-clock!);
+   the build that follows hands the engine the new gen + segment Animation. Snaps
+   (settles without animating) when nothing is attached to snapshot."
   [^SliverCollectionState this anim-config]
   (let [ro (.findRenderObject (.-context this))]
     (if (and (instance? render/CollectionRenderSliver ro)
              (some? (render/snapshot-window ^render/CollectionRenderSliver ro)))
-      (let [^int gen (inc (.-tweenGen this))
-            move-cfg (:move anim-config)
-            dur (or (:duration move-cfg) (:duration anim-config))
-            crv (or (:curve move-cfg) (:curve anim-config))
-            ^a/AnimationController ctrl
-            (or (.-tweenCtrl this)
-                (let [c (a/AnimationController .vsync this .duration dur)]
-                  (.addStatusListener c
-                    (fn [^a/AnimationStatus s]
-                      (when (.-isCompleted s) (finish-segment! this))))
-                  (.-tweenCtrl! this c)
-                  c))]
-        (when (nil? (.-tweenAnim this))
-          (.-tweenAnim! this (a/CurvedAnimation .parent ctrl .curve crv)))
-        (.-duration! ctrl dur)
-        (.-tweenGen! this gen)
-        (.-segmentActive! this true)
-        (.forward ctrl .from 0.0))
+      (an/start-clock! (.-clock this) this anim-config
+                       (fn [] (finish-segment! this)))
       (settle-segment! this))))
 
 (defn- run-prefetch!

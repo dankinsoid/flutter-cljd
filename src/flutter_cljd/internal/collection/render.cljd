@@ -25,7 +25,9 @@
    ["package:flutter/animation.dart" :as a]
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.internal.collection.animation :as an]
    [flutter-cljd.internal.collection.layout :as lay]
+   [flutter-cljd.internal.collection.paint :as cpaint]
    [flutter-cljd.internal.collection.tween :as tw]))
 
 ;; --- parent data helpers ---
@@ -145,26 +147,8 @@
                                    (ui/Offset bx by)
                                    (ui/Offset (+ bx (* mux vm) (* cux vc))
                                               (+ by (* muy vm) (* cuy vc))))]
-                    (.pushClipRect context (.-needsCompositing this) ui/Offset.zero clip-rect
-                                   (fn [^r/PaintingContext ctx _o]
-                                     (if (< op 0.999)
-                                       (if (.-needsCompositing this)
-                                         (.pushOpacity ctx ui/Offset.zero
-                                                       (int (.round (* op 255.0)))
-                                                       (fn [^r/PaintingContext c2 _o2]
-                                                         (.paintChild c2 ch child-off)))
-                                         ;; No compositing: the clip lives in the current
-                                         ;; recording, so a separate OpacityLayer would escape
-                                         ;; it. Stay in-recording with saveLayer over the clip.
-                                         (let [^ui/Canvas canvas (.-canvas ctx)
-                                               ^int alpha (int (.round (* op 255.0)))]
-                                           (.saveLayer canvas clip-rect
-                                                       (doto (ui/Paint)
-                                                         (.-color! (ui/Color.fromARGB alpha 0 0 0))))
-                                           (.paintChild ctx ch child-off)
-                                           (.restore canvas)))
-                                       (.paintChild ctx ch child-off))
-                                     nil)))
+                    (cpaint/paint-clipped-cell! context (.-needsCompositing this)
+                                                clip-rect op ch child-off))
                   (.paintChild context ch child-off)))
               (recur (.childAfter this ch)))))))
     nil)
@@ -324,20 +308,12 @@
     (widen-window-indices first-index target-last cells ws we)))
 
 (defn- set-tween-anim!
-  "Registers/updates the per-tick relayout listener. While a layout morph runs
-   its :id is stable, so updateRenderObject won't relayout on its own — the
-   Animation's listener does, once per frame."
+  "Moves the per-tick relayout listener onto `anim` (see an/swap-tick-listener!)."
   [^CollectionRenderSliver rs ^a/Animation? anim]
   (when-not (identical? anim (.-tweenAnim rs))
-    (when-let [old (.-tweenListener rs)]
-      (when-let [^a/Animation prev (.-tweenAnim rs)]
-        (.removeListener prev old)))
-    (.-tweenAnim! rs anim)
-    (if anim
-      (let [listener (fn [] (when (.-attached rs) (.markNeedsLayout rs)) nil)]
-        (.-tweenListener! rs listener)
-        (.addListener ^a/Animation anim listener))
-      (.-tweenListener! rs nil))))
+    (.-tweenListener! rs (an/swap-tick-listener! rs (.-tweenAnim rs)
+                                                 (.-tweenListener rs) anim))
+    (.-tweenAnim! rs anim)))
 
 (defn next-prev-layout
   "prevLayout lifecycle (docs §7c) — the resting layout frozen across a layout
@@ -905,17 +881,6 @@
       (.-segPrevDesired! rs new-prev)
       corr)))
 
-(defn- ^r/BoxConstraints geo-constraints [env gm]
-  ;; §8a: lay each cell at its STABLE full extent on BOTH axes (:full-main-extent/
-  ;; :full-cross-extent, each falling back to the visible extent for resting/non-
-  ;; tween frames) so content lays out once at a real size; the collapsing axis's
-  ;; lerped VISIBLE window is applied as a paint-clip, not a layout size.
-  (let [^double me (double (:full-main-extent gm (:main-extent gm)))
-        ^double ce (double (:full-cross-extent gm (:cross-extent gm)))]
-    (if (= :vertical (:axis env))
-      (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
-      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
-
 ;; @ai-generated(solo)
 (defn- compute-clips!
   "§8a: (re)build the `clips` map — {child-index -> [vis-main vis-cross opacity]} — for
@@ -997,7 +962,7 @@
                        created nil]
                   (if (>= idx first-index)
                     (let [gm (geo-fn env idx)
-                          ch (.insertAndLayoutLeadingChild rs (geo-constraints env gm)
+                          ch (.insertAndLayoutLeadingChild rs (lay/cell-constraints env gm)
                                                             .parentUsesSize true)]
                       (if (nil? ch)
                         created
@@ -1011,7 +976,7 @@
                     (let [^r/RenderBox fc (.-firstChild rs)
                           ^int fidx (.indexOf rs fc)
                           gm (geo-fn env fidx)]
-                      (.layout fc (geo-constraints env gm) .parentUsesSize true)
+                      (.layout fc (lay/cell-constraints env gm) .parentUsesSize true)
                       (set-layout-offset! fc (double (:offset gm)))
                       (set-cross-axis-offset! fc (double (:cross gm)))
                       fc))
@@ -1035,7 +1000,7 @@
                     (cond
                       (or at-idx in-window)
                       (let [gm (geo-fn env idx)
-                            ^r/BoxConstraints bc (geo-constraints env gm)
+                            ^r/BoxConstraints bc (lay/cell-constraints env gm)
                             child (if at-idx
                                     (do (.layout ^r/RenderBox existing bc .parentUsesSize true)
                                         existing)
@@ -1145,7 +1110,7 @@
             (let [^r/RenderBox ch child
                   ^int i (.indexOf rs ch)
                   gm (geo-fn env i)]
-              (.layout ch (geo-constraints env gm) .parentUsesSize true)
+              (.layout ch (lay/cell-constraints env gm) .parentUsesSize true)
               (set-layout-offset! ch (double (:offset gm)))
               (set-cross-axis-offset! ch (double (:cross gm)))
               (recur (.childAfter rs ch)
@@ -1170,22 +1135,6 @@
        .maxPaintExtent (math/max total paint-extent)
        .cacheExtent cache-extent
        .hasVisualOverflow (or (> total paint-extent) (pos? (.-scrollOffset c)))))))
-
-;; @ai-generated(solo)
-(defn- shadow-entries
-  "Reconstructs the shadow index space as {:type :key (:committed)} entries for
-   `tw/shadow-frame-source`'s collapse remap. A key in the engine's `exiting` set
-   is a dying slot (carrying its frozen committed rect for the gap's cross); every
-   other index is a live survivor. Order is the shadow order (key-of over indices)."
-  [^CollectionRenderSliver rs from-rects]
-  (let [^int n (int (or (.-itemCount rs) 0))
-        exiting (.-exiting rs)]
-    (mapv (fn [^int i]
-            (let [k (key-for rs i)]
-              (if (contains? exiting k)
-                {:type :dying :key k :committed (get from-rects k)}
-                {:type :live :key k})))
-          (range n))))
 
 ;; @ai-generated(solo)
 (defn- attached-keys
@@ -1246,7 +1195,9 @@
                             (tw/frozen-frame-source (live-only-flow-window rs layout c))))
         ;; survivors map to pure-new indices (glide up); dying slots present
         ;; zero-extent gaps (shrink in place).
-        shadow (shadow-entries rs committed-from)
+        shadow (tw/shadow-entries (int (or (.-itemCount rs) 0))
+                                  (fn [^int i] (key-for rs i))
+                                  (.-exiting rs) committed-from)
         to-src (tw/shadow-frame-source pure-live-src shadow collapse-axis) ; (c)
         ;; §7b leave-slide frame lookup is over PURE-LIVE indices, but the attached
         ;; `cells` carry SHADOW indices (dying cells stay in-tree). Translate

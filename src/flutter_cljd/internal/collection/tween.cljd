@@ -19,15 +19,16 @@
    The indexed driver forces each child to a tight rect derived from `:geometry`.
    That is exactly the morph we want (child relayout at an interpolated size). A
    flow driver, by contrast, self-sizes children and stacks sequentially — it
-   cannot force an interpolated size. So `tween-layout` emits `:geometry` and the
-   drivers take their indexed path for the whole animation, then the host swaps
-   the plain target layout back in at completion.
+   cannot force an interpolated size. So `keyed-tween-layout` emits `:geometry`
+   and the drivers take their indexed path for the whole animation, then the host
+   swaps the plain target layout back in at completion.
 
    ## Frame sources
 
-   The combinator lerps two `frame-source`s. A frame source answers, for the
-   current pass, the geometry questions the indexed driver needs — reframed to
-   allow a nil \"no opinion\" answer so the two sources can be unioned:
+   The combinator lerps a keyed committed map against a `frame-source` target. A
+   frame source answers, for the current pass, the geometry questions the indexed
+   driver needs — reframed to allow a nil \"no opinion\" answer so sources can be
+   layered (see `shadow-frame-source`):
 
      :prepare     (fn [env] ctx)                 once per pass
      :frame       (fn [env ctx i] frame | nil)   {:offset :cross :main-extent :cross-extent}
@@ -73,31 +74,6 @@
 ;; cause. These are the host-agnostic pure pieces of that mechanism; the imperative
 ;; shell (persistent state, per-tick relayout, controller) lives in each host's
 ;; render object. See docs/CollectionRectAnimator.md.
-
-(defn anchor-delta
-  "Scroll correction for the animating/indexed path, which (unlike the flow
-   driver) writes geometry directly and never self-corrects. When content above
-   the viewport collapses — a remove, or list->grid shrinking the region before the
-   anchor — the anchored child jumps unless the viewport follows it.
-
-   `cells` is the visible cells this pass, each {:old-off :old-main :new-off}
-   (content-space main axis: where the cell sat last pass, its main extent last
-   pass, and where it sits this pass). `scroll-off` is the current scrollOffset.
-   The anchor is the topmost cell still overlapping `scroll-off` under the OLD
-   positions (smallest :old-off whose old span reaches past it); the correction is
-   how far that cell moved. Returns the delta to add to scrollOffset (keeping the
-   anchor visually fixed) or nil when there is no anchor or it did not move."
-  [cells ^double scroll-off]
-  (let [anchor (reduce (fn [best c]
-                         (let [^double oo (double (:old-off c))
-                               ^double om (double (:old-main c))]
-                           (if (> (+ oo om) scroll-off)
-                             (if (or (nil? best) (< oo (double (:old-off best)))) c best)
-                             best)))
-                       nil cells)]
-    (when anchor
-      (let [^double d (- (double (:new-off anchor)) (double (:old-off anchor)))]
-        (when (> (.abs d) 1e-3) d)))))
 
 ;; @ai-generated(solo)
 (defn point-correction-delta
@@ -232,54 +208,11 @@
   [fr axis]
   (when fr (assoc fr (if (= :cross axis) :cross-extent :main-extent) 0.0)))
 
-(defn tween-layout
-  "The morph as an indexed layout map. `from-src`/`to-src` are frame sources;
-   `progress` is a 0..1 thunk (already curved) read fresh every pass so the same
-   layout map animates across ticks. Endpoints are exact: at t=0 geometry ≡ the
-   from source, at t=1 ≡ the to source.
-
-   Windowing is the union of both sources: :first-index takes the min, :last-index
-   the max — so items leaving under one layout and entering under the other both
-   materialize and glide, instead of popping at a window edge."
-  [id from-src to-src progress]
-  (let [from-frame (:frame from-src)  from-first (:first-index from-src)
-        from-last (:last-index from-src) from-ext (:extent from-src)
-        from-prep (:prepare from-src)
-        to-frame (:frame to-src)  to-first (:first-index to-src)
-        to-last (:last-index to-src) to-ext (:extent to-src)
-        to-prep (:prepare to-src)]
-    {:id id
-     :prepare (fn [env]
-                {:t (double (progress))
-                 :from-ctx (from-prep env)
-                 :to-ctx (to-prep env)})
-     :geometry (fn [env ^int i]
-                 (let [ctx (:ctx env)]
-                   (or (lerp-frame (from-frame env (:from-ctx ctx) i)
-                                   (to-frame env (:to-ctx ctx) i)
-                                   (double (:t ctx)))
-                       (zero-frame env))))
-     :first-index (fn [env ^double off]
-                    (let [ctx (:ctx env)]
-                      (int (or (min-some (from-first env (:from-ctx ctx) off)
-                                         (to-first env (:to-ctx ctx) off))
-                               0))))
-     :last-index (fn [env ^double off]
-                   (let [ctx (:ctx env)]
-                     (int (or (max-some (from-last env (:from-ctx ctx) off)
-                                        (to-last env (:to-ctx ctx) off))
-                              0))))
-     :max-extent (fn [env ^int n]
-                   (let [ctx (:ctx env)]
-                     (lerp (double (or (from-ext env (:from-ctx ctx) n) 0.0))
-                           (double (or (to-ext env (:to-ctx ctx) n) 0.0))
-                           (double (:t ctx)))))}))
-
 ;; @ai-generated(solo)
 (defn keyed-tween-layout
-  "The v2 morph as an indexed layout map, with a KEYED `from` side. Unlike
-   `tween-layout` (index-addressed on both endpoints), the `from` rect of each
-   cell is looked up by the cell's key, so a cell's history follows its data
+  "The v2 morph as an indexed layout map, with a KEYED `from` side. Unlike the
+   retired v1 combinator (index-addressed on both endpoints), the `from` rect of
+   each cell is looked up by the cell's key, so a cell's history follows its data
    identity across shuffles/inserts rather than its index.
 
    `to-src` is a frame source (the live/captured target). `committed` is the
@@ -379,26 +312,27 @@
                            (double (or (to-ext env (:to-ctx ctx) n) 0.0))
                            (double (:t ctx)))))})))
 
-;; --- §7a shared core: classify + collapse-remap + slide-out ---
+;; --- §7a shared core: collapse-remap + edge slides ---
 ;;
-;; Three pure functions both hosts consume (docs §7a "Shared core"): a per-cell
-;; classifier, the collapse REMAP that makes an indexed remove actually collapse
-;; (survivors glide, dying slot reserves zero extent), and the leave-slide edge
-;; target. See docs/CollectionRectAnimator.md §7a.
+;; The pure pieces both hosts consume (docs §7a "Shared core"): the collapse
+;; REMAP that makes an indexed remove actually collapse (survivors glide, dying
+;; slot reserves zero extent), the per-cell clip+fade decision, and the edge
+;; slide-in/out builders. See docs/CollectionRectAnimator.md §7a.
 
 ;; @ai-generated(solo)
-(defn classify-cell
-  "§7a per-cell segment class from four booleans (docs §7a matrix). `old?`/`new?`
-   = key present in the OLD/NEW data; `target-in-window?`/`from-in-window?` = the
-   cell's target/committed rect overlaps the live window. Returns one of
-   :stay-glide :exit-collapse :leave-slide :arrive-slide :enter-collapse."
-  [old? new? target-in-window? from-in-window?]
-  (cond
-    (not new?) :exit-collapse            ; left the data → shrink in place
-    (not old?) :enter-collapse           ; joined the data → grow from 0
-    target-in-window? (if from-in-window? :stay-glide :arrive-slide)
-    from-in-window? :leave-slide         ; on-screen, reindexed off-screen
-    :else :stay-glide))                  ; off-screen both sides → not materialized
+(defn shadow-entries
+  "The shadow index space as {:type :key (:committed)} entries for
+   `shadow-frame-source`'s collapse remap. Index i's key (via `key-of`) in
+   `exiting` is a dying slot carrying its committed rect (for the gap's
+   other-axis extent); every other index is a live survivor. Order is the shadow
+   order (key-of over 0..n-1). Pure — both hosts feed it their own n/key-of."
+  [^int n key-of exiting committed]
+  (mapv (fn [^int i]
+          (let [k (key-of i)]
+            (if (contains? exiting k)
+              {:type :dying :key k :committed (get committed k)}
+              {:type :live :key k})))
+        (range n)))
 
 ;; @ai-generated(solo)
 (defn clip-window
@@ -509,18 +443,6 @@
                          (loop [^int s s1]
                            (if (and (< s (dec n)) (not (nth live-mask (inc s)))) (recur (inc s)) s))))))
      :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))})))
-
-;; @ai-generated(solo)
-(defn slide-out-frame
-  "§7a leave-slide target: `from-rect` translated along the main axis to the near
-   window edge, main-extent and cross UNCHANGED (the viewport clips the overflow).
-   `dir` picks the edge — :leading slides fully past `ws` (offset = ws −
-   main-extent), :trailing slides fully past `we` (offset = we)."
-  [from-rect ^double ws ^double we dir]
-  (let [^double me (double (:main-extent from-rect))]
-    (assoc from-rect :offset (case dir
-                               :leading (- ws me)
-                               :trailing we))))
 
 ;; @ai-generated(solo)
 (defn edge-slide-block

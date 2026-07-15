@@ -21,12 +21,11 @@
    a persistent {key -> content-space rect} committed map, a gen-freeze of the
    `from` rects at segment start, a target captured from the NEW tree, and a
    per-tick lerp that lays every cell at tight interpolated constraints — so
-   move, layout morph and axis change all fall out of one mechanism. Because the
-   box is eager it DROPS everything the sliver needs only because it scrolls:
-   windowing, GC, union windows, scroll correction. It ADDS one thing the sliver
-   lacks — the box's OWN size lerps with the cells. Child enter/exit is out of
-   scope (the box has always shown its full child list); an entering key with no
-   committed history simply appears at its target."
+   move, layout morph, axis change and enter/exit collapse all fall out of one
+   mechanism. Because the box is eager it DROPS everything the sliver needs only
+   because it scrolls: windowing, GC, union windows, scroll correction,
+   leave/arrive slides. It ADDS one thing the sliver lacks — the box's OWN size
+   lerps with the cells."
   (:require
    ["dart:math" :as math]
    ["dart:ui" :as ui]
@@ -35,6 +34,7 @@
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]
    [flutter-cljd.internal.collection.layout :as lay]
+   [flutter-cljd.internal.collection.paint :as cpaint]
    [flutter-cljd.internal.collection.tween :as tw]
    [flutter-cljd.internal.collection.diff :as diff]
    [flutter-cljd.internal.collection.animation :as an]))
@@ -60,18 +60,6 @@
      .viewportMainAxisExtent main-max
      .remainingCacheExtent main-max
      .cacheOrigin 0.0)))
-
-(defn- ^r/BoxConstraints tight-constraints
-  "Tight constraints for a cell geometry. Lays each cell at its STABLE full extent
-   (§8a `:full-main-extent`/`:full-cross-extent`, each falling back to the visible
-   extent for resting/non-collapsing frames) so an enter/exit cell's content lays
-   out once at a real size while its collapse axis is revealed by a paint-clip."
-  [env gm]
-  (let [^double me (double (:full-main-extent gm (:main-extent gm)))
-        ^double ce (double (:full-cross-extent gm (:cross-extent gm)))]
-    (if (= :vertical (:axis env))
-      (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
-      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
 
 (declare content-size)
 
@@ -139,26 +127,8 @@
                         ^double w (if vertical? vc vm)
                         ^double h (if vertical? vm vc)
                         clip-rect (ui/Rect.fromLTWH bx by w h)]
-                    (.pushClipRect ctx (.-needsCompositing this) ui/Offset.zero clip-rect
-                                   (fn [^r/PaintingContext c2 _o]
-                                     (if (< op 0.999)
-                                       (if (.-needsCompositing this)
-                                         (.pushOpacity c2 ui/Offset.zero
-                                                       (int (.round (* op 255.0)))
-                                                       (fn [^r/PaintingContext c3 _o2]
-                                                         (.paintChild c3 ch child-off)))
-                                         ;; No compositing: the clip lives in the current
-                                         ;; recording, so a separate OpacityLayer would escape
-                                         ;; it. Stay in-recording with saveLayer over the clip.
-                                         (let [^ui/Canvas canvas (.-canvas c2)
-                                               ^int alpha (int (.round (* op 255.0)))]
-                                           (.saveLayer canvas clip-rect
-                                                       (doto (ui/Paint)
-                                                         (.-color! (ui/Color.fromARGB alpha 0 0 0))))
-                                           (.paintChild c2 ch child-off)
-                                           (.restore canvas)))
-                                       (.paintChild c2 ch child-off))
-                                     nil)))
+                    (cpaint/paint-clipped-cell! ctx (.-needsCompositing this)
+                                                clip-rect op ch child-off))
                   (.paintChild ctx ch child-off))
                 (recur (.-nextSibling pd) (inc i)))))))))
 
@@ -216,7 +186,7 @@
       (if (nil? child)
         [main-end cross-end]
         (let [gm (geo-fn env i)
-              ^r/BoxConstraints bc (tight-constraints env gm)
+              ^r/BoxConstraints bc (lay/cell-constraints env gm)
               ^double off (double (:offset gm))
               ^double cross (double (:cross gm))
               ^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)]
@@ -269,45 +239,24 @@
                          (conj frames {:offset (double (:offset gm)) :cross cross
                                        :main-extent (double (:main-extent gm)) :cross-extent ce})
                          (double (math/max cross-end (+ cross ce))))))))))
+      ;; flow: dry-measure the survivors at contiguous pure-live indices, then
+      ;; place them through the SHARED flow projection (tw/flow-frames).
       (let [measure-fn (:measure layout)
-            place-fn (:place layout)]
-        (loop [child (.-firstChild rb) ^int i 0 ^int d 0 state ((:init layout) env)
-               frames [] ^double main-end 0.0 ^double cross-end 0.0]
-          (if (nil? child)
-            [frames main-end cross-end d]
-            (let [^r/RenderBox ch child
-                  ^CollectionBoxParentData pd (.-parentData ch)]
-              (if (exit? i)
-                (recur (.-nextSibling pd) (inc i) d state frames main-end cross-end)
-                (let [^r/BoxConstraints bc (measure-fn env d)
-                      ^ui/Size size (.getDryLayout ch bc)
-                      [gm state'] (place-fn env d size state)
-                      ^double off (double (:offset gm))
-                      ^double cross (double (or (:cross gm) 0.0))
-                      ^double me (lay/size-main env size)
-                      ^double ce (lay/size-cross env size)]
-                  (recur (.-nextSibling pd) (inc i) (inc d) state'
-                         (conj frames {:offset off :cross cross :main-extent me :cross-extent ce})
-                         (double (math/max main-end (+ off me)))
-                         (double (math/max cross-end (+ cross ce)))))))))))))
-
-;; @ai-generated(guided)
-(defn- box-shadow-entries
-  "Reconstructs the shadow index space as {:type :key (:committed)} entries for
-   `tw/shadow-frame-source`'s collapse remap (mirrors the sliver's `shadow-entries`,
-   over the box's attached children). A key in `exiting` is a dying slot (carrying
-   its frozen committed rect for the gap's cross/other-axis extent); every other
-   child is a live survivor. Order is the shadow order (the children as built)."
-  [^RenderCollectionBox rb exiting committed]
-  (loop [child (.-firstChild rb) ^int i 0 out []]
-    (if (nil? child)
-      out
-      (let [^CollectionBoxParentData pd (.-parentData ^r/RenderBox child)
-            k (key-for rb i)
-            entry (if (contains? exiting k)
-                    {:type :dying :key k :committed (get committed k)}
-                    {:type :live :key k})]
-        (recur (.-nextSibling pd) (inc i) (conj out entry))))))
+            sized (loop [child (.-firstChild rb) ^int i 0 ^int d 0 out (transient [])]
+                    (if (nil? child)
+                      (persistent! out)
+                      (let [^r/RenderBox ch child
+                            ^CollectionBoxParentData pd (.-parentData ch)]
+                        (if (exit? i)
+                          (recur (.-nextSibling pd) (inc i) d out)
+                          (recur (.-nextSibling pd) (inc i) (inc d)
+                                 (conj! out [d (.getDryLayout ch ^r/BoxConstraints (measure-fn env d))]))))))
+            frames (tw/flow-frames layout env sized (tw/flow-seed-state layout env 0 0.0))
+            ^double cross-end (reduce (fn [^double m fr]
+                                        (math/max m (+ (double (:cross fr))
+                                                       (double (:cross-extent fr)))))
+                                      0.0 frames)]
+        [frames (tw/frames-main-extent frames) cross-end (count frames)]))))
 
 (defn- record-committed!
   "Resting commit: {key -> content-space rect} over the just-placed children,
@@ -355,7 +304,9 @@
           ;; pure-live source (base 0, extent = the gap-closed total) → shadow remap
           pure-live-src (tw/frozen-frame-source {:frames frames :base 0 :extent main-end})
           to-src (tw/shadow-frame-source pure-live-src
-                                         (box-shadow-entries rb exiting (.-committed rb))
+                                         (tw/shadow-entries (.-childCount rb)
+                                                            (fn [^int i] (key-for rb i))
+                                                            exiting (.-committed rb))
                                          collapse-axis)
           seg-tween (tw/keyed-tween-layout
                      [:box (.-curGen rb)] to-src (.-committed rb) 0.0
@@ -394,7 +345,7 @@
               ^double fm (double (:full-main-extent gm vm))
               ^double fc (double (:full-cross-extent gm vc))
               ^CollectionBoxParentData pd (.-parentData ch)]
-          (.layout ch (tight-constraints env' gm))
+          (.layout ch (lay/cell-constraints env' gm))
           (.-offset! pd (if vertical? (ui/Offset cross off) (ui/Offset off cross)))
           (recur (.-nextSibling pd) (inc i)
                  ;; :main-extent/:cross-extent = VISIBLE window (partial mid-wipe);
@@ -458,20 +409,12 @@
 ;; --- render-object update ---
 
 (defn- set-box-tween-anim!
-  "Registers/updates the per-tick relayout listener. While a segment runs the
-   layout :id is stable, so the Animation drives the frames (mirrors the sliver
-   engine's twin)."
+  "Moves the per-tick relayout listener onto `anim` (see an/swap-tick-listener!)."
   [^RenderCollectionBox rb ^a/Animation? anim]
   (when-not (identical? anim (.-tweenAnim rb))
-    (when-let [old (.-tweenListener rb)]
-      (when-let [^a/Animation prev (.-tweenAnim rb)]
-        (.removeListener prev old)))
-    (.-tweenAnim! rb anim)
-    (if anim
-      (let [listener (fn [] (when (.-attached rb) (.markNeedsLayout rb)) nil)]
-        (.-tweenListener! rb listener)
-        (.addListener ^a/Animation anim listener))
-      (.-tweenListener! rb nil))))
+    (.-tweenListener! rb (an/swap-tick-listener! rb (.-tweenAnim rb)
+                                                 (.-tweenListener rb) anim))
+    (.-tweenAnim! rb anim)))
 
 (defn update-box!
   "Applies a segment from updateRenderObject. The host always passes the PLAIN
@@ -582,41 +525,24 @@
    committed already ended at the target, so dropping animating mode causes no
    visual jump — the following resting pass re-measures naturally to the same."
   [^CollectionBoxState this]
-  (when (and (.-mounted this) (.-segmentActive this))
-    (.setState this (fn []
-                      (.-segmentActive! this false)
-                      (.-dyingWidgets! this [])
-                      (.-activeInserts! this #{})
-                      nil))))
+  (let [^an/SegmentClock clock (.-clock this)]
+    (when (and (.-mounted this) (.-active clock))
+      (.setState this (fn []
+                        (.-active! clock false)
+                        (.-dyingWidgets! this [])
+                        (.-activeInserts! this #{})
+                        nil)))))
 
-;; @ai-generated(guided)
 (defn- start-segment!
   "(Re)starts the one segment clock on any change that could move a child (layout
-   :id, axis or child count). Bumps the generation so the engine freezes the
-   current committed rects + box size as `from` and captures the target from the
-   new tree. At retarget the children sit at interpolated rects, so re-aiming is
-   jump-free."
+   :id, axis or child count). The gen bump makes the engine freeze the current
+   committed rects + box size as `from` and capture the target from the new tree
+   (see an/start-clock!); at retarget the children sit at interpolated rects, so
+   re-aiming is jump-free."
   [^CollectionBoxState this]
-  (let [^CollectionBox wgt (.-widget this)
-        config (.-animConfig wgt)
-        move-cfg (:move config)
-        dur (or (:duration move-cfg) (:duration config))
-        crv (or (:curve move-cfg) (:curve config))
-        ^int gen (inc (.-tweenGen this))
-        ^a/AnimationController ctrl
-        (or (.-tweenCtrl this)
-            (let [c (a/AnimationController .vsync this .duration dur)]
-              (.addStatusListener c
-                (fn [^a/AnimationStatus s]
-                  (when (.-isCompleted s) (finish-segment! this))))
-              (.-tweenCtrl! this c)
-              c))]
-    (when (nil? (.-tweenAnim this))
-      (.-tweenAnim! this (a/CurvedAnimation .parent ctrl .curve crv)))
-    (.-duration! ctrl dur)
-    (.-tweenGen! this gen)
-    (.-segmentActive! this true)
-    (.forward ctrl .from 0.0)))
+  (an/start-clock! (.-clock this) this
+                   (.-animConfig ^CollectionBox (.-widget this))
+                   (fn [] (finish-segment! this))))
 
 (deftype CollectionBox
   [^w/Key? k
@@ -626,13 +552,10 @@
    animConfig]  ;; parsed :animate config (see collection.animation)
   :extends (w/StatefulWidget .key k)
 
-  (createState [_this] (CollectionBoxState false nil nil 0 [] #{})))
+  (createState [_this] (CollectionBoxState (an/segment-clock) [] #{})))
 
 (deftype CollectionBoxState
-  [^:mutable ^bool segmentActive  ;; a rect segment is currently playing
-   ^:mutable ^a/AnimationController? tweenCtrl  ;; the one segment clock, reused
-   ^:mutable ^a/Animation? tweenAnim            ;; curved view the engine listens to
-   ^:mutable ^int tweenGen        ;; segment generation, bumped per (re)start
+  [^an/SegmentClock clock         ;; the one segment clock (shared host shell)
    ^:mutable dyingWidgets         ;; [{:key :old-index :widget} ...] — keys wiping out
    ^:mutable activeInserts]       ;; #{key ...} — keys wiping in this segment
   :extends (#/(w/State CollectionBox))
@@ -657,17 +580,15 @@
     nil)
 
   (dispose [^CollectionBoxState this]
-    (when-let [^a/CurvedAnimation cv (.-tweenAnim this)]
-      (.dispose cv))
-    (when-let [^a/AnimationController c (.-tweenCtrl this)]
-      (.dispose c))
+    (an/dispose-clock! (.-clock this))
     (.dispose ^super this))
 
   (^w/Widget build [^CollectionBoxState this ^w/BuildContext _ctx]
     (let [^CollectionBox wgt (.-widget this)
+          ^an/SegmentClock clock (.-clock this)
           kids (.-childWidgets wgt)
           dying (.-dyingWidgets this)
-          active (.-segmentActive this)
+          active (.-active clock)
           keyed? (all-keyed? kids)
           ;; A REMOVE needs the dying widget kept IN-TREE to collapse ⇒ shadow order
           ;; (live + dying, KeyedSubtree-wrapped). A pure insert/move/shuffle needs
@@ -699,8 +620,8 @@
                            children
                            (.-layoutImpl wgt)
                            (.-axisKw wgt)
-                           (when active (.-tweenAnim this))
-                           (.-tweenGen this)
+                           (when active (.-anim clock))
+                           (.-gen clock)
                            key-of
                            entering
                            exiting

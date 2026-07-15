@@ -1,0 +1,34 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.paint
+  "Host-agnostic paint helpers for the collection engines (§8a enter/exit
+   collapse). Both render objects compute their own child offset and clip
+   window — the clip-then-fade painting itself is defined once here."
+  (:require
+   ["dart:ui" :as ui]
+   ["package:flutter/rendering.dart" :as r]))
+
+(defn paint-clipped-cell!
+  "Paints `child` clipped to `clip-rect` and, when `opacity` < 1, faded with it.
+   With compositing the fade is a pushOpacity INSIDE the clip layer; without it a
+   separate OpacityLayer would escape the in-recording clip, so the fade stays
+   in-recording via saveLayer over the clip rect."
+  [^r/PaintingContext ctx ^bool needs-compositing ^ui/Rect clip-rect
+   ^double opacity ^r/RenderBox child ^ui/Offset child-off]
+  (.pushClipRect ctx needs-compositing ui/Offset.zero clip-rect
+                 (fn [^r/PaintingContext c2 _o]
+                   (if (< opacity 0.999)
+                     (if needs-compositing
+                       (.pushOpacity c2 ui/Offset.zero
+                                     (int (.round (* opacity 255.0)))
+                                     (fn [^r/PaintingContext c3 _o2]
+                                       (.paintChild c3 child child-off)))
+                       (let [^ui/Canvas canvas (.-canvas c2)
+                             ^int alpha (int (.round (* opacity 255.0)))]
+                         (.saveLayer canvas clip-rect
+                                     (doto (ui/Paint)
+                                       (.-color! (ui/Color.fromARGB alpha 0 0 0))))
+                         (.paintChild c2 child child-off)
+                         (.restore canvas)))
+                     (.paintChild c2 child child-off))
+                   nil))
+  nil)

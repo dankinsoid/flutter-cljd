@@ -268,11 +268,14 @@ mistake. They use **different** mechanisms, each validated by a real framework:
 
 ### Shared core (both hosts, no duplication)
 
-Three pure functions in `tween.cljd` express all of the above once; both hosts consume
-them (§10):
+Pure functions in `tween.cljd` express all of the above once; both hosts consume
+them (§10). (The five-class matrix above is a design vocabulary — in code the
+classification is carried implicitly by the `entering`/`exiting` key sets plus the
+`augment-from-edges`/`augment-to-edges` builders; a standalone `classify-cell` fn
+existed as a reference implementation and was removed as dead code, 2026-07-15.)
 
-- `(classify-cell old? new? target-in-window? from-in-window?)` → one of the five
-  classes above (the matrix; trivially unit-testable).
+- `(shadow-entries n key-of exiting committed)` → the shadow index space as
+  live/dying entries, fed to the remap below (each host supplies its own n/key-of).
 - `(shadow-frame-source to-src shadow-entries)` → a frame source with the collapse
   remap baked in (same shape as `frozen-frame-source`, so each host's driver consumes
   it unchanged).
@@ -290,8 +293,9 @@ them (§10):
   frozen as a `frozen-frame-source`. Indexed is the O(1) special case of flow. A flow
   branch that instead froze the raw SHADOW snapshot (dying measured at full size)
   gives survivors `to == from` ⇒ no glide — the bug this fixes.
-- `(slide-out-frame from-rect ws we dir)` → the edge-clamped slide target (committed
-  rect translated to the near window edge, main-extent unchanged).
+- `(edge-slide-block entries ws we)` → the edge-clamped slide targets: each
+  edge-group translated as a block that keeps its relative layout, abutting the near
+  window edge (superseded the per-cell `slide-out-frame`, removed 2026-07-15).
 
 Host-supplied: **sliver** — `[ws,we]` from constraints, the in-tree kept-child
 management of §7b, scroll correction (exists), GC exemption for sliding keys. **box** —
@@ -331,8 +335,9 @@ at its real (scattered) index while the drivers simply never bridge the gap. Shi
   `augment-from-edges`): at segment start, every attached cell whose committed rect
   overlaps the current window `[ws,we]` but whose index falls outside the **union of
   the current and end-of-segment target window index spans** gets
-  `to = slide-out-frame(committed, end-ws, end-we, dir)` — index above the span →
-  `:trailing`, below → `:leading`. The end window is the current one shifted by the
+  `to` = its target frame slid past the near END-window edge (`edge-slide-block`
+  over `[end-ws, end-we]`) — index above the span → `:trailing`, below →
+  `:leading`. The end window is the current one shifted by the
   §9 set-point delta (`to − from` of `segAnchor`), so a cell the viewport merely
   scrolls away from keeps its real target and is NOT edge-dragged. Exiting
   (data-removed) keys are skipped — they exit-collapse in place (§7a).
@@ -388,7 +393,7 @@ resolved layout is neither retained nor consulted.
 
 `augment-to-edges` (§7b) is the exact mirror on the LEAVE side: a cell bound
 off-screen only needs the side it leaves through, so its `to` = its own **committed**
-frame slid past that edge. Enter and leave share `slide-out-frame` and the same
+frame slid past that edge. Enter and leave share `edge-slide-block` and the same
 index-vs-span edge choice; the enter side keys off the attached `on-screen` set, the
 leave side off committed-overlap + index-outside-span.
 

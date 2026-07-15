@@ -97,6 +97,19 @@
     (r/BoxConstraints .minWidth 0.0 .maxWidth dc/double.infinity
                       .minHeight cross-min .maxHeight cross-max)))
 
+(defn ^r/BoxConstraints cell-constraints
+  "Tight constraints for an indexed/animating cell geometry (§8a): lays the cell
+   at its STABLE full extent (`:full-main-extent`/`:full-cross-extent`, each
+   falling back to the visible extent for resting/non-collapsing frames) so an
+   enter/exit cell's content lays out once at a real size while the collapse
+   axis is revealed by a paint-clip. Shared by both hosts' drivers."
+  [env gm]
+  (let [^double me (double (:full-main-extent gm (:main-extent gm)))
+        ^double ce (double (:full-cross-extent gm (:cross-extent gm)))]
+    (if (= :vertical (:axis env))
+      (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
+      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
+
 ;; --- Built-in flow layouts ---
 
 (defn- fixed-list-layout

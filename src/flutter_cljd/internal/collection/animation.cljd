@@ -1,18 +1,18 @@
 ;; @ai-generated(solo)
 (ns flutter-cljd.internal.collection.animation
-  "Item animation config + helpers for the collection hosts.
+  "Item animation config + host-side helpers for the collection hosts.
 
    Animation is owned by ONE engine-level keyed rect animator (see
    docs/CollectionRectAnimator.md): every cell glides from its old rect to its
    new one, so move, layout/grid/axis morph, and insert/remove are all the same
-   segment. Enter/exit ride that segment via `collapse-wrap`, which lets the
-   engine grow/shrink a cell's outer rect while the child stays at its natural
-   size — there is no MoveRender proxy and no SizeTransition size driver here.
+   segment; enter/exit collapse is an engine paint-clip (§8a) — there is no
+   MoveRender proxy and no SizeTransition size driver here.
 
-   This namespace only parses the `:animate` option and provides the small
-   wrappers the hosts still need: `collapse-wrap` (enter/exit clip), the
-   `scroll-axis` lookup, and the shadow-data bookkeeping that keeps dying items
-   addressable while their exit segment plays."
+   This namespace holds what BOTH hosts' imperative shells share: parsing the
+   `:animate` option, the `SegmentClock` (the one AnimationController + curved
+   view + generation counter driving a segment), the per-tick relayout listener
+   plumbing, and the shadow-data bookkeeping that keeps dying items addressable
+   while their exit segment plays."
   (:require
    ["dart:core" :as dc]
    ["package:flutter/animation.dart" :as a]
@@ -57,43 +57,84 @@
        :remove (parse-sub (:remove animate) on)
        :move (parse-sub (:move animate) on)})))
 
-;; --- Enter / exit clip ---
+;; --- Segment clock (shared host shell, see docs §10) ---
+;;
+;; The one AnimationController + curved view + generation counter that drives a
+;; keyed-rect segment. Both hosts' State objects hold one and only differ in
+;; WHEN they (re)start it and what their finish/settle does around it.
 
-(defn ^w/Axis scroll-axis
-  "Scroll axis of the enclosing scrollable — size transitions must collapse
-   along the main axis, which isn't always vertical."
-  [^w/BuildContext ctx]
-  (if-let [^w/ScrollableState s (w/Scrollable.maybeOf ctx)]
-    (w/axisDirectionToAxis (.-axisDirection (.-position s)))
-    w/Axis.vertical))
+;; @ai-generated(guided)
+(deftype SegmentClock
+  [^:mutable ^bool active                       ;; a rect segment is currently playing
+   ^:mutable ^a/AnimationController? ctrl       ;; the one segment clock, reused across segments
+   ^:mutable ^a/CurvedAnimation? anim           ;; curved view of ctrl the engine listens to
+   ^:mutable ^int gen])                         ;; segment generation, bumped per (re)start
 
-;; @ai-generated(solo)
-(defn ^w/Widget collapse-wrap
-  "Wraps `child` so the engine can grow/shrink its outer rect along `axis` without
-   the content ever reflowing through intermediate sizes. OverflowBox pins the MAIN
-   axis to a constant size (nil on the cross axis inherits the parent's tight cross
-   constraint), so the child lays out once regardless of the shrinking tight main
-   constraint the engine feeds; ClipRect reveals/hides it as the outer box
-   grows/shrinks. Aligned to CENTER so the clip eats symmetrically. Does NOT animate
-   size — the engine owns the rect.
+(defn ^SegmentClock segment-clock
+  "A fresh, resting segment clock (controller created lazily on first start)."
+  []
+  (SegmentClock false nil nil 0))
 
-   EXIT: pass `main-extent` = the cell's committed full main size, so the content
-   stays pinned at that size and CLIPS instead of collapsing to its natural (e.g.
-   text) height. ENTER: omit it — main relaxes to [0, ∞] so the content lays at its
-   natural final size (natural == target for an insert)."
-  ([^w/Axis axis ^w/Widget child] (collapse-wrap axis child nil))
-  ([^w/Axis axis ^w/Widget child ^double? main-extent]
-   (let [vertical? (identical? axis w/Axis.vertical)
-         ^double mn (if main-extent (double main-extent) 0.0)
-         ^double mx (if main-extent (double main-extent) dc/double.infinity)]
-     (w/ClipRect
-      .child (w/OverflowBox
-              .minWidth (when-not vertical? mn)
-              .maxWidth (when-not vertical? mx)
-              .minHeight (when vertical? mn)
-              .maxHeight (when vertical? mx)
-              .alignment w/Alignment.center
-              .child child)))))
+;; @ai-generated(guided)
+(defn start-clock!
+  "(Re)starts the segment clock from `anim-config`'s `:move` section (falling
+   back to the top-level duration/curve): lazily creates the controller on
+   `vsync` (wiring `on-complete` to fire once per completed segment), retargets
+   the curve/duration — a config change between segments takes effect — bumps the
+   generation and runs the clock from 0. At a mid-segment restart the engine's
+   committed rects are the interpolated ones, so re-aiming is jump-free."
+  [^SegmentClock clock vsync anim-config on-complete]
+  (let [move-cfg (:move anim-config)
+        dur (or (:duration move-cfg) (:duration anim-config))
+        crv (or (:curve move-cfg) (:curve anim-config))
+        ^a/AnimationController ctrl
+        (or (.-ctrl clock)
+            (let [c (a/AnimationController .vsync vsync .duration dur)]
+              (.addStatusListener c
+                (fn [^a/AnimationStatus s]
+                  (when (.-isCompleted s) (on-complete))))
+              (.-ctrl! clock c)
+              c))]
+    (if-let [^a/CurvedAnimation cv (.-anim clock)]
+      (.-curve! cv crv)
+      (.-anim! clock (a/CurvedAnimation .parent ctrl .curve crv)))
+    (.-duration! ctrl dur)
+    (.-gen! clock (inc (.-gen clock)))
+    (.-active! clock true)
+    (.forward ctrl .from 0.0)
+    nil))
+
+(defn settle-clock!
+  "Stops the clock without animating (snap) — the host drops its enter/exit
+   bookkeeping around this."
+  [^SegmentClock clock]
+  (.-active! clock false)
+  (when-let [^a/AnimationController c (.-ctrl clock)]
+    (.stop c))
+  nil)
+
+(defn dispose-clock!
+  [^SegmentClock clock]
+  (when-let [^a/CurvedAnimation cv (.-anim clock)]
+    (.dispose cv))
+  (when-let [^a/AnimationController c (.-ctrl clock)]
+    (.dispose c))
+  nil)
+
+;; @ai-generated(guided)
+(defn swap-tick-listener!
+  "Moves the per-tick relayout listener from `old-anim`/`old-listener` onto
+   `anim`; returns the new listener (nil when `anim` is nil). While a segment
+   runs the layout :id is stable, so updateRenderObject won't relayout on its
+   own — this listener does, once per frame. Both render objects store the
+   returned listener so the next swap can remove it."
+  [^w/RenderObject ro ^a/Animation? old-anim old-listener ^a/Animation? anim]
+  (when old-listener
+    (when old-anim (.removeListener ^a/Animation old-anim old-listener)))
+  (when anim
+    (let [listener (fn [] (when (.-attached ro) (.markNeedsLayout ro)) nil)]
+      (.addListener ^a/Animation anim listener)
+      listener)))
 
 ;; --- Shadow Data ---
 ;;
