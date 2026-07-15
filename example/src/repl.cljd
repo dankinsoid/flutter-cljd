@@ -745,6 +745,7 @@
 
 (def ^:private morph-modes
   [["List"   :list]
+   ["Wrap"   :wrap]
    ["Grid 2" :grid2]
    ["Grid 3" :grid3]
    ["Grid 4" :grid4]])
@@ -754,9 +755,16 @@
   ;; :key-fn :id gives every cell a stable identity so a shuffle glides and an
   ;; insert/remove animates the right cell. :animate true drives all of it —
   ;; move, layout/grid morph and insert/remove — off the one rect animator.
-  (if (= mode :list)
+  (case mode
+    :list
     (ui/sliver-collection items :key-fn :id :spacing 8 :animate true
       (fn [_ item] (ui/sized {:h 56} (morph-tile item))))
+    ;; wrap flows fixed-size cells into rows; self-sizing children so a morph
+    ;; from grid/list glides instead of snapping
+    :wrap
+    (ui/sliver-collection items :key-fn :id :layout :wrap
+      :spacing 8 :run-spacing 8 :animate true
+      (fn [_ item] (ui/sized {:w 56 :h 56} (morph-tile item))))
     (let [n (case mode :grid2 2 :grid3 3 4)]
       (ui/sliver-collection items :key-fn :id :layout :grid
         :columns {:count n :gap 8} :rows {:size {:aspect 1} :gap 8}
@@ -764,7 +772,7 @@
         (fn [_ item] (morph-tile item))))))
 
 (defn layout-tween-preview
-  "Sliver host: ~48 keyed items morphing between :list and :grid at 2/3/4 cols.
+  "Sliver host: ~48 keyed items morphing between :list, :wrap and :grid at 2/3/4 cols.
    Shuffle glides cells to their new slots; Insert wipes a cell open and Remove
    collapses one shut; Shuffle+Grid reorders the data AND flips column count in
    one rebuild, so it animates cleanly instead of snapping. Mid-morph taps
