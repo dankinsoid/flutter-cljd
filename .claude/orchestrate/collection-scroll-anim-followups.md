@@ -76,6 +76,14 @@ Materialize/measure a margin of cells past the visible edges so entering cells a
 neighbours are real, not estimated. How wide is hard — may scale with scroll velocity.
 - Research: RecyclerView `prefetch`/extra-layout-space, iOS `UICollectionView` prefetching,
   react-virtuoso / TanStack Virtual overscan, Flutter `cacheExtent`.
+- **Decision (2026-07-15):** scope the `committed` cache to the overscan window — prune
+  geometrically ("left the window"), not by age; the 600-pass prune goes away. Kills the
+  stale-`from` class of bugs (re-insert of a long-gone key after WS1.1 would animate from a
+  stale offset). Keys without a committed entry fall back to enter-wipe / `augment-from-edges`
+  edge-slide, which is correct (platform-standard: no glide from off-screen). Trade-off
+  accepted: no long-range move glides — they drew stale geometry anyway. Invariant: never
+  prune active-segment participants (exiting / gliding out) mid-segment; prune only between
+  segments.
 
 ### 2.2 Approximate-layout protocol — **[design] (user pt 3)**
 Every layout must estimate offset/extent for an arbitrary index window **without** a full
