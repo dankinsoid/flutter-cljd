@@ -82,3 +82,26 @@
   ;; an overlapping cell already inside [first-index, target-last] leaves it be
   (let [cells [(cell 3 200 100)]]
     (is (= [2 5] (render/widen-window-indices 2 5 cells 100.0 300.0)))))
+
+;; --- prevLayout lifecycle (docs §7c old-src) ---
+
+(deftest prev-layout-lifecycle
+  (let [list-lay {:id :list} grid-lay {:id :grid}]
+    (testing "layout change with a pending segment freezes the outgoing layout"
+      (is (= list-lay (render/next-prev-layout nil list-lay true true))))
+    (testing "same-id rebuild before layout keeps the frozen layout (rebuild race)"
+      ;; a second host rebuild arriving between the gen bump and performLayout
+      ;; must not wipe the layout segment-start! is about to consume
+      (is (= list-lay (render/next-prev-layout list-lay grid-lay false true))))
+    (testing "retarget onto yet another layout re-freezes the CURRENT resting layout"
+      (is (= grid-lay (render/next-prev-layout list-lay grid-lay true true))))
+    (testing "resting pass drops any frozen layout"
+      ;; a layout change whose morph settled (nothing attached to snapshot) or that
+      ;; arrived with animations off has tween-anim nil — no segment-start! will
+      ;; consume the frozen layout. Left around, a LATER data-only segment (empty
+      ;; enter/exit, ids now differing) would build old-src over the dead layout
+      ;; and hand viewport-arriving cells frames the user last saw N changes ago.
+      (is (nil? (render/next-prev-layout list-lay grid-lay true false)))
+      (is (nil? (render/next-prev-layout list-lay grid-lay false false))))
+    (testing "resting steady state stays nil"
+      (is (nil? (render/next-prev-layout nil list-lay false false))))))

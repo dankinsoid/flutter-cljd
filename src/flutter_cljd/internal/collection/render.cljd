@@ -339,6 +339,21 @@
         (.addListener ^a/Animation anim listener))
       (.-tweenListener! rs nil))))
 
+(defn next-prev-layout
+  "prevLayout lifecycle (docs §7c) — the resting layout frozen across a layout
+   change so segment-start! can give a viewport-arriving cell its OLD frame
+   (`old-src`). Valid ONLY while a segment is pending: with no tween-anim no
+   segment-start! will consume it, so drop it — left around it would feed a
+   LATER data-only segment an old-src over a layout the cells stopped resting
+   under N changes ago. While pending, a same-id rebuild before layout must NOT
+   wipe it (a second rebuild racing performLayout was a real bug), hence `prev`
+   is kept unless the :id changed."
+  [prev old ^bool layout-changed ^bool tween-anim?]
+  (cond
+    (not tween-anim?) nil
+    layout-changed old
+    :else prev))
+
 (defn update-render!
   "Applies a segment from updateRenderObject. The host passes the PLAIN target
    layout (never a pre-built tween), the segment `tween-anim`, an int `gen` bumped
@@ -357,11 +372,8 @@
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
-    ;; Freeze the resting layout as `from` across a layout change so the next
-    ;; segment-start! can read an off-screen cell's OLD size (docs §7c). Set only on
-    ;; the change (NOT cleared on same-id passes — a second rebuild before layout must
-    ;; not wipe it); segment-start! consumes and clears it, so it never goes stale.
-    (when layout-changed (.-prevLayout! rs old))
+    (.-prevLayout! rs (next-prev-layout (.-prevLayout rs) old
+                                        (boolean layout-changed) (some? tween-anim)))
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs target-layout)
     (.-itemCount! rs item-count)
