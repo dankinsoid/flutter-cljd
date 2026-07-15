@@ -815,6 +815,45 @@
           (ui/sliver-padding 8 (morph-sliver items mode)))
          (ui/expanded)))))
 
+;; ====== FLOW-SOURCE -> INDEXED-TARGET ARRIVAL ======
+;; A flow list of BIG self-sized cells (few on screen) vs a grid of SMALL cells
+;; (many on screen): list->grid brings cells INTO the viewport (arrivals) rather
+;; than pushing them out — the case where an arriving FLOW cell must be measured at
+;; its old size before it is materialised by the indexed target.
+
+(def ^:private initial-arrival-items
+  (vec (map (fn [i] {:id i}) (range 40))))
+
+(defn- arrival-content [item]
+  (->> (ui/text (str (:id item)) {:size 16 :weight :bold :color :white})
+       (ui/center)
+       (ui/clip-corners :all 8)
+       (ui/colored (nth colors (mod (:id item) (count colors))))))
+
+(defn arrival-morph-preview
+  "Same keyed collection toggled between a big-cell flow list and a small-cell grid."
+  []
+  (f/widget
+   :watch [items (atom initial-arrival-items) :as $items
+           mode (atom :list) :as $mode]
+   (ui/custom-scroll-view
+    (action-bar
+     (btn "List (big)" (fn [] (reset! $mode :list)))
+     (btn "Grid (small)" (fn [] (reset! $mode :grid)))
+     (btn "Shuffle" (fn [] (swap! $items shuffle))))
+    (ui/sliver-padding 8
+     (case mode
+       :grid
+       (ui/sliver-collection items :key-fn :id :layout :grid
+         :columns {:count 8 :gap 4} :rows {:size {:aspect 1} :gap 4}
+         :animate morph-anim
+         (fn [_ item] (arrival-content item)))
+       ;; full-width self-sized cells with VARYING heights (a real flow measure)
+       (ui/sliver-collection items :key-fn :id :spacing 8 :animate morph-anim
+         (fn [_ item]
+           (ui/sized {:h (double (+ 90 (* 40 (mod (:id item) 4))))}
+                     (arrival-content item)))))))))
+
 ;; ====== BOX MORPH (tag cloud: wrap ↔ list) ======
 
 (def ^:private morph-tags
@@ -897,6 +936,7 @@
 
 (def previews
   [["Morph"      layout-tween-preview]
+   ["Arrival"    arrival-morph-preview]
    ["Box Morph"  box-tween-preview]
    ["Flex Grid"  flexible-grid-preview]
    ["Drag Grid"  draggable-grid-preview]

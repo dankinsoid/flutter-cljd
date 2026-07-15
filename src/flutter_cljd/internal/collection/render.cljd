@@ -1210,8 +1210,16 @@
         ;; indices; flow = a live-only re-flow (`live-only-flow-window`) that drops
         ;; the dying cells and closes their gap so survivors glide up. Indexed is the
         ;; O(1) special case of flow.
+        ;; Materialise the target window FIRST (both kinds), so every cell that will
+        ;; be on-screen — arrivals included — is attached and can be measured for its
+        ;; OLD size (§7c). Flow lays it via flow-layout!; indexed via indexed-layout!
+        ;; on the plain target (widen-window! keeps leave-slides attached too). The
+        ;; segAnchor reset makes this pass' scroll-correction a no-op (segAnchor is
+        ;; rebuilt below); the first frame is then displayed by from-relay!.
         pure-live-src (if indexed
-                        (tw/indexed-frame-source layout)
+                        (do (.-segAnchor! rs nil)
+                            (indexed-layout! rs layout c)
+                            (tw/indexed-frame-source layout))
                         (do (flow-layout! rs layout c)
                             (tw/frozen-frame-source (live-only-flow-window rs layout c))))
         ;; survivors map to pure-new indices (glide up); dying slots present
@@ -1318,9 +1326,10 @@
                             0.0))
     (.-leaving! rs leaving)
     (.-segGen! rs (.-curGen rs))
-    (if indexed                                                          ; (e)
-      (indexed-layout! rs seg-tween c)
-      (from-relay! rs seg-tween c))))
+    ;; (e) display THIS pass at `from` (t≈0). The target window is already
+    ;; materialised (above), so re-lay the attached children at the tween — uniform
+    ;; for both target kinds; continue passes go through indexed-layout!(seg-tween).
+    (from-relay! rs seg-tween c)))
 
 ;; ============================================================
 ;; Widget
