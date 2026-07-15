@@ -781,7 +781,7 @@
                    :x (fr 360 0 50 200)}  ; index 4 -> in span -> stays
         cells [{:index 0 :key :a} {:index 3 :key :b} {:index 6 :key :c}
                {:index 5 :key :d} {:index 4 :key :x} {:index 1 :key :nohist}]
-        out (tw/augment-to-edges committed cells #{} to env ctx 2 4 200.0 400.0 250.0 450.0)]
+        out (tw/augment-to-edges committed cells #{} to env ctx 2 4 200.0 400.0 250.0 450.0 identity)]
     (testing "leaving :leading cell morphs to TARGET size, slid above the END edge"
       (is (close? 170.0 (:offset (get out :a))))       ; end-ws - target-main = 250-80
       (is (close? 80.0 (:main-extent (get out :a)))))  ; target size, not committed 50
@@ -799,7 +799,28 @@
         ctx ((:prepare to) env)
         committed {:e (fr 210 0 50 200)}
         cells [{:index 9 :key :e}]]
-    (is (= {} (tw/augment-to-edges committed cells #{:e} to env ctx 2 4 200.0 400.0 200.0 400.0)))))
+    (is (= {} (tw/augment-to-edges committed cells #{:e} to env ctx 2 4 200.0 400.0 200.0 400.0 identity)))))
+
+(deftest augment-to-edges-frame-lookup-uses-pure-live-index
+  ;; A dying (exiting) cell PRECEDES a leaving cell in the SHADOW index space, so
+  ;; the leaving cell's shadow index runs one ahead of its pure-live index. The
+  ;; target frame (leave-src) is addressed by PURE-LIVE indices, so the lookup must
+  ;; translate — otherwise the cell morphs toward the wrong slot's frame.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 1000.0
+             :frames [(fr 0 0 30 200)       ; pure-live 0 → :a's CORRECT slot (main 30)
+                      (fr 30 0 90 200)]})   ; pure-live 1 == :a's shadow index → WRONG (main 90)
+        committed {:a (fr 210 0 50 200)}    ; overlaps current window, index outside span
+        ;; shadow order [:dead(dying) :a(live)] → live-before = [0 0] ⇒ shadow 1 → pure-live 0
+        shadow->live (fn [^int i] (nth [0 0] i))
+        cells [{:index 0 :key :dead} {:index 1 :key :a}]
+        out (tw/augment-to-edges committed cells #{:dead} to base-env nil
+                                 3 5 200.0 400.0 250.0 450.0 shadow->live)]
+    (testing "leaving cell morphs to its PURE-LIVE slot's size, not its shadow slot's"
+      (is (close? 30.0 (:main-extent (get out :a))))   ; pure-live 0 (30), not shadow 1 (90)
+      (is (close? 220.0 (:offset (get out :a)))))      ; :leading ⇒ end-ws(250) − main(30)
+    (testing "the dying cell that precedes it is skipped"
+      (is (= #{:a} (set (keys out)))))))
 
 (deftest slide-out-frame-clamps-to-edge
   (let [rect (fr 100 10 20 50)]

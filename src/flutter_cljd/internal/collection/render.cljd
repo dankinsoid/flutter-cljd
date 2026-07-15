@@ -1246,9 +1246,22 @@
                             (tw/frozen-frame-source (live-only-flow-window rs layout c))))
         ;; survivors map to pure-new indices (glide up); dying slots present
         ;; zero-extent gaps (shrink in place).
-        to-src (tw/shadow-frame-source pure-live-src                      ; (c)
-                                       (shadow-entries rs committed-from)
-                                       collapse-axis)
+        shadow (shadow-entries rs committed-from)
+        to-src (tw/shadow-frame-source pure-live-src shadow collapse-axis) ; (c)
+        ;; §7b leave-slide frame lookup is over PURE-LIVE indices, but the attached
+        ;; `cells` carry SHADOW indices (dying cells stay in-tree). Translate
+        ;; shadow→pure-live = shadow − (dying slots before it); identity when nothing
+        ;; is exiting (the spaces coincide). Reuse `shadow`'s live/dying classification.
+        shadow->live (if (empty? (.-exiting rs))
+                       identity
+                       (let [^int sn (count shadow)
+                             live-before (loop [i 0 c 0 acc (transient [])]
+                                           (if (< i sn)
+                                             (recur (inc i)
+                                                    (if (= :live (:type (nth shadow i))) (inc c) c)
+                                                    (conj! acc c))
+                                             (persistent! acc)))]
+                         (fn [^int i] (nth live-before i))))
         env (lay/make-env c (.-itemCount rs))
         ctx ((:prepare to-src) env)
         ;; §7c: `from` = committed ∪ edge slide for cells entering the viewport.
@@ -1326,7 +1339,7 @@
                                          leave-src env ((:prepare leave-src) env)
                                          (math/min (int fi) (int end-fi))
                                          (math/max (int li) (int end-li))
-                                         ws we end-ws end-we))
+                                         ws we end-ws end-we shadow->live))
                   {})
         seg-tween (tw/keyed-tween-layout                                 ; (d)
                    [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)

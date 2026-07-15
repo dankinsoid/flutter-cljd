@@ -637,18 +637,26 @@
    (leaves at its current size).
 
    `cells` are the ATTACHED children at segment start, each {:index :key} in the
-   NEW (reconciled) index space. `[lo, hi]` is the union of the current and
-   end-of-segment target window index spans — a cell whose index lands inside it
-   is normal stay/arrive machinery, not a leave. `[ws, we]` is the CURRENT
-   window (the from-visible test: committed must overlap it); `[end-ws, end-we]`
-   is the window where the segment's scroll set-point lands at t=1 — the slide
-   edges, so the cell sits just past the FINAL viewport edge when it settles.
-   The edge is picked by index vs the span: above `hi` → :trailing, below `lo`
-   → :leading. Exiting keys are skipped (they exit-collapse in place, §7a), as
-   are cells with no committed rect (nothing to glide from). Returns
-   {key → frame}. Pure."
+   SHADOW index space (live survivors + in-tree dying cells). `[lo, hi]` is the
+   union of the current and end-of-segment target window index spans (also shadow
+   space) — a cell whose index lands inside it is normal stay/arrive machinery,
+   not a leave. `[ws, we]` is the CURRENT window (the from-visible test: committed
+   must overlap it); `[end-ws, end-we]` is the window where the segment's scroll
+   set-point lands at t=1 — the slide edges, so the cell sits just past the FINAL
+   viewport edge when it settles. The edge is picked by index vs the span: above
+   `hi` → :trailing, below `lo` → :leading.
+
+   `shadow->live` maps a shadow index to its PURE-LIVE index (post-removal data
+   index), used ONLY for the frame lookup — `to-src`'s `:frame` is addressed by
+   pure-live indices, while span/edge classification stays in shadow space. It is
+   `identity` when nothing is exiting (the two spaces coincide); when a dying cell
+   precedes a leaving cell the shadow index runs ahead of the pure-live one, so a
+   raw lookup would morph the cell toward the wrong slot's frame.
+
+   Exiting keys are skipped (they exit-collapse in place, §7a), as are cells with
+   no committed rect (nothing to glide from). Returns {key → frame}. Pure."
   [committed cells exiting to-src env ctx ^int lo ^int hi ^double ws ^double we
-   ^double end-ws ^double end-we]
+   ^double end-ws ^double end-we shadow->live]
   (let [frame (:frame to-src)
         ;; each leaving cell's `to` = its TARGET frame (size+cross; committed size when
         ;; the target has no frame here), tagged with the edge it leaves through.
@@ -660,7 +668,7 @@
                                     ^double me (double (:main-extent cm))]
                                 (when (and (< o we) (> (+ o me) ws))
                                   {:key k :dir (if (> i hi) :trailing :leading)
-                                   :fr (or (frame env ctx i) cm)}))))))
+                                   :fr (or (frame env ctx (int (shadow->live i))) cm)}))))))
                       cells)]
     ;; keep the leaving cells' RELATIVE target layout, block abutting the END edge
     (edge-slide-block entries end-ws end-we)))
