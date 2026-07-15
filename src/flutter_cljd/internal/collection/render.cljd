@@ -1029,7 +1029,9 @@
                   (r/SliverGeometry
                    .scrollExtent total
                    .paintExtent paint-extent
-                   .maxPaintExtent total
+                   ;; mid-collapse the laid trail exceeds the final resting total;
+                   ;; maxPaintExtent must cover what we actually paint this pass.
+                   .maxPaintExtent (math/max total paint-extent)
                    .cacheExtent cache-extent
                    .hasVisualOverflow (or (> total paint-extent)
                                           (pos? (.-scrollOffset c))
@@ -1084,7 +1086,9 @@
       (r/SliverGeometry
        .scrollExtent total
        .paintExtent paint-extent
-       .maxPaintExtent total
+       ;; t≈0 the laid trail can exceed the final resting total; maxPaintExtent
+       ;; must cover what we actually paint this pass.
+       .maxPaintExtent (math/max total paint-extent)
        .cacheExtent cache-extent
        .hasVisualOverflow (or (> total paint-extent) (pos? (.-scrollOffset c)))))))
 
