@@ -148,7 +148,8 @@
                                                      (int (.round (* op 255.0)))
                                                      (fn [^r/PaintingContext c2 _o2]
                                                        (.paintChild c2 ch child-off)))
-                                       (.paintChild ctx ch child-off)))))
+                                       (.paintChild ctx ch child-off))
+                                     nil)))
                   (.paintChild context ch child-off)))
               (recur (.childAfter this ch)))))))
     nil)
