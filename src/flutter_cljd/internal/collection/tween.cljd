@@ -100,27 +100,34 @@
         (when (> (.abs d) 1e-3) d)))))
 
 ;; @ai-generated(solo)
-(defn set-point-correction
-  "Absolute scroll set-point for the animating/indexed path (docs §9). Given the
-   segment anchor `{:from :to :screen}` (content-space main axis: the captured
-   viewport-top slot's OLD offset, its NEW offset in the target layout, and its
-   screen position = OLD offset − scrollOffset at segment start), the current
-   curved tween value `t`, and the live `scroll-off`, returns how far scrollOffset
-   must move so the slot tracks its lerped OLD→NEW position, or nil when |delta|
-   ≤ 1e-3.
+(defn point-correction-delta
+  "Incremental (relative) scroll set-point for the animating/indexed path (docs §9).
+   Given the segment anchor `{:from :to :screen}` (content-space main axis: the
+   captured viewport-top slot's OLD offset, its NEW offset in the target layout, and
+   its screen position = OLD offset − scrollOffset at segment start), the current
+   curved tween value `t`, and `prev-desired` (the previously EMITTED desired value;
+   seed = desired(0) = the segment-start scrollOffset), returns
+   `[correction new-prev-desired]`:
 
-   Absolute per pass, never summed: `desired = lerp(from, to, t) − screen`,
-   `delta = desired − scroll-off`. At t=0 desired == the segment-start scrollOffset
-   ⇒ no jump; at t=1 the slot lands index-stable; a slot that does not move
-   (from==to, plain shuffle) yields a constant desired ⇒ ≈0 at any t. The set-point
-   converges within a frame (re-run with the corrected offset ⇒ delta→0), so there
-   is no cumulative drift."
-  [{:keys [from to screen]} ^double t ^double scroll-off]
+     desired    = lerp(from, to, t) − screen
+     correction = desired − prev-desired
+
+   The correction is the per-pass ANIMATION delta only — it does NOT read the live
+   scrollOffset, so a concurrent user drag composes with it (scrollOffset = drag +
+   Σcorrections) instead of being reverted. When |correction| ≤ 1e-3 the correction
+   is nil and `new-prev-desired == prev-desired`: the sub-threshold delta is
+   RETAINED (not dropped) so repeated passes at the same t emit 0 and the emitted
+   deltas telescope to exactly desired(1) − desired(0) = to − from over the segment.
+   `prev-desired` therefore tracks the last *emitted* target, keeping the sum exact
+   even across float accumulation."
+  [{:keys [from to screen]} ^double t ^double prev-desired]
   (let [^double from (double from)
         ^double to (double to)
         desired (- (+ from (* (- to from) t)) (double screen))
-        d (- desired scroll-off)]
-    (when (> (.abs d) 1e-3) d)))
+        d (- desired prev-desired)]
+    (if (> (.abs d) 1e-3)
+      [d desired]
+      [nil prev-desired])))
 
 (defn- min-some [a b] (cond (nil? a) b (nil? b) a :else (min ^int a ^int b)))
 (defn- max-some [a b] (cond (nil? a) b (nil? b) a :else (max ^int a ^int b)))

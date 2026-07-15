@@ -215,33 +215,74 @@
     (is (nil? (tw/anchor-delta [{:key :a :old-off 0.0 :old-main 40.0 :new-off 10.0}]
                                100.0)))))
 
-;; set-point-correction drives scrollOffset so the captured viewport-top INDEX
-;; SLOT tracks its lerped OLD→NEW position (docs §9). Index-based ⇒ immune to
-;; which keys shuffled where; absolute per pass ⇒ converges without drift; and
-;; self-nullifying when the slot doesn't move (plain shuffle).
-(deftest set-point-correction-tracks-anchor-slot
-  (testing "grid rescale: slot moves 100→140, correction lerps then converges"
-    (let [anchor {:from 100.0 :to 140.0 :screen 0.0}]
-      ;; t=0: desired = lerp(100,140,0) − 0 = 100 == scrollOffset0 → no jump
-      (is (nil? (tw/set-point-correction anchor 0.0 100.0)))
-      ;; t=0.5: desired = 120; scrollOffset still 100 → +20
-      (is (close? 20.0 (tw/set-point-correction anchor 0.5 100.0)))
-      ;; t=1: desired = 140; scrollOffset caught up to 120 → +20
-      (is (close? 20.0 (tw/set-point-correction anchor 1.0 120.0)))
-      ;; converged: scrollOffset already at the set-point → ≈0 → nil
-      (is (nil? (tw/set-point-correction anchor 1.0 140.0)))))
-  (testing "plain shuffle: slot does not move (from==to) → no correction at any t"
-    (let [anchor {:from 100.0 :to 100.0 :screen 20.0}]
-      ;; desired = 100 − 20 = 80 for every t; scrollOffset sits at 80 → nil
-      (is (nil? (tw/set-point-correction anchor 0.0 80.0)))
-      (is (nil? (tw/set-point-correction anchor 0.5 80.0)))
-      (is (nil? (tw/set-point-correction anchor 1.0 80.0)))))
-  (testing "screen offset: slot below the viewport top keeps t=0 jump-free"
-    ;; slot's from=200 sits 50 below the viewport top (screen=50) at segment
-    ;; start ⇒ scrollOffset0 = from − screen = 150.
-    (is (nil? (tw/set-point-correction {:from 200.0 :to 260.0 :screen 50.0} 0.0 150.0)))
-    ;; t=1: desired = 260 − 50 = 210; from scrollOffset 150 → +60
-    (is (close? 60.0 (tw/set-point-correction {:from 200.0 :to 260.0 :screen 50.0} 1.0 150.0)))))
+;; point-correction-delta drives scrollOffset so the captured viewport-top INDEX
+;; SLOT tracks its lerped OLD→NEW position (docs §9). Index-based ⇒ immune to which
+;; keys shuffled where; INCREMENTAL per pass (emits desired(t) − prev-desired) ⇒ the
+;; animation delta composes with user drag instead of reverting it, and the emitted
+;; deltas telescope to exactly to − from; self-nullifying when the slot doesn't move.
+;;
+;; `seed`: prev-desired starts at desired(0) = from − screen (== segment-start
+;; scrollOffset). Each call returns [correction new-prev-desired]; the render sliver
+;; feeds new-prev-desired back in next pass.
+(deftest point-correction-delta-tracks-anchor-slot
+  (let [seed (fn [{:keys [from screen]}] (- (double from) (double screen)))]
+    (testing "grid rescale: slot moves 100→140, per-pass deltas telescope to to−from"
+      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+            p0 (seed anchor)]                         ; desired(0) = 100
+        ;; t=0: desired = 100 == prev → no jump, prev unchanged
+        (let [[c p] (tw/point-correction-delta anchor 0.0 p0)]
+          (is (nil? c)) (is (close? 100.0 p))
+          ;; t=0.5: desired = 120 → +20, prev advances to 120
+          (let [[c p] (tw/point-correction-delta anchor 0.5 p)]
+            (is (close? 20.0 c)) (is (close? 120.0 p))
+            ;; t=1: desired = 140 → +20, prev advances to 140
+            (let [[c p] (tw/point-correction-delta anchor 1.0 p)]
+              (is (close? 20.0 c)) (is (close? 140.0 p))
+              ;; sum of emitted deltas == to − from == 40
+              (is (close? 40.0 (- (double p) p0))))))))
+    (testing "delta ignores the live offset ⇒ a user drag between passes survives"
+      ;; prev-desired is the ONLY state; the live scrollOffset never enters the math,
+      ;; so whatever the user dragged to is untouched — the pass adds only +20.
+      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+            [c _] (tw/point-correction-delta anchor 0.5 100.0)]
+        (is (close? 20.0 c))
+        ;; identical result regardless of any drag the user applied to scrollOffset
+        (is (= c (first (tw/point-correction-delta anchor 0.5 100.0))))))
+    (testing "same-t re-layout (post-correction re-run) emits 0"
+      ;; after emitting the t=0.5 delta prev==120; re-running at the SAME t must be 0
+      ;; so the viewport layout converges within the frame.
+      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+            [_ p] (tw/point-correction-delta anchor 0.5 (seed anchor))
+            [c p2] (tw/point-correction-delta anchor 0.5 p)]
+        (is (nil? c)) (is (close? 120.0 p2))))
+    (testing "retrigger mid-segment: re-seed against the live offset ⇒ no jump"
+      ;; a new segment-start! re-seeds prev = new-from − new-screen; the first pass at
+      ;; the fresh t=0 must emit nil (no jump) then track the new endpoints.
+      (let [anchor {:from 130.0 :to 90.0 :screen 10.0}   ; live scrollOffset now 120
+            p0 (seed anchor)]                             ; desired(0) = 120
+        (is (close? 120.0 p0))
+        (let [[c p] (tw/point-correction-delta anchor 0.0 p0)]
+          (is (nil? c)) (is (close? 120.0 p))
+          (let [[c p] (tw/point-correction-delta anchor 1.0 p)]
+            ;; desired(1) = 90 − 10 = 80 → −40, telescopes to to − from = −40
+            (is (close? -40.0 c)) (is (close? 80.0 p))))))
+    (testing "plain shuffle: slot does not move (from==to) → no correction at any t"
+      (let [anchor {:from 100.0 :to 100.0 :screen 20.0}
+            p (seed anchor)]                              ; desired = 80 for every t
+        (is (nil? (first (tw/point-correction-delta anchor 0.0 p))))
+        (is (nil? (first (tw/point-correction-delta anchor 0.5 p))))
+        (is (nil? (first (tw/point-correction-delta anchor 1.0 p))))))
+    (testing "sub-threshold deltas are retained, not dropped ⇒ no drift"
+      ;; a tiny per-pass step (< 1e-3) emits nil and keeps prev, so it accumulates and
+      ;; eventually crosses the threshold rather than being silently lost.
+      (let [anchor {:from 0.0 :to 1.0 :screen 0.0}       ; to−from = 1 over the segment
+            p0 (seed anchor)                              ; 0.0
+            ;; a 0.0005 step (< 1e-3): nil, prev held at 0
+            [c p] (tw/point-correction-delta anchor 0.0005 p0)]
+        (is (nil? c)) (is (close? 0.0 p))
+        ;; next pass reaches 0.002 total: delta from held prev = 0.002 > 1e-3 → emits
+        (let [[c p] (tw/point-correction-delta anchor 0.002 p)]
+          (is (close? 0.002 c)) (is (close? 0.002 p)))))))
 
 ;; --- keyed combinator (v2): the `from` side is key-addressed ---
 

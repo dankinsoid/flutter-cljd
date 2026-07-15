@@ -68,6 +68,9 @@
    ^:mutable segAnchor     ;; nil | {:from ^double :to ^double :screen ^double} — the viewport-top
                            ;; INDEX SLOT set-point that drives this segment's scroll correction (docs §9);
                            ;; frozen in segment-start!, self-nullifying when the slot doesn't move
+   ^:mutable ^double segPrevDesired ;; last EMITTED desired value for the incremental set-point (docs §9);
+                           ;; seeded desired(0) = scroll-off at segment start so the animation delta composes
+                           ;; with user drag (scrollOffset = drag + Σcorrections); telescopes exactly to to−from
    ^:mutable restingTop    ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
                            ;; each resting pass (indices consistent); seeds segAnchor at segment start
    ^:mutable clips]        ;; {child-index -> visible-main-extent} for cells laid at full but painted
@@ -836,16 +839,25 @@
 
 ;; @ai-generated(solo)
 (defn- seg-scroll-correction
-  "Set-point scroll correction for the animating/indexed path (docs §9): drives
-   scrollOffset so the captured viewport-top slot tracks its lerped OLD→NEW
-   position. Active whenever a segment plays and an anchor was captured; the
-   set-point is self-nullifying (converges within a frame, ≈0 when the slot does
-   not move). Returns the correction delta or nil."
-  [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  "Incremental set-point scroll correction for the animating/indexed path (docs §9):
+   drives scrollOffset so the captured viewport-top slot tracks its lerped OLD→NEW
+   position. Emits only the per-pass ANIMATION delta (desired(t) − segPrevDesired),
+   so a concurrent user drag composes with the animation instead of being reverted;
+   updates segPrevDesired to the emitted target (telescopes exactly to to−from, and
+   a same-t re-run — the viewport re-layout after a correction — emits 0, letting the
+   pass converge). `c` is unused now that the correction ignores the live offset.
+   Returns the correction delta or nil.
+   Note: if ScrollPosition clamps the applied correction (overscroll near an edge),
+   segPrevDesired drifts from real pixels; accepted — the drift is bounded (≤ to−from)
+   and reconciled by the resting-pass anchor-delta once the segment ends."
+  [^CollectionRenderSliver rs ^r/SliverConstraints _c]
   (when (and (.-tweenAnim rs) (.-segAnchor rs))
-    (tw/set-point-correction (.-segAnchor rs)
-                             (.-value ^a/Animation (.-tweenAnim rs))
-                             (.-scrollOffset c))))
+    (let [[corr ^double new-prev]
+          (tw/point-correction-delta (.-segAnchor rs)
+                                     (.-value ^a/Animation (.-tweenAnim rs))
+                                     (.-segPrevDesired rs))]
+      (.-segPrevDesired! rs new-prev)
+      corr)))
 
 (defn- ^r/BoxConstraints geo-constraints [env gm]
   ;; §8a: lay each cell at its STABLE full extent on BOTH axes (:full-main-extent/
@@ -1006,7 +1018,8 @@
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses/rescales
                 ;; mid-segment the viewport-top slot jumps unless we follow it.
-                ;; Set-point model (docs §9) — absolute per pass, self-nullifying.
+                ;; Incremental set-point model (docs §9) — per-pass animation delta,
+                ;; composes with user drag; same-t re-layout converges to 0.
                 corr (seg-scroll-correction rs c)]
             (if corr
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
@@ -1214,6 +1227,12 @@
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
     (.-segAnchor! rs seg-anchor)
+    ;; seed the incremental set-point at desired(0) = from − screen (== the current
+    ;; scrollOffset), so the first animating pass emits desired(t)−desired(0) with no
+    ;; jump, and a retrigger mid-segment re-seeds against the live offset (§9).
+    (.-segPrevDesired! rs (if seg-anchor
+                            (- (double (:from seg-anchor)) (double (:screen seg-anchor)))
+                            0.0))
     (.-leaving! rs leaving)
     (.-segGen! rs (.-curGen rs))
     (if indexed                                                          ; (e)
@@ -1239,7 +1258,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil nil {})]
+                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {})]
       (set-tween-anim! rs tweenAnim)
       rs))
 
