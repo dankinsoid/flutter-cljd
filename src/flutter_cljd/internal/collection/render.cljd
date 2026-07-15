@@ -1086,22 +1086,22 @@
 ;; ============================================================
 
 ;; @ai-generated(solo)
-(defn- resting-frame-source
-  "§7c: a frame-source over the RESTING layout `old-layout`, so a cell arriving into
-   the viewport on a layout change can be given its OLD frame (size + relative
-   position) and morph instead of popping in at target. ONE producer, uniform across
-   layout kinds behind the frame-source interface:
-     - INDEXED old layout → exact O(1) math (`indexed-frame-source`).
-     - FLOW old layout → dry-measure the currently attached window at the old
-       constraint and re-place it under the old flow (`project-flow-window` at the
-       old layout, wrapped as a `frozen-frame-source`).
-   Returns nil when the old layout can't answer — a flow source whose arriving cells
-   are not yet attached (an indexed target hasn't materialised its window), so those
-   cells fall back to a target-size edge slide."
-  [^CollectionRenderSliver rs old-layout]
-  (if (some? (:geometry old-layout))
-    (tw/indexed-frame-source old-layout)
-    (when-let [snap (project-flow-window rs old-layout)]
+(defn- layout-frame-source
+  "The ONE way to evaluate a `layout` into per-cell frames, behind the frame-source
+   interface — used symmetrically for BOTH endpoints of a morph: the OLD layout gives
+   an arriving cell its `from` (§7c), the NEW layout gives a leaving cell its `to`
+   size (§7b). Uniform across layout kinds:
+     - INDEXED layout → exact O(1) math (`indexed-frame-source`).
+     - FLOW layout → dry-measure the currently attached cells at this layout's
+       constraint and place them under its flow (`project-flow-window`, wrapped as a
+       `frozen-frame-source`).
+   Returns nil when a flow layout has nothing attached to measure (e.g. an arriving
+   cell not yet materialised because an indexed target hasn't laid its window) — the
+   caller then falls back to an edge slide at the other endpoint's size."
+  [^CollectionRenderSliver rs layout]
+  (if (some? (:geometry layout))
+    (tw/indexed-frame-source layout)
+    (when-let [snap (project-flow-window rs layout)]
       (tw/frozen-frame-source snap))))
 
 ;; @ai-generated(solo)
@@ -1238,7 +1238,7 @@
         old-src (when (and old-layout
                            (not= (:id old-layout) (:id layout))
                            (empty? (.-entering rs)) (empty? (.-exiting rs)))
-                  (resting-frame-source rs old-layout))
+                  (layout-frame-source rs old-layout))
         old-frame (when old-src
                     (let [octx ((:prepare old-src) env)
                           ofr (:frame old-src)]
@@ -1280,15 +1280,10 @@
         end-fi (or ((:first-index to-src) env ctx end-ws) fi)
         end-li (or (when (.-isFinite end-we) ((:last-index to-src) env ctx end-we)) li)
         ;; §7b leave morph: a leaving cell needs its TARGET size to morph as it
-        ;; slides out. An indexed target answers exactly (to-src); a flow target's
-        ;; to-src snapshot omits off-window cells, so dry-measure ALL attached cells
-        ;; at the target layout (they are still attached this pass) — the mirror of
-        ;; resting-frame-source measuring the OLD layout for arrivals.
-        leave-src (if indexed
-                    to-src
-                    (or (when-let [snap (project-flow-window rs layout)]
-                          (tw/frozen-frame-source snap))
-                        to-src))
+        ;; slides out — the SAME layout evaluation as the arrival side, just on the
+        ;; NEW layout. The frozen `to-src` snapshot omits off-window cells, so use the
+        ;; full layout-frame-source (indexed math / flow dry-measure of attached).
+        leave-src (or (layout-frame-source rs layout) to-src)
         leaving (if (and fi li end-fi end-li)
                   (let [cells (loop [child (.-firstChild rs) out []]
                                 (if child
