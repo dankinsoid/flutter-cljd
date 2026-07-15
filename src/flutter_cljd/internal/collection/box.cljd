@@ -590,37 +590,71 @@
           dying (.-dyingWidgets this)
           active (.-active clock)
           keyed? (all-keyed? kids)
+          config (.-animConfig wgt)
+          insert-builder (get-in config [:insert :builder])
+          remove-builder (get-in config [:remove :builder])
+          seg-anim (when active (.-anim clock))
+          entering (if (and active keyed?) (.-activeInserts this) #{})
+          ;; custom :insert/:remove builders wrap the CELL CONTENT (opacity /
+          ;; transform), mirroring the sliver host; the engine still owns the
+          ;; rect — collapse and paint-clip ride the same segment either way.
+          wrap-enter (fn [^w/Widget c k]
+                       (if (and insert-builder seg-anim (contains? entering k))
+                         (insert-builder c seg-anim)
+                         c))
           ;; A REMOVE needs the dying widget kept IN-TREE to collapse ⇒ shadow order
           ;; (live + dying, KeyedSubtree-wrapped). A pure insert/move/shuffle needs
           ;; no shadow: the cell is already in `kids`, and its enter-collapse rides
           ;; the entering set with `child-key` identity.
           use-shadow (boolean (and keyed? (seq dying)))
           shadow (when use-shadow (an/build-shadow-data kids widget-value-key dying))
-          children (if use-shadow
+          children (cond
+                     use-shadow
                      (let [l #dart ^w/Widget []]
                        (doseq [entry shadow]
                          (let [k (:key entry)
                                ^w/Widget c (if (= :dying (:type entry))
-                                             (:widget entry)
-                                             (nth kids (int (:data-index entry))))]
+                                             (let [^w/Widget dw (:widget entry)]
+                                               (if (and remove-builder seg-anim)
+                                                 (remove-builder dw (a/ReverseAnimation seg-anim))
+                                                 dw))
+                                             (wrap-enter (nth kids (int (:data-index entry))) k))]
                            (.add l ^w/Widget (w/KeyedSubtree .key (w/ValueKey k) .child c))))
                        l)
-                     kids)
+
+                     ;; pure insert, no shadow: the entering cell is already in `kids`;
+                     ;; the wrap is re-keyed with the cell's own ValueKey so element
+                     ;; reconciliation still matches it by key.
+                     (and insert-builder seg-anim (seq entering))
+                     (let [l #dart ^w/Widget []
+                           ^int n (count kids)]
+                       (loop [^int i 0]
+                         (when (< i n)
+                           (let [^w/Widget c (nth kids i)
+                                 k (child-key c i)]
+                             (.add l ^w/Widget
+                                   (if (contains? entering k)
+                                     (w/KeyedSubtree .key (w/ValueKey k)
+                                                     .child (insert-builder c seg-anim))
+                                     c))
+                             (recur (inc i)))))
+                       l)
+
+                     :else kids)
           key-of (if use-shadow
                    (fn [^int i] (:key (nth shadow i)))
                    (fn [^int i] (child-key (nth kids i) i)))
           exiting (if use-shadow (into #{} (map :key) dying) #{})
-          entering (if (and active keyed?) (.-activeInserts this) #{})
           ;; default opacity fade rides the collapse; a disabled :insert/:remove
-          ;; section (`false` in :animate) turns off that direction's fade
-          config (.-animConfig wgt)
-          fade-enter (boolean (:insert config))
-          fade-exit (boolean (:remove config))]
+          ;; section (`false` in :animate) turns off that direction's fade, a
+          ;; custom :builder owns it instead (mirrors the sliver host)
+          fade-enter (boolean (and (:insert config) (nil? insert-builder)))
+          fade-exit (boolean (and (:remove config) (nil? remove-builder)))]
       (CollectionBoxWidget nil
                            children
                            (.-layoutImpl wgt)
                            (.-axisKw wgt)
-                           (when active (.-anim clock))
+                           seg-anim
                            (.-gen clock)
                            key-of
                            entering
@@ -631,9 +665,12 @@
 (defn ^w/Widget collection-box
   "Eager box over already-built children driven by a collection layout map.
    Opts: :key, :axis (:vertical default), :animate. When :animate is present the
-   box animates move + layout-morph + axis-change and lerps its own size via the
-   shared keyed rect animator; the `:move` section (falling back to the top-level
-   duration/curve) drives the segment. See `flutter-cljd.widgets/collection`."
+   box animates move + layout-morph + axis-change + keyed insert/remove collapse
+   and lerps its own size via the shared keyed rect animator; the `:move` section
+   (falling back to the top-level duration/curve) drives the segment. An
+   `:insert`/`:remove` `:builder` wraps the cell content and owns that
+   direction's effect (same contract as sliver-collection); without one the
+   default fade rides the collapse. See `flutter-cljd.widgets/collection`."
   [layout-impl opts children]
   (let [axis (or (:axis opts) :vertical)]
     (when-not (contains? #{:vertical :horizontal} axis)

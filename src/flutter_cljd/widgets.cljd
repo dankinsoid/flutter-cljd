@@ -2807,13 +2807,16 @@ Options:
 
 - `:axis` — the layout's main axis, `:vertical` (default) or `:horizontal`
 - `:key` — widget key
-- `:animate` — `true` | `{:duration :curve :move …}`; ONE engine-owned keyed
-  rect animator glides every child from its old rect to its new one when the
-  layout changes (`:wrap`↔`:list`, a grid `:columns` change, …), animating
-  position AND size. `:move` sets the segment's duration/curve. Endpoints are
-  exact (the box measures every child, so text reflows for real); interrupting
-  re-aims from the current frame. See `sliver-collection`'s `:animate` for the
-  shared model
+- `:animate` — `true` | `{:duration :curve :insert :remove :move}`; ONE
+  engine-owned keyed rect animator glides every child from its old rect to its
+  new one when the layout changes (`:wrap`↔`:list`, a grid `:columns` change, …)
+  or keyed children are inserted/removed/shuffled, animating position AND size.
+  `:move` sets the segment's duration/curve; `:insert`/`:remove` may be `false`
+  (no fade for that direction) or `{:builder (fn [child animation] widget)}` to
+  own the entering/exiting cell's effect (enter/exit needs every child keyed).
+  Endpoints are exact (the box measures every child, so text reflows for real);
+  interrupting re-aims from the current frame. See `sliver-collection`'s
+  `:animate` for the shared model
 
 The cross axis must be bounded (a layout packs against it); the main axis may
 be unbounded — the box shrink-wraps to its content either way, and content
