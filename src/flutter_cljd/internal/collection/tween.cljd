@@ -605,11 +605,14 @@
 (defn augment-to-edges
   "§7b UNIVERSAL leave-slide `to` map — the mirror of `augment-from-edges`. A
    cell that was on-screen but whose target index falls outside the segment's
-   window span glides OUT through the near edge instead of popping: its `to` =
-   its own COMMITTED rect slid past that edge (`slide-out-frame`), size
-   unchanged. Layout-agnostic — no old-layout math, works for flow and indexed
-   alike, and bounds the glide even when an indexed target has an exact far
-   frame (a shuffle must not drag a cell across the whole list).
+   window span glides OUT through the near edge instead of popping. Its `to` = its
+   own TARGET frame (target size AND cross, from `to-src`) slid past that edge, so
+   it MORPHS to its new size while leaving — the mirror of an arriving cell morphing
+   from its old size. Sliding to the edge (not the exact target offset) bounds the
+   glide even when an indexed target has an exact far frame (a shuffle must not drag
+   a cell across the whole list). When the target has no frame at that index (a flow
+   target off its snapshot window) it falls back to the COMMITTED rect (leaves at its
+   current size).
 
    `cells` are the ATTACHED children at segment start, each {:index :key} in the
    NEW (reconciled) index space. `[lo, hi]` is the union of the current and
@@ -622,20 +625,24 @@
    → :leading. Exiting keys are skipped (they exit-collapse in place, §7a), as
    are cells with no committed rect (nothing to glide from). Returns
    {key → frame}. Pure."
-  [committed cells exiting ^int lo ^int hi ^double ws ^double we
+  [committed cells exiting to-src env ctx ^int lo ^int hi ^double ws ^double we
    ^double end-ws ^double end-we]
-  (reduce
-   (fn [m cell]
-     (let [k (:key cell)
-           ^int i (int (:index cell))]
-       (if (or (contains? exiting k) (and (>= i lo) (<= i hi)))
-         m
-         (if-let [cm (get committed k)]
-           (let [^double o (double (:offset cm))
-                 ^double me (double (:main-extent cm))]
-             (if (and (< o we) (> (+ o me) ws))
-               (assoc m k (slide-out-frame cm end-ws end-we
-                                           (if (> i hi) :trailing :leading)))
-               m))
-           m))))
-   {} cells))
+  (let [frame (:frame to-src)]
+    (reduce
+     (fn [m cell]
+       (let [k (:key cell)
+             ^int i (int (:index cell))]
+         (if (or (contains? exiting k) (and (>= i lo) (<= i hi)))
+           m
+           (if-let [cm (get committed k)]
+             (let [^double o (double (:offset cm))
+                   ^double me (double (:main-extent cm))]
+               (if (and (< o we) (> (+ o me) ws))
+                 ;; target size+cross at the near edge → morph while leaving; fall
+                 ;; back to committed when the target has no frame here.
+                 (let [tgt (or (frame env ctx i) cm)]
+                   (assoc m k (slide-out-frame tgt end-ws end-we
+                                               (if (> i hi) :trailing :leading))))
+                 m))
+             m))))
+     {} cells)))

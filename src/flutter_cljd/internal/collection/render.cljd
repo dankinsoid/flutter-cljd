@@ -1288,6 +1288,7 @@
                                            (conj out {:index i :key (key-for rs i)})))
                                   out))]
                     (tw/augment-to-edges committed-from cells (.-exiting rs)
+                                         to-src env ctx
                                          (math/min (int fi) (int end-fi))
                                          (math/max (int li) (int end-li))
                                          ws we end-ws end-we))

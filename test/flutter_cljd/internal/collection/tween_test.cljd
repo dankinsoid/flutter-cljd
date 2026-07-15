@@ -769,28 +769,37 @@
 (deftest augment-to-edges-classifies-leaving-cells
   ;; window span [lo..hi]=[2..4]; current window [200,400], end window [250,450].
   ;; Attached cells whose committed rect overlaps the CURRENT window but whose
-  ;; index falls outside the span leave through the near END-window edge.
-  (let [committed {:a (fr 210 0 50 200)   ; index 0 -> leaving :leading
+  ;; index falls outside the span leave through the near END-window edge, morphing
+  ;; to their TARGET size (list item-extent 80) — not their committed size (50).
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 80}))
+        env (assoc base-env :item-count 10)
+        ctx ((:prepare to) env)
+        committed {:a (fr 210 0 50 200)   ; index 0 -> leaving :leading
                    :b (fr 260 0 50 200)   ; index 3 -> in span -> stays
                    :c (fr 310 0 50 200)   ; index 6 -> leaving :trailing
                    :d (fr 900 0 50 200)   ; index 5 -> committed off-window -> skip
                    :x (fr 360 0 50 200)}  ; index 4 -> in span -> stays
         cells [{:index 0 :key :a} {:index 3 :key :b} {:index 6 :key :c}
                {:index 5 :key :d} {:index 4 :key :x} {:index 1 :key :nohist}]
-        out (tw/augment-to-edges committed cells #{} 2 4 200.0 400.0 250.0 450.0)]
-    (testing "index below the span slides fully above the END-window leading edge"
-      (is (frame= (fr 200 0 50 200) (get out :a))))    ; end-ws - main = 250-50
-    (testing "index above the span slides fully below the END-window trailing edge"
-      (is (frame= (fr 450 0 50 200) (get out :c))))
+        out (tw/augment-to-edges committed cells #{} to env ctx 2 4 200.0 400.0 250.0 450.0)]
+    (testing "leaving :leading cell morphs to TARGET size, slid above the END edge"
+      (is (close? 170.0 (:offset (get out :a))))       ; end-ws - target-main = 250-80
+      (is (close? 80.0 (:main-extent (get out :a)))))  ; target size, not committed 50
+    (testing "leaving :trailing cell morphs to TARGET size, slid below the END edge"
+      (is (close? 450.0 (:offset (get out :c))))
+      (is (close? 80.0 (:main-extent (get out :c)))))
     (testing "in-span, off-window-committed and history-less cells are not leaving"
       (is (= #{:a :c} (set (keys out)))))))
 
 (deftest augment-to-edges-skips-exiting
   ;; a data-removed key exit-collapses in place (§7a) — never leave-slides,
   ;; even when reindexing pushed its shadow slot out of the window span.
-  (let [committed {:e (fr 210 0 50 200)}
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 80}))
+        env (assoc base-env :item-count 10)
+        ctx ((:prepare to) env)
+        committed {:e (fr 210 0 50 200)}
         cells [{:index 9 :key :e}]]
-    (is (= {} (tw/augment-to-edges committed cells #{:e} 2 4 200.0 400.0 200.0 400.0)))))
+    (is (= {} (tw/augment-to-edges committed cells #{:e} to env ctx 2 4 200.0 400.0 200.0 400.0)))))
 
 (deftest slide-out-frame-clamps-to-edge
   (let [rect (fr 100 10 20 50)]
