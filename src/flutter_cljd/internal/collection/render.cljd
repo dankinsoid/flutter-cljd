@@ -78,17 +78,10 @@
                           ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
    ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse (off when a custom :insert builder owns it)
    ^:mutable ^bool fadeExit  ;; fade exiting cells 1→0 with the collapse (off when a custom :remove builder owns it)
-   ^:mutable prevLayout  ;; the layout the cells were resting under just before a layout-change segment (nil
-                          ;; otherwise); an INDEXED prevLayout gives an off-screen cell its OLD size in O(1), so
-                          ;; a cell entering the viewport during list↔grid morphs its size instead of popping in
-                          ;; at target (docs §7c). Flow prevLayout ⇒ captured live (arriveCapture) instead.
-   ^:mutable arriveCapture ;; {key -> {:bc BoxConstraints :edge double}} for a FLOW-source layout change: the
-                          ;; viewport-entering cells whose OLD natural size can't be known by math and must be
-                          ;; MEASURED. On the segment's first pass keyed-tween-layout lays each at :bc (the old
-                          ;; loose constraint) parked at :edge; capture-arrivals! then reads the natural size and
-                          ;; fills arriveFrom. Cleared per segment. nil/empty ⇒ no capture (indexed or non-morph).
-   ^:mutable arriveFrom]  ;; {key -> rect} the measured `from` block for arriveCapture cells, filled after the
-                          ;; first pass; keyed-tween-layout lerps these keys normally from then on.
+   ^:mutable prevLayout]  ;; the layout the cells were resting under just before a layout-change segment (nil
+                          ;; otherwise); segment-start! builds an `old-src` frame-source over it so a cell
+                          ;; arriving into the viewport gets its OLD frame (size + relative position) and morphs
+                          ;; instead of popping in at target (docs §7c). Consumed and cleared per segment.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -353,10 +346,11 @@
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
-    ;; Freeze the resting layout as `from` ONLY across a layout change, so the next
-    ;; segment-start! can read an off-screen cell's OLD size; self-clears on same-id
-    ;; passes so a later data-only segment never reads a stale layout (docs §7c).
-    (.-prevLayout! rs (when layout-changed old))
+    ;; Freeze the resting layout as `from` across a layout change so the next
+    ;; segment-start! can read an off-screen cell's OLD size (docs §7c). Set only on
+    ;; the change (NOT cleared on same-id passes — a second rebuild before layout must
+    ;; not wipe it); segment-start! consumes and clears it, so it never goes stale.
+    (when layout-changed (.-prevLayout! rs old))
     ;; always swap the fns — same :id means same behavior, fresher closures
     (.-layoutModel! rs target-layout)
     (.-itemCount! rs item-count)
@@ -370,9 +364,7 @@
     (when-not tween-anim  ;; back to resting — forget the segment
       (.-segGen! rs -1)
       (.-segTween! rs nil)
-      (.-leaving! rs {})
-      (.-arriveCapture! rs nil)
-      (.-arriveFrom! rs {}))
+      (.-leaving! rs {}))
     (when (or layout-changed count-changed seg-start)
       (.markNeedsLayout rs))))
 
@@ -895,65 +887,11 @@
   ;; :full-cross-extent, each falling back to the visible extent for resting/non-
   ;; tween frames) so content lays out once at a real size; the collapsing axis's
   ;; lerped VISIBLE window is applied as a paint-clip, not a layout size.
-  ;; §7c flow capture: a to-be-measured arriving cell carries the OLD loose
-  ;; constraint so it self-sizes to its natural old size this one pass.
-  (if-let [^r/BoxConstraints bc (:loose-bc gm)]
-    bc
-   (let [^double me (double (:full-main-extent gm (:main-extent gm)))
+  (let [^double me (double (:full-main-extent gm (:main-extent gm)))
         ^double ce (double (:full-cross-extent gm (:cross-extent gm)))]
     (if (= :vertical (:axis env))
       (r/BoxConstraints .minWidth ce .maxWidth ce .minHeight me .maxHeight me)
-      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce)))))
-
-;; @ai-generated(solo)
-(defn- capture-arrivals!
-  "§7c flow-source measure. On the first pass of a FLOW-source layout change the
-   arriving cells were laid at their OLD loose constraint (see geo-constraints /
-   keyed-tween-layout capture branch), so each now carries its NATURAL old size.
-   Read those and build the `from` block: per edge, stack the cells in index order
-   at their measured old sizes and anchor the block just past that edge (trailing →
-   first cell at we; leading → block end at ws). Fills arriveFrom, so from the next
-   pass keyed-tween-layout lerps these keys normally. Clears arriveCapture once every
-   key is measured. Cross is taken at 0 (exact for a single-column flow list; an
-   approximation for a multi-column flow source, which still morphs to its target).
-   No-op once nothing is left to measure. Only the arriving cells are touched."
-  [^CollectionRenderSliver rs env ^double ws ^double we]
-  (let [cap (.-arriveCapture rs)]
-    (when (seq cap)
-      (let [have (.-arriveFrom rs)
-            fresh (loop [child (.-firstChild rs) out []]
-                    (if child
-                      (let [^r/RenderBox ch child
-                            ^int idx (.indexOf rs ch)
-                            k (key-for rs idx)
-                            entry (get cap k)]
-                        (recur (.childAfter rs ch)
-                               (if (and entry (not (contains? have k)) (.-hasSize ch))
-                                 (conj out {:idx idx :key k :dir (:dir entry) :size (.-size ch)})
-                                 out)))
-                      out))]
-        (when (seq fresh)
-          (let [ordered (sort-by :idx fresh)
-                stack (fn [m entries ^double start]
-                        (first (reduce (fn [[m ^double off] e]
-                                         (let [^ui/Size sz (:size e)
-                                               ^double mn (lay/size-main env sz)]
-                                           [(assoc m (:key e)
-                                                   {:offset off :cross 0.0 :main-extent mn
-                                                    :cross-extent (lay/size-cross env sz)})
-                                            (+ off mn)]))
-                                       [m start] entries)))
-                total (fn [entries] (reduce (fn [^double s e]
-                                              (+ s (lay/size-main env (:size e)))) 0.0 entries))
-                trail (filter #(= :trailing (:dir %)) ordered)
-                lead (filter #(= :leading (:dir %)) ordered)
-                af (-> have
-                       (stack trail we)
-                       (stack lead (- ws (double (total lead)))))]
-            (.-arriveFrom! rs af)
-            ;; drop capture entries now measured; segment ends clear the rest
-            (when (every? #(contains? af %) (keys cap))
-              (.-arriveCapture! rs nil))))))))
+      (r/BoxConstraints .minWidth me .maxWidth me .minHeight ce .maxHeight ce))))
 
 (defn- indexed-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
@@ -1115,10 +1053,6 @@
                                    (assoc! m idx [vm vc op]))
                                  m)))
                       (persistent! m))))
-                ;; §7c flow capture: children just laid at their old loose
-                ;; constraint now carry their natural old size — snapshot it into the
-                ;; `from` block so the next pass lerps them. No-op unless capturing.
-                _capture (capture-arrivals! rs env ws we)
                 ;; Scroll correction (animating only): the indexed path writes
                 ;; geometry directly, so when content above collapses/rescales
                 ;; mid-segment the viewport-top slot jumps unless we follow it.
@@ -1150,6 +1084,25 @@
 ;; ============================================================
 ;; Segment start (v2 keyed rect animator)
 ;; ============================================================
+
+;; @ai-generated(solo)
+(defn- resting-frame-source
+  "§7c: a frame-source over the RESTING layout `old-layout`, so a cell arriving into
+   the viewport on a layout change can be given its OLD frame (size + relative
+   position) and morph instead of popping in at target. ONE producer, uniform across
+   layout kinds behind the frame-source interface:
+     - INDEXED old layout → exact O(1) math (`indexed-frame-source`).
+     - FLOW old layout → dry-measure the currently attached window at the old
+       constraint and re-place it under the old flow (`project-flow-window` at the
+       old layout, wrapped as a `frozen-frame-source`).
+   Returns nil when the old layout can't answer — a flow source whose arriving cells
+   are not yet attached (an indexed target hasn't materialised its window), so those
+   cells fall back to a target-size edge slide."
+  [^CollectionRenderSliver rs old-layout]
+  (if (some? (:geometry old-layout))
+    (tw/indexed-frame-source old-layout)
+    (when-let [snap (project-flow-window rs old-layout)]
+      (tw/frozen-frame-source snap))))
 
 ;; @ai-generated(solo)
 (defn- from-relay!
@@ -1276,50 +1229,20 @@
         ^double we (+ ws (.-remainingCacheExtent c))
         fi ((:first-index to-src) env ctx ws)
         li (when (.-isFinite we) ((:last-index to-src) env ctx we))
-        ;; §7c size morph: when the segment is a pure layout change (no concurrent
-        ;; data churn) and the PREVIOUS layout is indexed, an off-screen cell's OLD
-        ;; rect is O(1) — feed it so the entering cell slides in at its old size and
-        ;; morphs (list↔grid). Guard on empty enter/exit so shadow index == old-data
-        ;; index; otherwise (or flow prevLayout) old-frame is nil ⇒ arrive at target.
+        ;; §7c size morph: on a pure layout change (no concurrent data churn, so the
+        ;; shadow index == old-data index) build ONE frame-source over the resting
+        ;; layout; an off-screen cell arriving into the viewport is then given its OLD
+        ;; frame (size + relative position) uniformly — indexed by math, flow by
+        ;; dry-measure — and morphs instead of popping in at target.
         old-layout (.-prevLayout rs)
-        old-frame (when (and old-layout (some? (:geometry old-layout))
-                             (not= (:id old-layout) (:id layout))
-                             (empty? (.-entering rs)) (empty? (.-exiting rs)))
-                    (let [osrc (tw/indexed-frame-source old-layout)
-                          octx ((:prepare osrc) env)
-                          ofr (:frame osrc)]
+        old-src (when (and old-layout
+                           (not= (:id old-layout) (:id layout))
+                           (empty? (.-entering rs)) (empty? (.-exiting rs)))
+                  (resting-frame-source rs old-layout))
+        old-frame (when old-src
+                    (let [octx ((:prepare old-src) env)
+                          ofr (:frame old-src)]
                       (fn [^int i] (ofr env octx i))))
-        ;; §7c flow capture: FLOW source → INDEXED target (list→grid). Off-screen
-        ;; arriving cells have no cheap old size — mark them for LIVE measurement:
-        ;; the first pass lays each at the old flow :measure constraint (loose) and
-        ;; capture-arrivals! reads its natural size. Same pure-layout-change guard.
-        arrive-capture
-        (when (and old-layout indexed (nil? (:geometry old-layout))
-                   (not= (:id old-layout) (:id layout))
-                   (empty? (.-entering rs)) (empty? (.-exiting rs))
-                   fi li)
-          (let [omeasure (:measure old-layout)
-                oenv (if-let [prep (:prepare old-layout)] (assoc env :ctx (prep env)) env)
-                lo (int fi) hi (int li)
-                [cmin cmax] (reduce (fn [[mn mx] ^int i]
-                                      (if (contains? on-screen (key-for rs i))
-                                        [(if mn (math/min (int mn) i) i)
-                                         (if mx (math/max (int mx) i) i)]
-                                        [mn mx]))
-                                    [nil nil] (range lo (inc hi)))]
-            (reduce (fn [m ^int i]
-                      (let [k (key-for rs i)]
-                        (if (or (contains? on-screen k) (contains? (.-entering rs) k))
-                          m
-                          (let [dir (cond
-                                      (and cmax (> i (int cmax))) :trailing
-                                      (and cmin (< i (int cmin))) :leading
-                                      (< (- i (int (or cmin i))) (- (int (or cmax i)) i)) :leading
-                                      :else :trailing)]
-                            (assoc m k {:bc (omeasure oenv i)
-                                        :edge (if (= :leading dir) ws we)
-                                        :dir dir})))))
-                    {} (range lo (inc hi)))))
         from-rects (if (and fi li)
                      (tw/augment-from-edges
                       committed-from on-screen (.-entering rs) to-src env ctx #(key-for rs %)
@@ -1373,11 +1296,10 @@
                    [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
                    (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
                    {:entering (.-entering rs) :exiting (.-exiting rs)
-                    :leaving leaving :collapse-axis collapse-axis
-                    :arrive-capture arrive-capture
-                    :arrive-from-fn (fn [] (.-arriveFrom rs))})]
-    (.-arriveCapture! rs arrive-capture)
-    (.-arriveFrom! rs {})
+                    :leaving leaving :collapse-axis collapse-axis})]
+    ;; consume the frozen resting layout — this segment has read the old sizes; a
+    ;; later data-only segment must not re-read it (docs §7c).
+    (.-prevLayout! rs nil)
     (.-fromRects! rs from-rects)
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
@@ -1416,7 +1338,7 @@
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil nil {})]
+                                     fadeEnter fadeExit nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

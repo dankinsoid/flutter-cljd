@@ -316,14 +316,11 @@
   ([id to-src committed ^double from-extent key-of progress]
    (keyed-tween-layout id to-src committed from-extent key-of progress {}))
   ([id to-src committed ^double from-extent key-of progress
-    {:keys [entering exiting leaving collapse-axis arrive-capture arrive-from-fn]
+    {:keys [entering exiting leaving collapse-axis]
      :or {entering #{} exiting #{} leaving {} collapse-axis :main}}]
   (let [to-frame (:frame to-src)  to-first (:first-index to-src)
         to-last (:last-index to-src) to-ext (:extent to-src)
-        to-prep (:prepare to-src)
-        ;; §7c flow capture: the measured `from` block, read fresh each pass (it is
-        ;; filled by capture-arrivals! AFTER this segment's first pass).
-        arrive-from (fn [] (if arrive-from-fn (arrive-from-fn) {}))]
+        to-prep (:prepare to-src)]
     {:id id
      :prepare (fn [env]
                 {:t (double (progress))
@@ -331,16 +328,8 @@
      :geometry (fn [env ^int i]
                  (let [ctx (:ctx env)
                        key (key-of i)
-                       cap (when arrive-capture (get arrive-capture key))]
-                  (if (and cap (not (contains? (arrive-from) key)))
-                   ;; first pass for a flow arrival: park it at the edge and lay it at
-                   ;; its OLD loose constraint (geo-constraints honours :loose-bc) so it
-                   ;; self-sizes to its natural old size; capture-arrivals! reads that.
-                   {:offset (double (:edge cap)) :cross 0.0
-                    :main-extent 0.0 :cross-extent 0.0 :loose-bc (:bc cap)}
-                   (let [to (to-frame env (:to-ctx ctx) i)
-                       ;; measured arrival block wins over any stale committed rect
-                       from (or (get (arrive-from) key) (get committed key))
+                       to (to-frame env (:to-ctx ctx) i)
+                       from (get committed key)
                        ext-key (if (= :cross collapse-axis) :cross-extent :main-extent)
                        ;; the captured `from`'s STABLE full extent on the collapse
                        ;; axis (commit-pass!/animate-pass! store it): an exiting cell
@@ -377,7 +366,7 @@
                        ^double vc (double (:cross-extent fr))]
                    (assoc fr
                           :full-main-extent (if (= :cross collapse-axis) vm (double (or full vm)))
-                          :full-cross-extent (if (= :cross collapse-axis) (double (or full vc)) vc))))))
+                          :full-cross-extent (if (= :cross collapse-axis) (double (or full vc)) vc))))
      :first-index (fn [env ^double off]
                     (let [ctx (:ctx env)]
                       (int (or (to-first env (:to-ctx ctx) off) 0))))

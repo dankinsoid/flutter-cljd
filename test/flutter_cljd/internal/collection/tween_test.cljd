@@ -571,7 +571,7 @@
         env (assoc base-env :item-count 6)
         ctx ((:prepare to) env)
         ws 200.0 we 400.0
-        result (tw/augment-from-edges committed on-screen #{} to env ctx key-of 0 5 ws we)]
+        result (tw/augment-from-edges committed on-screen #{} to env ctx key-of 0 5 ws we nil)]
     (testing "committed (on-screen) keys keep their rects"
       (is (frame= (fr 200 0 100 200) (get result :c)))
       (is (frame= (fr 300 0 100 200) (get result :d))))
@@ -601,7 +601,7 @@
         ws 200.0 we 400.0
         ;; :a fresh insert (no committed), :e fresh insert REUSING a stale-committed key
         entering #{:a :e}
-        result (tw/augment-from-edges committed on-screen entering to env ctx key-of 0 5 ws we)]
+        result (tw/augment-from-edges committed on-screen entering to env ctx key-of 0 5 ws we nil)]
     (testing "entering off-screen key gets no from → collapses from 0"
       (is (not (contains? result :a))))
     (testing "entering key reusing a stale committed rect is dropped, not slid"
@@ -609,6 +609,33 @@
     (testing "on-screen and non-entering off-screen cells are unaffected"
       (is (frame= (fr 200 0 100 200) (get result :c)))
       (is (close? 400.0 (:offset (get result :f)))))))
+
+(deftest augment-from-edges-grouped-old-size
+  ;; §7c size morph: with an indexed old layout, cells arriving at one edge keep
+  ;; their OLD size and are laid out relative to each other, then the block is
+  ;; translated to the edge — instead of piling in a line at target size.
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 100}))
+        key-of (fn [^int i] (nth [:a :b :c :d :e :f] i))
+        committed {:c (fr 200 0 100 200) :d (fr 300 0 100 200)}
+        on-screen #{:c :d}                            ; cmin=2, cmax=3
+        env (assoc base-env :item-count 6)
+        ctx ((:prepare to) env)
+        ws 200.0 we 400.0
+        ;; old layout = taller cells: main 150 (target is 100)
+        old-frame (fn [^int i] {:offset (* i 150.0) :cross 0.0 :main-extent 150.0 :cross-extent 200.0})
+        result (tw/augment-from-edges committed on-screen #{} to env ctx key-of 0 5 ws we old-frame)]
+    (testing "arriving cells carry the OLD size (150), not the target size (100)"
+      (is (close? 150.0 (:main-extent (get result :f)))))
+    (testing "trailing block keeps old spacing and abuts we"
+      ;; :e(4),:f(5) old offsets 600,750; min=600 → shift = we-600 = -200
+      (is (close? 400.0 (:offset (get result :e))))   ; 600 - 200
+      (is (close? 550.0 (:offset (get result :f)))))  ; 750 - 200
+    (testing "leading block abuts ws from above"
+      ;; :a(0),:b(1) old offsets 0,150; max end = 300 → shift = ws-300 = -100
+      (is (close? -100.0 (:offset (get result :a))))  ; 0 - 100
+      (is (close? 50.0 (:offset (get result :b)))))   ; 150 - 100
+    (testing "on-screen cells keep their real committed rects"
+      (is (frame= (fr 200 0 100 200) (get result :c))))))
 
 ;; --- §7a shared core: classify-cell / shadow-frame-source / slide-out-frame ---
 
