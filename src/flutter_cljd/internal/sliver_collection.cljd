@@ -179,16 +179,20 @@
                   ;; §8a: the engine lays the cell at its full committed size and
                   ;; paint-clips the collapse — no widget-side collapse-wrap.
                   (let [content (user-builder ctx (:item entry))
-                        content (if (and remove-builder seg-anim)
+                        content (cond
+                                  (and remove-builder seg-anim)
                                   (remove-builder content (a/ReverseAnimation seg-anim))
-                                  content)]
+                                  seg-anim
+                                  (an/fade-wrap content (a/ReverseAnimation seg-anim))
+                                  :else content)]
                     (w/KeyedSubtree
                      .key (w/ValueKey k)
                      .child content))
                   (let [child (item-builder ctx (int (:data-index entry)))
-                        child (if (and (contains? inserts k) insert-builder seg-anim)
-                                (insert-builder child seg-anim)
-                                child)]
+                        child (cond
+                                (not (and (contains? inserts k) seg-anim)) child
+                                insert-builder (insert-builder child seg-anim)
+                                :else (an/fade-wrap child seg-anim))]
                     (w/KeyedSubtree .key (w/ValueKey k) .child child)))))
             ;; no shadow — plain builder, keyed when possible
             (if (and key-fn data)

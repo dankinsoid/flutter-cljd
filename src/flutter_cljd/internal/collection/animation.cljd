@@ -95,6 +95,15 @@
               .alignment w/Alignment.center
               .child child)))))
 
+;; @ai-generated(solo)
+(defn ^w/Widget fade-wrap
+  "Default enter/exit opacity fade, applied when the user gives no `:builder`.
+   Rides the same segment `anim` the engine uses for the rect collapse: an entering
+   cell fades 0→1 as it grows, an exiting cell 1→0 as it shrinks (pass a reversed
+   animation). Uses FadeTransition so opacity is a paint-only channel — no relayout."
+  [^w/Widget child ^#/(a/Animation double) anim]
+  (w/FadeTransition .opacity anim .child child))
+
 ;; --- Shadow Data ---
 ;;
 ;; Shadow-data merges live data + dying items into a single vec.
