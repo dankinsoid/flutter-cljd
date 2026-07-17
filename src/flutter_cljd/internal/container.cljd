@@ -93,8 +93,7 @@
   (let [color (some-> args :color t/color)
         decoration (cond
                      (contains? args :decoration)
-                     (let [decor (t/decoration (:decoration args))]
-                       (if (nil? color) decor (.copyWith decor .color color)))
+                     (t/decoration-with-color (:decoration args) color)
                      (some? color) (m/BoxDecoration .color color)
                      :else nil)]
     ;; `color` is folded into `decoration` here, so build-tree never needs a

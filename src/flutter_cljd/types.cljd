@@ -2007,6 +2007,26 @@
 
       :else (throw (Exception. (str "Invalid decoration: " args))))))
 
+;; @ai-generated(guided)
+(defn ^m/Decoration decoration-with-color
+  "Builds a Decoration from `spec`, folding `color` in when non-nil.
+   A map spec merges the color before conversion, so box/shape/smooth
+   decorations are all colored uniformly. A ready-made instance is color-copied
+   per its concrete type: `SmoothDecoration` (which has no native copyWith) and
+   `BoxDecoration` are supported; folding a color into any other Decoration
+   subclass isn't expressible, so it throws rather than silently drop the color."
+  [spec ^m/Color? color]
+  (cond
+    (nil? color) (decoration spec)
+    (map? spec) (decoration (assoc spec :color color))
+    :else
+    (let [decor (decoration spec)]
+      (cond
+        (instance? sc/SmoothDecoration decor) (sc/with-color decor color)
+        (instance? m/BoxDecoration decor) (.copyWith ^m/BoxDecoration decor .color color)
+        :else (throw (Exception. (str "Can't fold :color into a " (.-runtimeType decor)
+                                      " passed as :decoration — set the color inside the decoration instead")))))))
+
 (defn ^dc/Duration duration
   "Creates a Duration object from the specified value.
    The value can be specified as a number, a map of days, hours, minutes, seconds, milliseconds, microseconds, or a Duration object.

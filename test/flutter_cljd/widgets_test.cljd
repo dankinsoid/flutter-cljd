@@ -3,6 +3,7 @@
             [flutter-cljd.types :as t]
             [flutter-cljd.widgets :as f]
             [flutter-cljd.internal.animated :as anim]
+            [flutter-cljd.smooth-corner :as sc]
             [flutter-cljd.internal.sliver-collection :as scol]
             ["package:flutter/material.dart" :as m]
             ["package:flutter/widgets.dart" :as w]
@@ -352,6 +353,15 @@
       (let [decorated (.-child (tree (f/container {:color :red} (m/Text "Child"))))]
         (is (instance? m/DecoratedBox decorated))
         (is (= (.-color (.-decoration decorated)) (t/color :red)))))
+
+    (testing ":color folds into a map :decoration (a SmoothDecoration has no copyWith)"
+      ;; Regression: {:decoration <rounded map> :color …} used to call
+      ;; Decoration.copyWith on a SmoothDecoration and crash at runtime.
+      (let [decorated (.-child (tree (f/container {:decoration {:border-radius 16} :color :red}
+                                                  (m/Text "Child"))))
+            decoration (.-decoration decorated)]
+        (is (instance? sc/SmoothDecoration decoration))
+        (is (= (.-color ^sc/SmoothDecoration decoration) (t/color :red)))))
 
     (testing ":clip without a decoration falls back to a rectangular ClipRect"
       (let [top (tree (f/container {:clip :hard-edge} (m/Text "Child")))]

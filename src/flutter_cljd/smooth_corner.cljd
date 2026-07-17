@@ -752,6 +752,15 @@
 
   (hashCode [this] (hash [corners color gradient shadows side border-gradient image blend-mode])))
 
+;; @ai-generated(guided)
+(defn ^SmoothDecoration with-color
+  "Returns a copy of `decor` with its fill `color` replaced (SmoothDecoration has
+   no native copyWith)."
+  [^SmoothDecoration decor ^ui/Color? color]
+  (SmoothDecoration (.-corners decor) color (.-gradient decor) (.-shadows decor)
+                    (.-side decor) (.-border-gradient decor) (.-assert-square? decor)
+                    (.-image decor) (.-blend-mode decor)))
+
 (defn- lerp-smooth-decoration [^SmoothDecoration a ^SmoothDecoration b ^double t]
   (SmoothDecoration
    (lerp-corners (.-corners a) (.-corners b) t)
