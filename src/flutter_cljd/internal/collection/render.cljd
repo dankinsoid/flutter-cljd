@@ -1249,7 +1249,7 @@
                                      end)]
                     (.-cache! rs (conj cache'
                                        {:offset off :cross cross :extent ext
-                                        :end end :max-end mx :state st}))
+                                        :end end :max-end mx :state st :canon true}))
                     [off cross st mx])))]
           (set-layout-offset! child off)
           (set-cross-axis-offset! child cross)
@@ -1416,34 +1416,72 @@
               (.-baseState! rs use-seed)
               d))))))
 
-(defn- estimate-leading-step!
-  "Fallback backward step when NO checkpoint covers the region above the cache
-   (cold / never-visited off-screen margin): one leading child assumed to end
-   where the region starts, :cross dead-reckoned to 0. Approximate — the old
-   list-shaped estimator, retained only for the no-seed case (docs §2/§4 accept a
-   transiently approximate off-screen leading margin). Returns true iff it stepped."
-  [^CollectionRenderSliver rs layout env]
-  (let [measure-fn (:measure layout)
+(defn leading-step-entry
+  "Canonical single-child leading dead-reckon used by estimate-leading-step! when
+   NO checkpoint covers the region above the cache. Places index `i` (= cf-1) as an
+   independent run through the layout's :anchor + :place, so its :cross and the
+   inter-run MAIN gap are the layout's own — list's :spacing, wrap's :run-spacing —
+   NOT the old size-only `head - ext` pack that dropped the gap and let walk!'s
+   extent-only reuse leak a no-spacing offset into the visible window (the
+   wrap→jump→list no-spacing bug). `head` is cache[0]'s offset (index cf), `size`/
+   `ext` the measured Size and main paint extent of i, `head-max-end` cache[0]'s
+   :max-end. The absolute base stays approximate (a lone off-screen child can't know
+   its run) but the geometry SHAPE is canonical — spacing/cross via :place. Returns
+   the cache entry plus :base-state (the flow state BEFORE i, for the new baseState).
+   Pure.
+
+   Invariant (user directive): estimates may decide WHERE the window starts and shape
+   the extents OUTSIDE it, but the cells INSIDE the materialized window are ALWAYS
+   placed by the one canonical flow walk (:anchor-seeded state + :place per child)."
+  [layout env ^int i ^double head size ^double ext ^double head-max-end]
+  (let [place-fn (:place layout)
         anchor-fn (:anchor layout)
         init-fn (:init layout)
+        flow-end-fn (:flow-end layout)
+        ;; seed i as a fresh run whose children 0..i-1 ended at `head`, place it,
+        ;; and read how far MAIN advances to the next index — list: ext + :spacing;
+        ;; wrap/masonry: same-run advance is 0 on main, so fall back to run height.
+        seed (if anchor-fn (anchor-fn env i head) (init-fn env))
+        [gm st'] (place-fn env i size seed)
+        ^double adv (if flow-end-fn
+                      (math/max ext (- (double (flow-end-fn env st')) head))
+                      ext)
+        ^double noff (- head adv)
+        ^double cross (double (or (:cross gm) 0.0))
+        ^double end (+ noff ext)]
+    {:offset noff :cross cross :extent ext :end end
+     :max-end (math/min end head-max-end)
+     ;; :state = flow state AFTER i (before cf): reconstructs placing cf back at head
+     :state (if anchor-fn (anchor-fn env (inc i) head) (init-fn env))
+     :base-state (if anchor-fn (anchor-fn env i noff) (init-fn env))
+     :canon true}))
+
+(defn- estimate-leading-step!
+  "Fallback backward step when NO checkpoint covers the region above the cache
+   (cold / never-visited off-screen margin): one leading child placed as its own
+   run via the layout's :anchor + :place (leading-step-entry) — the layout's real
+   spacing/cross, not the old one-child-per-slot `head - ext` estimate. Absolute
+   offset stays approximate (docs §2/§4 accept a transiently approximate off-screen
+   leading margin); geometry shape is canonical. Returns true iff it stepped."
+  [^CollectionRenderSliver rs layout env]
+  (let [measure-fn (:measure layout)
         cache (.-cache rs)
-        ^int cf (.-cacheFirst rs)]
+        ^int cf (.-cacheFirst rs)
+        ^int i (dec cf)]
     (if-let [c (.insertAndLayoutLeadingChild rs
-                ^r/BoxConstraints (measure-fn env (dec cf))
+                ^r/BoxConstraints (measure-fn env i)
                 .parentUsesSize true)]
       (let [^double ext (.paintExtentOf rs ^r/RenderBox c)
             ^double head (double (:offset (nth cache 0)))
-            ^double noff (- head ext)
-            st (if anchor-fn (anchor-fn env cf head) (init-fn env))
-            entry {:offset noff :cross 0.0 :extent ext
-                   :end head
-                   :max-end (math/min head ^double (:max-end (nth cache 0)))
-                   :state st}]
+            ^double head-max-end (double (:max-end (nth cache 0)))
+            e (leading-step-entry layout env i head (.-size ^r/RenderBox c) ext head-max-end)
+            ^double noff (double (:offset e))
+            ^double cross (double (:cross e))]
         (set-layout-offset! c noff)
-        (set-cross-axis-offset! c 0.0)
-        (.-cache! rs (into [entry] cache))
-        (.-cacheFirst! rs (dec cf))
-        (.-baseState! rs (if anchor-fn (anchor-fn env (dec cf) noff) (init-fn env)))
+        (set-cross-axis-offset! c cross)
+        (.-cache! rs (into [(dissoc e :base-state)] cache))
+        (.-cacheFirst! rs i)
+        (.-baseState! rs (:base-state e))
         true)
       false)))
 
@@ -1527,6 +1565,49 @@
           (when (> (.abs delta) 1e-3)
             delta))))))
 
+(defn window-canonical-violations
+  "Structural-invariant guard (debug only). Cache entries whose laid span
+   [offset, end) overlaps the true VISIBLE window [vs, ve) but whose geometry did
+   NOT come from the layout's :place walk (`:canon` unset).
+
+   The invariant (user directive): estimates may decide WHERE the window starts
+   (base offset) and shape the extents OUTSIDE it, but the cells INSIDE the
+   materialized window are ALWAYS placed by the one canonical flow walk
+   (:anchor-seeded state + :place per child). No path may write estimate-shaped
+   entries (uniform avg extents, missing spacing, cross 0) into the visible window.
+
+   Non-empty ⇒ a leak — the root class behind the single-left-column, the Phase-E
+   resting approx frames, and the wrap→jump→list no-spacing bugs. Pure; the caller
+   runs it only under kDebugMode so release overhead is zero. Returns the offending
+   [abs-index entry] pairs."
+  [cache ^int cache-first ^double vs ^double ve]
+  (loop [^int rel 0 out []]
+    (if (< rel (count cache))
+      (let [e (nth cache rel)]
+        (recur (inc rel)
+               (if (and (< (double (:offset e)) ve)
+                        (> (double (:end e)) vs)
+                        (not (:canon e)))
+                 (conj out [(+ cache-first rel) e])
+                 out)))
+      out)))
+
+(defn- assert-window-canonical!
+  "kDebugMode: fail loudly if any cache entry overlapping the visible paint window
+   lacks canonical-walk provenance (window-canonical-violations). Zero release
+   overhead — the whole body is dead-code-eliminated when kDebugMode is false."
+  [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (when fd/kDebugMode
+    (let [^double vs (.-scrollOffset c)
+          ^double ve (+ vs (.-remainingPaintExtent c))
+          v (window-canonical-violations (.-cache rs) (.-cacheFirst rs) vs ve)]
+      (when (seq v)
+        (assert false
+                (str "collection: flow layout " (:id layout) " left "
+                     (count v) " estimate-shaped cell(s) in the visible window ["
+                     vs " " ve ") — in-window geometry must come from the canonical "
+                     ":place walk (WS2 invariant). First offender: " (first v)))))))
+
 (defn- finish-flow-geometry!
   [^CollectionRenderSliver rs layout env ^r/SliverConstraints c walked]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)
@@ -1570,6 +1651,12 @@
                               (pos? (.-scrollOffset c)))))
     (when reached
       (.setDidUnderflow mgr true))
+    ;; WS2 invariant tripwire (debug only, resting frames): no estimate-shaped cell
+    ;; may sit in the visible window. Segment-capture passes place a transient tween
+    ;; window, so the check is scoped to resting; flying-flow! is the sanctioned
+    ;; approximate path and keeps the cache empty, so it never reaches here.
+    (when (nil? (.-tweenAnim rs))
+      (assert-window-canonical! rs layout c))
     (.didFinishLayout mgr)))
 
 ;; @ai-generated(solo)

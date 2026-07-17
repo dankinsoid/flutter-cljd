@@ -212,8 +212,10 @@
               ^double end (+ off ext)
               ^double mx (if (or (nil? prev-max) (> end ^double prev-max)) end prev-max)]
           (recur (next s) st' mx
+                 ;; :canon marks canonical-walk provenance (geometry from :place) —
+                 ;; the render engine's in-window invariant guard reads it.
                  (conj! out {:offset off :cross cross :extent ext
-                             :end end :max-end mx :state st'})))
+                             :end end :max-end mx :state st' :canon true})))
         (persistent! out)))))
 
 (defn flow-seed-state

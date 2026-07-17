@@ -430,6 +430,87 @@
       ;; list-off is the stale here; wrap-off the shorter new estimate
       (is (= wrap-off (render/reanchor-offset true idx list-off wrap-off))))))
 
+;; --- canonical leading dead-reckon (wrap→jump→list no-spacing bug) ---
+
+(deftest leading-step-canonical-list-keeps-spacing
+  ;; Repro: Wrap → Jump ~50vp → List. The re-anchored deep survivor has NO
+  ;; checkpoint above it (a layout :id change drops them), so backfill falls to the
+  ;; single-child leading step. The old step packed `head - ext` — dropping the
+  ;; layout's :spacing — and walk!'s extent-only reuse leaked that no-spacing offset
+  ;; into the visible window (list pressed tight, fixed only after scrolling). The
+  ;; canonical step must place the child through :place so the gap is the layout's.
+  (let [spacing 8.0
+        env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        list (lay/list-layout {:spacing spacing})
+        head 1000.0
+        ext 60.0
+        size (ui/Size 300.0 ext)
+        e (render/leading-step-entry list env 41 head size ext 1200.0)]
+    (testing "offset carries the inter-item gap: head - ext - spacing (not head - ext)"
+      (is (= (- head ext spacing) (:offset e))))            ; 1000 - 60 - 8 = 932
+    (testing "the laid child ends exactly `spacing` below the head — a real gap"
+      (is (= (- head spacing) (:end e))))                   ; 932 + 60 = 992
+    (testing "provenance is canonical — geometry came from :place"
+      (is (true? (:canon e))))
+    (testing "cross is the run-start value the layout assigns (0 for a list)"
+      (is (= 0.0 (:cross e))))))
+
+(deftest leading-step-canonical-matches-forward-walk
+  ;; The invariant: the leading step's entry equals what a canonical forward :place
+  ;; walk from its base-state produces — index i where the step laid it, and the
+  ;; head (cf) back at `head`, so the run is contiguous and re-walk is a no-op.
+  (let [spacing 8.0
+        env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        list (lay/list-layout {:spacing spacing})
+        head 1000.0
+        ext 60.0
+        size (ui/Size 300.0 ext)
+        i 41
+        e (render/leading-step-entry list env i head size ext 1200.0)
+        walk (tw/flow-run-entries list env
+                                  [[i size ext] [(inc i) size ext]]
+                                  (:base-state e))]
+    (testing "forward walk places index i exactly where the leading step did"
+      (is (= (:offset e) (:offset (nth walk 0)))))
+    (testing "and lands the head (cf) back at `head` — the run is contiguous"
+      (is (= head (:offset (nth walk 1)))))))
+
+(deftest leading-step-wrap-preserves-run-height-pack
+  ;; wrap's leading margin is accepted-approximate: a lone off-screen child can't
+  ;; know its run, so it packs one run height (ext) above the head with cross 0 —
+  ;; unchanged from before. The fix only ADDS the layout's main gap, which wrap
+  ;; advances cross-wise (0 on main within a run), so the wrap pack is untouched.
+  (let [env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        wrap (lay/wrap-layout {:spacing 0 :run-spacing 0})
+        head 1000.0
+        ext 50.0
+        size (ui/Size 100.0 ext)
+        e (render/leading-step-entry wrap env 41 head size ext 1200.0)]
+    (is (= (- head ext) (:offset e)))                       ; head - run height
+    (is (= 0.0 (:cross e)))
+    (is (true? (:canon e)))))
+
+;; --- structural-invariant guard (estimate-shaped entry in the visible window) ---
+
+(deftest window-canonical-violations-flags-estimate-in-window
+  ;; The debug tripwire: an estimate-shaped entry (no :canon) overlapping the visible
+  ;; window is a leak; a fully canonical cache — or an estimate confined OUTSIDE the
+  ;; window — is clean. Root class behind #5, the Phase-E resting frames, and this bug.
+  (let [canon (fn [off ext] {:offset off :end (+ off ext) :canon true})
+        estim (fn [off ext] {:offset off :end (+ off ext)})   ; no :canon
+        cache-first 40]
+    (testing "an estimate entry inside [vs, ve) is reported with its absolute index"
+      (let [cache [(canon 900.0 60.0) (estim 960.0 60.0) (canon 1020.0 60.0)]
+            v (render/window-canonical-violations cache cache-first 950.0 1400.0)]
+        (is (= 1 (count v)))
+        (is (= 41 (first (first v))))))                      ; 40 + rel 1
+    (testing "an all-canonical window has no violations"
+      (let [cache [(canon 900.0 60.0) (canon 960.0 60.0)]]
+        (is (empty? (render/window-canonical-violations cache cache-first 950.0 1400.0)))))
+    (testing "an estimate confined OUTSIDE the visible window is allowed"
+      (let [cache [(estim 100.0 60.0) (canon 1000.0 60.0)]]   ; estimate ends 160 < vs
+        (is (empty? (render/window-canonical-violations cache cache-first 950.0 1400.0)))))))
+
 (deftest ema-agg-seeds-then-blends
   (testing "nil prev seeds directly from the first live-window sample"
     (is (= {:avg-main 40.0 :avg-cross 90.0} (render/ema-agg nil 40.0 90.0))))
