@@ -250,15 +250,19 @@
 ;; suppression now reads the phase-E velocity sensor (scrollSign, |v|), not the
 ;; retired Phase C per-pass eps.
 (deftest refine-suppression-gate
-  (let [sup 120.0]
-    (testing "idle (sign 0) never suppresses regardless of |v|"
-      (is (false? (render/refine-suppressed? 0 5000.0 sup))))
+  (let [sup 120.0 vf 3200.0]
+    (testing "idle (sign 0), slow, never suppresses"
+      (is (false? (render/refine-suppressed? 0 500.0 sup vf))))
     (testing "active upward (sign -1) motion above the threshold suppresses"
-      (is (true? (render/refine-suppressed? -1 400.0 sup))))
+      (is (true? (render/refine-suppressed? -1 400.0 sup vf))))
     (testing "upward motion below the threshold still refines"
-      (is (false? (render/refine-suppressed? -1 90.0 sup))))
-    (testing "forward/downward (sign +1) motion never suppresses"
-      (is (false? (render/refine-suppressed? 1 4000.0 sup))))))
+      (is (false? (render/refine-suppressed? -1 90.0 sup vf))))
+    (testing "forward/downward (sign +1) SLOW motion refines (below v-fast)"
+      (is (false? (render/refine-suppressed? 1 2000.0 sup vf))))
+    (testing "a FAST fling suppresses in EITHER direction (protect ballistic momentum)"
+      ;; a correction during a fast ballistic tick fights the simulation → abrupt stop
+      (is (true? (render/refine-suppressed? 1 4000.0 sup vf)))    ; fast downward
+      (is (true? (render/refine-suppressed? 0 5000.0 sup vf))))))  ; fast, sign not yet resolved
 
 (deftest refine-emission-exclusive-with-segment
   (testing "resting, still pass emits"
@@ -431,25 +435,73 @@
       (is (= -1 (render/vel-sign 1 -95.0 eps))))))  ; cleared → flips
 
 (deftest fidelity-regime-transitions
-  (let [vs 220.0 vf 3200.0]
+  ;; new arity: (fidelity-regime prev absv decel? fast-run v-slow v-fast min-fast-run)
+  (let [vs 220.0 vf 3200.0 mfr 3]
     (testing "steady slow drag stays resting (Phase D behavior, wider band)"
-      (is (= :resting (render/fidelity-regime :resting 100.0 false vs vf)))
-      (is (= :resting (render/fidelity-regime :resting 100.0 true vs vf))))
+      (is (= :resting (render/fidelity-regime :resting 100.0 false 0 vs vf mfr)))
+      (is (= :resting (render/fidelity-regime :resting 100.0 true 0 vs vf mfr))))
     (testing "a medium drag that never reaches v-fast stays resting (real path)"
-      (is (= :resting (render/fidelity-regime :resting 1500.0 false vs vf))))
-    (testing "crossing v-fast enters flying"
-      (is (= :flying (render/fidelity-regime :resting 4000.0 false vs vf))))
+      (is (= :resting (render/fidelity-regime :resting 1500.0 false 0 vs vf mfr))))
+    (testing "crossing v-fast for a SUSTAINED run (>= min-fast-run) enters flying"
+      (is (= :flying (render/fidelity-regime :resting 4000.0 false 3 vs vf mfr))))
     (testing "hysteresis: once flying, stay flying through the band down to v-slow"
-      (is (= :flying (render/fidelity-regime :flying 1500.0 true vs vf)))
-      (is (= :flying (render/fidelity-regime :flying 250.0 true vs vf))))
+      (is (= :flying (render/fidelity-regime :flying 1500.0 true 0 vs vf mfr)))
+      (is (= :flying (render/fidelity-regime :flying 250.0 true 0 vs vf mfr))))
     (testing "flying dropping below v-slow while decelerating engages landing"
-      (is (= :landing (render/fidelity-regime :flying 180.0 true vs vf))))
+      (is (= :landing (render/fidelity-regime :flying 180.0 true 0 vs vf mfr))))
     (testing "landing keeps landing while still coasting down"
-      (is (= :landing (render/fidelity-regime :landing 120.0 true vs vf))))
+      (is (= :landing (render/fidelity-regime :landing 120.0 true 0 vs vf mfr))))
     (testing "landing relaxes to resting once motion effectively dies"
-      (is (= :resting (render/fidelity-regime :landing 0.5 true vs vf))))
-    (testing "landing that re-accelerates past v-fast flies again"
-      (is (= :flying (render/fidelity-regime :landing 5000.0 false vs vf))))))
+      (is (= :resting (render/fidelity-regime :landing 0.5 true 0 vs vf mfr))))
+    (testing "landing that re-accelerates past v-fast (sustained) flies again"
+      (is (= :flying (render/fidelity-regime :landing 5000.0 false 3 vs vf mfr))))))
+
+;; --- symptom 2 root cause: a SINGLE fast frame must NOT engage flying ---
+;; (a desktop wheel/trackpad notch, a jumpTo, a correction glitch, or the first
+;; post-idle sample can each read as one fast frame; only a sustained fling flies.)
+
+(deftest single-fast-frame-does-not-fly
+  (let [vs 220.0 vf 3200.0 mfr 3]
+    (testing "one fast frame from rest stays resting despite absv >> v-fast"
+      (is (= :resting (render/fidelity-regime :resting 12000.0 false 1 vs vf mfr)))
+      (is (= :resting (render/fidelity-regime :resting 12000.0 false 2 vs vf mfr))))
+    (testing "flying engages only once the run reaches min-fast-run"
+      (is (= :flying (render/fidelity-regime :resting 12000.0 false 3 vs vf mfr))))))
+
+;; --- symptom 2 root cause: velocity magnitude is correct, but desktop per-frame
+;; scroll jumps read as huge velocities — proving flying must gate on a SUSTAINED
+;; run rather than a single sample (units themselves are px/s, not inflated). ---
+
+(deftest frame-velocity-realistic-numbers
+  (let [frame-us 16667.0]   ; one 60fps frame in microseconds
+    (testing "a 300px/s touch drag = ~5px over a frame → ~300px/s (NOT inflated ×1000)"
+      ;; 5px over 16.667ms = 299.99…px/s
+      (is (< 299.0 (render/frame-velocity 100.0 105.0 frame-us) 301.0)))
+    (testing "a same-frame re-run (dt <= 0) reads as zero motion"
+      (is (= 0.0 (render/frame-velocity 100.0 105.0 0.0)))
+      (is (= 0.0 (render/frame-velocity 100.0 105.0 -1000.0))))
+    (testing "a discrete desktop scroll notch (200px in ONE frame) reads as ~12000px/s"
+      ;; this is why a single fast sample must not fly — it is a normal desktop nudge
+      (is (< 11000.0 (render/frame-velocity 0.0 200.0 frame-us) 13000.0)))))
+
+;; --- symptom 2 pipeline: a 300px/s touch drag, fed frame-by-frame through the real
+;; sensor kernels (frame-velocity → vel-ema → flyingRun → fidelity-regime), never
+;; engages flying (stays :resting every frame). ---
+
+(deftest slow-drag-pipeline-stays-resting
+  (let [vs 220.0 vf 3200.0 mfr 3 alpha 0.35 frame-us 16667.0
+        ;; 20 frames of a steady 300px/s drag: +5px each 16.667ms frame.
+        result (loop [i 0 off 0.0 ema (/ 0.0 0.0) run 0 regime :resting regimes []]
+                 (if (= i 20)
+                   regimes
+                   (let [off' (+ off 5.0)
+                         inst (render/frame-velocity off off' frame-us)
+                         ema' (render/vel-ema ema inst alpha)
+                         run' (if (>= (.abs ^double ema') vf) (inc run) 0)
+                         regime' (render/fidelity-regime regime (.abs ^double ema') false run' vs vf mfr)]
+                     (recur (inc i) off' ema' run' regime' (conj regimes regime')))))]
+    (testing "every frame of a 300px/s drag stays resting (real, pixel-perfect path)"
+      (is (every? #(= :resting %) result)))))
 
 ;; --- overscan config parsing (all forms) ---
 
@@ -469,6 +521,17 @@
            (render/resolve-overscan {:ahead 400 :behind 100 :max 800 :lookahead-ms 120}))))
   (testing "a partial dynamic map leaves the rest to defaults"
     (is (= {:mode :dynamic :base-ahead 400.0} (render/resolve-overscan {:ahead 400}))))
+  (testing "flying (approximate placement) is OFF unless explicitly opted in"
+    ;; zero-config and every non-opted form must not carry :fly? — real placement,
+    ;; pixel-perfect on every input device (symptom 2 regression fix)
+    (is (not (:fly? (render/resolve-overscan nil))))
+    (is (not (:fly? (render/resolve-overscan 300))))
+    (is (not (:fly? (render/resolve-overscan {:ahead 400}))))
+    (is (not (:fly? (render/resolve-overscan {:viewport 0.5})))))
+  (testing "{:flying true} opts the dynamic form into the flying regime"
+    (is (:fly? (render/resolve-overscan {:flying true})))
+    (is (= {:mode :dynamic :base-ahead 400.0 :fly? true}
+           (render/resolve-overscan {:ahead 400 :flying true}))))
   (testing "a fn is retained as an escape hatch"
     (let [f (fn [_] 100)]
       (is (= {:mode :fn :fn f} (render/resolve-overscan f))))))

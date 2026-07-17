@@ -115,7 +115,9 @@
    ^:mutable curRegime    ;; :resting | :flying | :landing — the fidelity regime the last velocity update classified.
                           ;; Drives the flow dispatch (flying ⇒ approximate placement) and overscan gating.
    ^:mutable ^double overscanBehind ;; this frame's resolved leading/trailing overscan margins (px), computed once
-   ^:mutable ^double overscanAhead] ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
+   ^:mutable ^double overscanAhead ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
+   ^:mutable ^int flyingRun] ;; consecutive frames the EMA has held ≥ v-fast (0 = not fast) — the flying
+                          ;; entry gate; a lone fast frame (desktop scroll notch/jump/glitch) never trips it.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -200,30 +202,37 @@
       ;; frame's directional overscan window BEFORE dispatching. A playing segment
       ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
       ;; the window there, so the regime gate must not fight it (scenario 6).
-      (update-velocity! this c)
-      (let [seg? (some? (.-tweenAnim this))
-            [^double behind ^double ahead] (if seg? [0.0 0.0]
-                                             (overscan-extent this c (.-curRegime this)))]
-        (.-overscanBehind! this behind)
-        (.-overscanAhead! this ahead))
-      (cond
-        ;; RESTING: no animation — run the plain target through its natural driver.
-        ;; A flow layout in the flying regime takes the approximate-placement path.
-        (nil? (.-tweenAnim this))
-        (let [layout (.-layoutModel this)]
-          (cond
-            (:geometry layout) (indexed-layout! this layout c)
-            (and (= :flying (.-curRegime this)) (:approx-offset layout))
-            (flying-flow! this layout c)
-            :else (flow-layout! this layout c)))
+      (let [prev-regime (.-curRegime this)]
+        (update-velocity! this c)
+        (let [seg? (some? (.-tweenAnim this))
+              [^double behind ^double ahead] (if seg? [0.0 0.0]
+                                               (overscan-extent this c (.-curRegime this)))]
+          (.-overscanBehind! this behind)
+          (.-overscanAhead! this ahead))
+        (cond
+          ;; RESTING: no animation — run the plain target through its natural driver.
+          ;; The approximate-placement (flying) path engages ONLY when the caller
+          ;; opted in via :overscan {:flying true} (:fly? on the spec) AND the regime
+          ;; sustained a fast run. Zero-config keeps real placement always
+          ;; (pixel-perfect; desktop pointer-scroll would otherwise misread as a
+          ;; fling). `entry?` = first pass of a flying run, so flying-flow! drops the
+          ;; real cache once instead of every pass.
+          (nil? (.-tweenAnim this))
+          (let [layout (.-layoutModel this)
+                regime (.-curRegime this)
+                fly? (and (= :flying regime) (:fly? (.-overscanConfig this)) (:approx-offset layout))]
+            (cond
+              (:geometry layout) (indexed-layout! this layout c)
+              fly? (flying-flow! this layout c (not= :flying prev-regime))
+              :else (flow-layout! this layout c)))
 
-        ;; SEGMENT START: host bumped gen — capture the target from the new tree.
-        (not= (.-curGen this) (.-segGen this))
-        (segment-start! this c)
+          ;; SEGMENT START: host bumped gen — capture the target from the new tree.
+          (not= (.-curGen this) (.-segGen this))
+          (segment-start! this c)
 
-        ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
-        :else
-        (indexed-layout! this (.-segTween this) c))
+          ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
+          :else
+          (indexed-layout! this (.-segTween this) c)))
       ;; Refinement motion sensor: remember this pass's offset compensated by any
       ;; correction it emitted, so the correction's same-frame re-run (and the
       ;; corrected next frame) read as no user motion — only real drag/ballistic
@@ -445,12 +454,28 @@
    viewport main extent, alpha dimensionless."
   {:v-slow          220.0    ;; |v| below ⇒ resting band: refinement on, small symmetric base overscan
    :v-fast         3200.0    ;; |v| above ⇒ flying: approximate placement, overscan + refinement OFF
+   :min-fast-run      3      ;; consecutive frames the EMA must hold ≥ v-fast before flying engages —
+                             ;; a single big-delta frame (desktop wheel/trackpad notch, a jumpTo, a
+                             ;; correction mis-compensation, the first post-idle sample) must NOT fly.
    :ema-alpha         0.35   ;; velocity EMA weight of the current frame's instantaneous sample
    :dir-flip-eps     90.0    ;; px/s the reversed velocity must clear before scrollSign flips (anti-thrash hysteresis)
    :suppress-v      120.0    ;; upward |v| above which above-anchor refinement corrections defer (WS2.3 tier 3)
    :lookahead-ms    120.0    ;; read-ahead horizon: velocity-scaled lead = |v|·lookahead
    :ahead-max-frac    1.0    ;; the velocity-scaled ahead margin is capped at this × viewport
    :base-frac         0.25}) ;; zero-config symmetric base as a fraction of viewport when no :avg-main is known yet
+
+(defn frame-velocity
+  "Instantaneous signed scroll velocity px/s from a correction-compensated offset
+   delta over a frame gap. `dt-micros` is the frame timestamp delta in MICROseconds
+   (WidgetsBinding.currentFrameTimeStamp is a Duration); ÷1e6 → seconds, so px÷s.
+   Returns 0.0 when dt is non-positive (guards a same-frame re-run). Pure.
+   NOTE: on desktop, pointer-scroll (wheel/trackpad) is delivered as a discrete
+   per-frame offset JUMP, not a physics drag — a single 200px notch over a 16.7ms
+   frame reads as ~12000px/s. That is why flying must require a SUSTAINED fast run
+   (fidelity-regime `min-fast-run`), not a single fast sample."
+  [^double prev-off ^double so ^double dt-micros]
+  (let [^double dt (/ dt-micros 1000000.0)]
+    (if (pos? dt) (/ (- so prev-off) dt) 0.0)))
 
 (defn vel-ema
   "Folds one frame's instantaneous velocity `sample` into the EMA. NaN prev (no
@@ -467,26 +492,35 @@
 
 (defn fidelity-regime
   "Classifies the pass into :resting / :flying / :landing from the smoothed speed
-   `absv`, the deceleration flag `decel?`, and the previous regime (WS2.1 §2.3).
-   Hysteresis band [v-slow, v-fast]: enter flying above v-fast, stay flying down
-   to v-slow; drop out of flying while still decelerating ⇒ landing (re-enables
-   real materialisation + refinement + overscan so the stop lands exactly), which
-   relaxes to resting once motion dies. A medium drag that never reaches v-fast
-   stays resting (Phase D behavior, just a wider band). Pure."
-  [prev ^double absv ^bool decel? ^double v-slow ^double v-fast]
+   `absv`, the deceleration flag `decel?`, the count of consecutive fast frames
+   `fast-run` (this frame included), and the previous regime (WS2.1 §2.3).
+   Hysteresis band [v-slow, v-fast]: enter flying only once the EMA has held
+   ≥ v-fast for `min-fast-run` consecutive frames (a single fast frame — a desktop
+   scroll notch, a jumpTo, a correction glitch, the first post-idle sample — must
+   NOT fly), then stay flying down to v-slow; drop out of flying while still
+   decelerating ⇒ landing (re-enables real materialisation + refinement + overscan
+   so the stop lands exactly), which relaxes to resting once motion dies. A medium
+   drag that never sustains v-fast stays resting (Phase D behavior). Pure."
+  [prev ^double absv ^bool decel? ^int fast-run ^double v-slow ^double v-fast ^int min-fast-run]
   (cond
-    (>= absv v-fast) :flying
+    (and (>= absv v-fast) (>= fast-run min-fast-run)) :flying
     (and (= prev :flying) (> absv v-slow)) :flying
     (and (or (= prev :flying) (= prev :landing)) decel? (> absv 1.0)) :landing
     :else :resting))
 
 (defn refine-suppressed?
   "WS2.3 tier-3 gate on the VELOCITY signal (Phase E supersedes Phase C's per-pass
-   eps): defer above-anchor refinement corrections while the user is actively
-   dragging/flinging UP (scrollSign < 0) fast enough that a same-frame offset jump
-   would race the motion. `absv` px/s. Pure."
-  [^int scroll-sign ^double absv ^double suppress-v]
-  (and (neg? scroll-sign) (> absv suppress-v)))
+   eps): defer above-anchor refinement corrections when emitting a same-frame
+   scrollOffsetCorrection would race live motion. Two cases:
+   - active UP drag/fling (scrollSign < 0) above `suppress-v` — the original rule;
+   - ANY fling at/above `v-fast` (either direction) — a scrollOffsetCorrection
+     during a fast ballistic tick fights the simulation (correctBy shifts pixels
+     under it, the next tick snaps back) and can terminate it early (the abrupt
+     stop). Corrections resume once the fling decelerates, so landing still refines
+     to the exact stop. `absv` px/s. Pure."
+  [^int scroll-sign ^double absv ^double suppress-v ^double v-fast]
+  (or (>= absv v-fast)
+      (and (neg? scroll-sign) (> absv suppress-v))))
 
 (defn resolve-overscan
   "Normalizes the :overscan config form once at build (mirrors parse-anim-config).
@@ -497,7 +531,17 @@
      false | 0 | :none  → disabled (Flutter :cache-extent still applies)
      (fn [ctx] …)       → escape hatch, re-normalized per frame (ctx per WS2.1 §6)
      nil (not given)    → zero-config dynamic default (small symmetric base + ~120ms lookahead, ~1vp cap)
-   Returns a normalized spec map (never nil). Pure."
+   Returns a normalized spec map (never nil). Pure.
+
+   FLYING OPT-IN (`:flying true` in the dynamic map): the approximate-placement
+   regime (flying-flow!) is engaged ONLY when the spec carries `:fly? true`, which
+   only an explicit `{... :flying true}` sets. Zero-config and every other form
+   keep REAL placement always — overscan still widens the materialisation window
+   (real, measured cells kept alive past the viewport), but a fast fling never
+   drops to estimated offsets. This makes zero-config scrolling pixel-perfect on
+   every input device (desktop pointer-scroll delivers discrete per-frame jumps
+   that a velocity gate alone can misread as a fling); flying is available for
+   callers who opt in and can tolerate transient estimated frames mid-fling."
   [overscan]
   (cond
     (nil? overscan) {:mode :dynamic}
@@ -513,7 +557,8 @@
         (:ahead overscan) (assoc :base-ahead (double (:ahead overscan)))
         (:behind overscan) (assoc :base-behind (double (:behind overscan)))
         (:max overscan) (assoc :max (double (:max overscan)))
-        (:lookahead-ms overscan) (assoc :lookahead-ms (double (:lookahead-ms overscan)))))
+        (:lookahead-ms overscan) (assoc :lookahead-ms (double (:lookahead-ms overscan)))
+        (true? (:flying overscan)) (assoc :fly? true)))
     :else {:mode :dynamic}))
 
 (defn overscan-window
@@ -559,39 +604,49 @@
         ^double prev-off (.-refineLastOffset rs)
         ^double so (.-scrollOffset c)]
     (when (and (not (.-isNaN last)) (not (.-isNaN prev-off)) (> stamp last))
-      (let [^double dt (/ (- stamp last) 1000000.0)]
-        (when (pos? dt)
-          (let [^double inst-v (/ (- so prev-off) dt)
+      (let [^double dt-micros (- stamp last)]
+        (when (pos? dt-micros)
+          (let [^double inst-v (frame-velocity prev-off so dt-micros)
                 ^double prev-ema (.-velocityEMA rs)
                 ^double old-abs (if (.-isNaN prev-ema) 0.0 (.abs prev-ema))
                 ^double ema (vel-ema prev-ema inst-v (double (:ema-alpha overscan-tunables)))
                 ^double new-abs (.abs ema)
-                decel? (< new-abs old-abs)]
+                ^double v-fast (double (:v-fast overscan-tunables))
+                decel? (< new-abs old-abs)
+                ;; consecutive-fast-frame run: a single fast frame (desktop scroll
+                ;; notch, jumpTo, correction glitch) never trips flying — only a
+                ;; sustained fling of `min-fast-run` frames does.
+                ^int run (if (>= new-abs v-fast) (inc (.-flyingRun rs)) 0)]
+            (.-flyingRun! rs run)
             (.-velocityEMA! rs ema)
             (.-scrollSign! rs (vel-sign (.-scrollSign rs) ema
                                         (double (:dir-flip-eps overscan-tunables))))
-            (.-curRegime! rs (fidelity-regime (.-curRegime rs) new-abs decel?
+            (.-curRegime! rs (fidelity-regime (.-curRegime rs) new-abs decel? run
                                               (double (:v-slow overscan-tunables))
-                                              (double (:v-fast overscan-tunables))))))))
+                                              v-fast
+                                              (int (:min-fast-run overscan-tunables))))))))
     (.-lastVelStamp! rs stamp)))
 
 (defn- overscan-extent
-  "This frame's [behind ahead] overscan margins (px): [0 0] while flying or when
-   the config is disabled. Resolves the :fn config form against the live sensor
-   ctx, then applies the pure velocity law (overscan-window)."
+  "This frame's [behind ahead] overscan margins (px): [0 0] when the config is
+   disabled, or on a pass that ACTUALLY flies (opted-in flying regime — the
+   approximate path owns the window there). A fast fling that is NOT opted into
+   flying keeps widening: real, measured cells stay materialised ahead of the
+   viewport. Resolves the :fn form against the live sensor ctx, then applies the
+   pure velocity law (overscan-window)."
   [^CollectionRenderSliver rs ^r/SliverConstraints c regime]
-  (let [spec (.-overscanConfig rs)]
-    (if (or (nil? spec) (:disabled spec) (= :flying regime))
+  (let [spec (.-overscanConfig rs)
+        ^double viewport (.-viewportMainAxisExtent c)
+        ^int sign (.-scrollSign rs)
+        spec (if (and (map? spec) (= :fn (:mode spec)))
+               (resolve-overscan ((:fn spec) {:velocity (.-velocityEMA rs) :direction sign
+                                              :viewport viewport :item-count (.-itemCount rs)
+                                              :cache-extent (.-remainingCacheExtent c)}))
+               spec)]
+    (if (or (nil? spec) (:disabled spec) (and (:fly? spec) (= :flying regime)))
       [0.0 0.0]
-      (let [^double viewport (.-viewportMainAxisExtent c)
-            ^double absv (.abs (.-velocityEMA rs))
-            ^int sign (.-scrollSign rs)
-            ^double avg-main (double (or (:avg-main (lay/make-env c (.-itemCount rs) (env-agg rs))) 0.0))
-            spec (if (= :fn (:mode spec))
-                   (resolve-overscan ((:fn spec) {:velocity (.-velocityEMA rs) :direction sign
-                                                  :viewport viewport :item-count (.-itemCount rs)
-                                                  :cache-extent (.-remainingCacheExtent c)}))
-                   spec)]
+      (let [^double absv (.abs (.-velocityEMA rs))
+            ^double avg-main (double (or (:avg-main (lay/make-env c (.-itemCount rs) (env-agg rs))) 0.0))]
         (overscan-window spec absv sign viewport avg-main
                          (double (:lookahead-ms overscan-tunables))
                          (double (:ahead-max-frac overscan-tunables))
@@ -1478,11 +1533,13 @@
    O(gap) real layout for frames that fly past unseen. Children still self-size
    (they must, to paint) but stack at the estimate with cross 0 (fly-by frames
    aren't scrutinised — a wrap window shows a transient single column mid-fling).
-   Clears the persistent real cache and un-anchors the frontier, so the next
-   resting/landing pass dead-reckons from the attached top and refines to land
-   exactly. Falls back to the real driver when the estimate is degenerate (no
-   measured :avg-main yet)."
-  [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+   On regime ENTRY (`entry?`) it drops the persistent real cache once and un-anchors
+   the frontier, so the next resting/landing pass dead-reckons from the attached top
+   and refines to land exactly; subsequent flying passes REUSE the attached children
+   and leave the (already-empty) cache untouched — clearing it every pass would force
+   a cold re-materialisation each frame (the fast-scroll stutter). Falls back to the
+   real driver when the estimate is degenerate (no measured :avg-main yet)."
+  [^CollectionRenderSliver rs layout ^r/SliverConstraints c ^bool entry?]
   (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
         env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
         approx-fn (:approx-offset layout)]
@@ -1502,12 +1559,15 @@
               ^int n (int (or item-count 0))
               ^int raw (invert-approx-offset approx ws item-count)
               ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))]
-          ;; drop the stale real cache — flying owns approximate offsets; landing
-          ;; rebuilds real geometry (seed-cache! dead-reckons from the attached top).
-          (.-cache! rs [])
-          (.-cacheFirst! rs start)
-          (.-baseState! rs (if anchor-fn (anchor-fn env start (approx start)) (init-fn env)))
-          (.-anchoredTo0! rs false)
+          ;; ONCE on entry: drop the stale real cache — flying owns approximate
+          ;; offsets; landing rebuilds real geometry (seed-cache! dead-reckons from
+          ;; the attached top). Later flying passes keep the cache empty and reuse
+          ;; attached children, so no per-frame cold rebuild.
+          (when entry?
+            (.-cache! rs [])
+            (.-cacheFirst! rs start)
+            (.-baseState! rs (if anchor-fn (anchor-fn env start (approx start)) (init-fn env)))
+            (.-anchoredTo0! rs false))
           (if (.-firstChild rs)
             (.collectGarbage rs (.calculateLeadingGarbage rs .firstIndex start) 0)
             (.collectGarbage rs 0 0))
@@ -1597,7 +1657,8 @@
             ;; the WS1.3 segment correction per pass.
             emit? (refine-emit? (some? (.-tweenAnim rs))
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
-                                                    (double (:suppress-v overscan-tunables))))]
+                                                    (double (:suppress-v overscan-tunables))
+                                                    (double (:v-fast overscan-tunables))))]
         ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
         ;; set-point. During a segment flow-layout! runs to capture the target.
         (when (nil? (.-tweenAnim rs))
@@ -2147,7 +2208,7 @@
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {}
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
-                                     overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0)]
+                                     overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

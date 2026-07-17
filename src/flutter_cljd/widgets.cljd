@@ -3056,12 +3056,18 @@ Overscan (velocity-scaled directional read-ahead, on by default):
   - number — fixed symmetric px
   - `{:viewport f}` — fraction of the viewport main extent
   - `{:ahead a :behind b :max m :lookahead-ms ms}` — full velocity-scaled control
+  - `{… :flying true}` — additionally opt into the cheap approximate-placement
+    regime on a sustained fast fling (see below)
   - `false` / `0` — disable (Flutter `:cache-extent` still applies)
   - `(fn [ctx] …)` — custom law; `ctx` = `{:velocity :direction :viewport
     :item-count :cache-extent}` → px | `{:ahead :behind}` | `{:viewport f}`
   Zero-config default: a small symmetric base + ~120ms lookahead, capped at ~1
-  viewport. A fast fling switches to a cheap approximate-placement regime and
-  lands on real, refined geometry as it decelerates. No-op on the box `collection`.
+  viewport — always REAL, measured placement, so scrolling is pixel-perfect on
+  every input device. `:flying true` opts into an approximate-placement regime on
+  a sustained fast fling (offsets estimated from the average cell size, landing on
+  real refined geometry as it decelerates) — off by default because it trades
+  transient placement fidelity for cheaper far-fling frames. No-op on the box
+  `collection`.
 - `:approximate-item-size` — a `double` main-extent or `Size` cold prior for the
   engine's average-cell estimate before any cell is measured (improves cold-start
   and fast-fling placement)
