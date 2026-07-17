@@ -1070,10 +1070,172 @@
                      [(fn [_ item] (ws1-tile item (= layout :wrap)))]))))
            (ui/expanded))))))
 
+;; ====== WS2 — VIRTUALIZATION VERIFICATION RIG ======
+;; @ai-generated(guided)
+;; Manual test rig for the WS2 engine work (backward re-flow, offset refinement,
+;; exact top landing, cold-start inverse-seed, overscan). One big index-seeded
+;; dataset; each button drives one scenario audit case (ws2-design.md §4) in one tap.
+;; The engine work lives under src/ — this rig only exercises it.
+
+(def ^:private ws2-count 2200)
+(def ^:private ws2-initial (vec (map (fn [i] {:id i}) (range ws2-count))))
+;; mean tile height (44 + mean of mod-140 ≈ 44 + 70); the :approximate-item-size seed.
+(def ^:private ws2-mean 114.0)
+;; ~0.3× the estimated full extent (2200 × 114): deep enough that estimate vs. true diverge.
+(def ^:private ws2-deep-offset 75000.0)
+
+;; Index-seeded LCG → deterministic pseudo-random extents (no Math.random), so
+;; estimated (mean-based) and true offsets genuinely diverge across the list.
+(defn- ^int ws2-seed [^int id]
+  (bit-and (+ (* id 1103515245) 12345) 0x7fffffff))
+
+(defn- ^w/Widget ws2-tile [item ^bool wrap?]
+  (let [id (:id item)
+        s (ws2-seed id)
+        h (+ 44.0 (double (mod (bit-shift-right s 8) 140)))
+        w (+ 56.0 (double (mod (bit-shift-right s 4) 64)))
+        tile (->> (ui/text (str id) {:size 16 :weight :bold})
+                  (ui/center)
+                  (ui/decorated {:color (c/CupertinoColors.systemGrey6)
+                                 :border {:l {:color (nth colors (mod id (count colors)))
+                                              :width 8}}})
+                  (ui/clip-corners :all 8))]
+    (if wrap?
+      (ui/sized {:w w :h h} tile)
+      (ui/sized {:h h} tile))))
+
+;; A fresh controller with a deep initialScrollOffset drives the cold-start path;
+;; the listener feeds the live offset atom so the readout rebuilds on its own.
+(defn- ^w/ScrollController ws2-make-ctl [offset-cell ^double init]
+  (let [^w/ScrollController ctl (w/ScrollController .initialScrollOffset init)]
+    (.addListener ctl (fn []
+                        (when (.-hasClients ctl)
+                          (reset! offset-cell (.-offset ctl)))))
+    ctl))
+
+;; :managed :dispose threads the resource (the holder atom) as its arg.
+(defn- ws2-dispose-holder! [holder]
+  (let [^w/ScrollController ctl @holder]
+    (.dispose ctl)))
+
+;; Live scrollOffset + item count in its own build scope: updates every scroll
+;; frame without rebuilding the collection above it (which would muddy refinement).
+(defn- ^w/Widget ws2-readout [offset-cell ^int n]
+  (f/widget
+   :watch [^double off offset-cell]
+   (->> (ui/text (str "offset " (.toStringAsFixed off 1) " · items " n)
+                 {:size 12 :weight :bold :color :white})
+        (ui/padding {:l 4}))))
+
+(defn ^w/Widget ws2-preview
+  "WS2 virtualization rig. Buttons → scenarios (ws2-design.md §4):
+   - List/Wrap: toggle while deep = #5 probe (off-window cells must form real rows).
+   - Approx: pass :approximate-item-size on/off to compare estimate quality.
+   - Jump/Animate ~50vp: deep scroll (jumpTo / animateTo) to diverge estimate vs. true.
+   - animateTo 0 / Fling top: exact top landing — must stop on item 0, no end-snap.
+   - Ins@2 / Rm@2: mutate above the window while deep in wrap (#6 — no offset settle).
+   - Cold deep: rebuild with a fresh deep-offset controller (inverse-seed cold start)."
+  []
+  (f/widget
+   :watch [items (atom ws2-initial) :as $items
+           next-id (atom ws2-count) :as $next-id
+           layout (atom :list) :as $layout
+           approx? (atom false) :as $approx
+           cold-gen (atom 0) :as $cold]
+   :managed [offset-cell (atom 0.0)
+             ctl-holder (atom (ws2-make-ctl offset-cell 0.0))
+             :dispose ws2-dispose-holder!]
+   (let [^w/ScrollController controller @ctl-holder
+         cold-restart! (fn [^double init]
+                         (let [old @ctl-holder]
+                           (reset! ctl-holder (ws2-make-ctl offset-cell init))
+                           (swap! $cold inc)
+                           ;; retired subtree still attached this frame — dispose next microtask
+                           (ws1-later 0 #(.dispose ^w/ScrollController old))))
+         to-deep! (fn [^bool animate?]
+                    (when (.-hasClients controller)
+                      (let [^dc/dynamic pos (.-position controller)
+                            ^double vp (.-viewportDimension pos)
+                            ^double mx (.-maxScrollExtent pos)
+                            target (min mx (* 50.0 vp))]
+                        (if animate?
+                          (.animateTo controller target
+                                      .duration (dc/Duration .milliseconds 1200)
+                                      .curve w/Curves.easeInOut)
+                          (.jumpTo controller target))
+                        nil)))
+         to-top! (fn [^int ms ^w/Curve curve]
+                   (when (.-hasClients controller)
+                     (.animateTo controller 0.0
+                                 .duration (dc/Duration .milliseconds ms)
+                                 .curve curve)))]
+     (ui/column
+      :cross-axis-alignment :stretch
+      (->> (ui/column
+            :cross-axis-alignment :stretch
+            :spacing 6
+            (ws2-readout offset-cell (count items))
+            (ws1-section
+             "layout · list↔wrap while deep = #5 probe · approx compares estimate"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
+              (btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
+              (btn (str "Approx: " (if approx? "ON" "OFF")) #(swap! $approx not))))
+            (ws1-section
+             "deep scroll — ~50 viewports down (estimate vs. true diverge)"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "Jump ~50vp" #(to-deep! false))
+              (btn "Animate ~50vp" #(to-deep! true))))
+            (ws1-section
+             "exact top landing — must stop on item 0, no end-snap"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "animateTo 0 (slow)" #(to-top! 1600 w/Curves.easeInOut))
+              (btn "Fling top" #(to-top! 350 w/Curves.decelerate))))
+            (ws1-section
+             "#6 — insert/remove above window while deep in wrap: no offset settle after"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "Ins@2" #(ws1-insert! $items $next-id 2))
+              (btn "Rm@2" #(ws1-remove-at! $items 2))))
+            (ws1-section
+             "cold start deep — content appears at once, indicator ~right, scroll up lands at 0"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "Cold deep" #(cold-restart! ws2-deep-offset))
+              (btn "Reset"
+                   (fn []
+                     (reset! $items ws2-initial)
+                     (reset! $next-id ws2-count)
+                     (reset! $layout :list)
+                     (reset! $approx false)
+                     (cold-restart! 0.0))))))
+           (ui/padding {:h 8 :v 8})
+           (ui/colored (c/CupertinoColors.systemGrey6)))
+      (->> (w/KeyedSubtree
+            .key (w/ValueKey cold-gen)
+            .child (ui/custom-scroll-view
+                    :controller controller
+                    (ui/sliver-padding 8
+                     (apply ui/sliver-collection
+                            items
+                            :key-fn :id
+                            :animate {:duration 900 :move {:duration 900}}
+                            (concat
+                             (when approx? [:approximate-item-size ws2-mean])
+                             (case layout
+                               :wrap [:layout :wrap :spacing 6 :run-spacing 6]
+                               [:spacing 6])
+                             [(fn [_ item] (ws2-tile item (= layout :wrap)))])))))
+           (ui/expanded))))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
   [["WS1"        ws1-preview]
+   ["WS2"        ws2-preview]
    ["Morph"      layout-tween-preview]
    ["Arrival"    arrival-morph-preview]
    ["Box Morph"  box-tween-preview]
