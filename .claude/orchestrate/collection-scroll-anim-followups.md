@@ -72,6 +72,12 @@ right after a segment.
 ---
 
 ## Workstream 2 — Approximate-any-layout virtualization + progressive offset refinement
+**Designed (2026-07-17, see `ws2-design.md` — the implementation source of truth):** protocol
+hooks specced (`:renewal-point?`, monotone `:approx-offset` + engine inverse-seed,
+`approximate-item-size` → `:avg-main`/`:avg-cross`); phased plan A(protocol) → B(checkpoints +
+backward re-flow, fixes #5) → C(refinement + exact landing, fixes #6) → D(geometric cache
+scoping) → E(overscan); WS3 attaches after E. Refinement and the WS1.3 segment correction are
+mutually exclusive per pass (segment freezes the offset model at capture).
 The big architectural piece. Reframes bugs #5/#6 (list→wrap while scrolled: off-window cells
 degenerate to a single left column; correct wrap only snaps in at the top; scroll offset settles
 in a second pass after the segment) as one root defect: **there is no true from-index-0 flow
