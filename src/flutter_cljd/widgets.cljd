@@ -2847,14 +2847,17 @@ Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
   (let [[args slivers] (ut/key-values-args-and-children args)]
     (scrl/custom-scroll* args slivers)))
 
-(defn ^w/Widget single-child-scroll
-  "Makes a single child scrollable.
+(defn ^w/Widget scroll
+  "Makes a single child scrollable — the simple, eager scroll container (the
+`UIScrollView` / SwiftUI `ScrollView` / Flutter `SingleChildScrollView` model).
+Renders the whole child, no virtualization: for long/large item lists reach for
+`list`/`grid`/`collection`; to compose slivers by hand use `custom-scroll`.
 
 Examples:
 
 ```clojure
-(single-child-scroll (column (text \"A\") (text \"B\")))
-(single-child-scroll :axis :horizontal child)
+(scroll (column (text \"A\") (text \"B\")))
+(scroll :axis :horizontal child)
 ```
 
 Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
@@ -2862,10 +2865,10 @@ Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:drag-start-behavior` (`:start`/`:down`)."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
-    (scrl/single-child-scroll* args child)))
+    (scrl/scroll* args child)))
 
 (defn ^w/Widget scrollable
-  "Low-level scrollable widget. Prefer `list`, `grid`, or `single-child-scroll`
+  "Low-level scrollable widget. Prefer `list`, `grid`, or `scroll`
 unless you need direct viewport control.
 
 `:view-builder` is `(fn [context offset] widget)` — builds the viewport given a scroll offset.

@@ -593,7 +593,7 @@
 ;; ====== 11. SMOOTH CORNERS ======
 
 (defn corners-preview []
-  (ui/single-child-scroll
+  (ui/scroll
    (ui/padding 16
     (apply ui/column
            :cross-axis-alignment :stretch
@@ -684,7 +684,7 @@
    :cross-axis-alignment :stretch
    ;; BOX host — both axes flexible, non-scrolling; item-align, column fill,
    ;; RTL, bottom-pinned rows
-   (->> (ui/single-child-scroll
+   (->> (ui/scroll
          (ui/column
           :cross-axis-alignment :stretch
           :spacing 6
@@ -924,7 +924,7 @@
                       (swap! $tags #(vec (concat (subvec % 0 idx) (subvec % (inc idx)))))))))))
          (ui/padding {:h 8 :v 8})
          (ui/colored (c/CupertinoColors.systemGrey6)))
-    (->> (ui/single-child-scroll
+    (->> (ui/scroll
           (ui/padding 12
             (let [chips (map morph-chip tags)]
               (if (= mode :wrap)
@@ -1274,7 +1274,7 @@
      (ui/column
       :cross-axis-alignment :stretch
       ;; Tab bar
-      (->> (ui/single-child-scroll
+      (->> (ui/scroll
             :axis :horizontal
             (apply ui/row
                    (map-indexed

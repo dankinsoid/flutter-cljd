@@ -289,9 +289,9 @@
    .semanticChildCount (some-> (:semantic-child-count args) int)
    .slivers slivers))
 
-;; --- single-child-scroll ---
+;; --- scroll ---
 
-(defn ^w/Widget single-child-scroll* [args child]
+(defn ^w/Widget scroll* [args child]
   (w/SingleChildScrollView
    .key (t/widget-key (:key args))
    .scrollDirection (t/axis (or (:axis args) :vertical))
