@@ -199,6 +199,19 @@ reads as a fling). Suite 272 green. Deliberate leftovers: degenerate-estimate fa
 walks (tripwire-covered), far animateTo >~60vp/s rides inverse-seed instead of flying,
 measuredAgg not reset on layout morph (origin clamp covers the symptom).
 
+Correction-loop crash (2026-07-17, found by the fail-loud guard during wrap animateTo):
+landing `:emit` dropped the cache but the reseed dead-reckoned from a surviving attached child +
+stale checkpoints, re-deriving the same residual (−76.43 = one run pitch, the synth-checkpoint
+approximate break) every pass → `:violated` froze state, plus each stale seam emitted its own
+correction ending the pass (N seams = N viewport cycles → 10-cycle cap). Fixed: fd64cb2 (landing
+emission is absorbing — drops stale checkpoints too, one-shot `pendingLandingWs` forces the next
+pass to seed from `:init`, converges in ≤2 passes; abandons cleanly if the frame was capped and
+the window moved), d0868e9 (backfill telescopes all seam deltas into ONE correction per pass —
+≤2 viewport cycles regardless of seam count). Suite 276 green. Known cost: mid-flight landing
+under DrivenScrollActivity gives a one-time visual shift ≤|residual| px. Flagged for later:
+`anchor-delta` is gated by neither velocity nor segment (theoretical in-flight correction
+source); trim/prune after an emitting backfill use the pre-correction `ws-o`.
+
 ### 3.1 Double (before→after) layout only when a segment will actually run — **(user pt 2)**
 Guard the two-pass layout compute behind "an animation is pending", so the static case pays for
 one pass.
