@@ -16,6 +16,7 @@
   (:require
    ["dart:core" :as dc]
    ["package:flutter/animation.dart" :as a]
+   ["package:flutter/physics.dart" :as p]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.types :as t]))
 
@@ -33,8 +34,9 @@
 
    `:insert`/`:remove` carry `{:duration :curve :builder}`; the host uses their
    `:builder` for the custom enter/exit wrap. `:move` carries `{:duration :curve}`
-   and sets the duration/curve of the unified keyed rect segment that glides
-   every cell (move, layout/grid/axis morph, and insert/remove)."
+   and sets the duration of the unified keyed rect segment that glides every cell
+   (move, layout/grid/axis morph, and insert/remove). Its `:curve` is parsed but
+   no longer applies to move — the segment is spring-driven (see `start-clock!`)."
   [animate]
   (if (true? animate)
     (let [sub {:duration default-duration :curve default-curve}]
@@ -59,15 +61,19 @@
 
 ;; --- Segment clock (shared host shell, see docs §10) ---
 ;;
-;; The one AnimationController + curved view + generation counter that drives a
-;; keyed-rect segment. Both hosts' State objects hold one and only differ in
-;; WHEN they (re)start it and what their finish/settle does around it.
+;; The one AnimationController + generation counter that drives a keyed-rect
+;; segment. The controller is driven by a critically-damped SpringSimulation
+;; (`animateWith`), so the value IS the eased 0→1 progress — no CurvedAnimation
+;; on top — and a mid-flight retarget can carry the current velocity through,
+;; killing the ease-in stall that a `.forward .from 0.0` restart caused. Both
+;; hosts' State objects hold one and only differ in WHEN they (re)start it and
+;; what their finish/settle does around it.
 
 ;; @ai-generated(guided)
 (deftype SegmentClock
   [^:mutable ^bool active                       ;; a rect segment is currently playing
    ^:mutable ^a/AnimationController? ctrl       ;; the one segment clock, reused across segments
-   ^:mutable ^a/CurvedAnimation? anim           ;; curved view of ctrl the engine listens to
+   ^:mutable ^a/Animation? anim                 ;; the animation the engine reads (== ctrl; the spring drives it)
    ^:mutable ^int gen])                         ;; segment generation, bumped per (re)start
 
 (defn ^SegmentClock segment-clock
@@ -76,32 +82,49 @@
   (SegmentClock false nil nil 0))
 
 ;; @ai-generated(guided)
+(defn- ^p/SpringDescription seg-spring
+  "A critically-damped (no overshoot) spring whose ~99% settle time matches
+   `dur`. Critical damping keeps the driven value monotone in [0,1], so the
+   collapse/fade fractions the builders read off it never overshoot."
+  [^dc/Duration dur]
+  (let [secs (max 0.05 (/ (.-inMicroseconds dur) 1000000.0))
+        ;; (1+ωt)e^{-ωt} ≈ 0.01 at ωt ≈ 6.64 — settle in `secs`
+        omega (/ 6.64 secs)]
+    (p/SpringDescription .mass 1.0
+                         .stiffness (* omega omega)
+                         .damping (* 2.0 omega))))
+
+;; @ai-generated(guided)
 (defn start-clock!
   "(Re)starts the segment clock from `anim-config`'s `:move` section (falling
-   back to the top-level duration/curve): lazily creates the controller on
-   `vsync` (wiring `on-complete` to fire once per completed segment), retargets
-   the curve/duration — a config change between segments takes effect — bumps the
-   generation and runs the clock from 0. At a mid-segment restart the engine's
-   committed rects are the interpolated ones, so re-aiming is jump-free."
+   back to the top-level duration): lazily creates the controller on `vsync`
+   (wiring `on-complete` to fire once per settled segment), bumps the generation
+   and drives the controller 0→1 with a fresh critically-damped spring seeded
+   with the controller's CURRENT velocity. The engine re-anchors `from` to the
+   interpolated committed rects at the gen bump, so re-aiming is jump-free by
+   position; seeding the spring with the live velocity keeps it jump-free by
+   momentum too — a mid-flight retarget flows on instead of stalling at an
+   ease-in from rest. `:curve` no longer applies to move (spring owns the shape).
+
+   The controller default bounds clamp value to [0,1], and `animateWith` resets
+   it to the simulation's start (0), so no explicit reset is needed."
   [^SegmentClock clock vsync anim-config on-complete]
   (let [move-cfg (:move anim-config)
         dur (or (:duration move-cfg) (:duration anim-config))
-        crv (or (:curve move-cfg) (:curve anim-config))
         ^a/AnimationController ctrl
         (or (.-ctrl clock)
-            (let [c (a/AnimationController .vsync vsync .duration dur)]
+            (let [c (a/AnimationController .vsync vsync)]
               (.addStatusListener c
                 (fn [^a/AnimationStatus s]
                   (when (.-isCompleted s) (on-complete))))
               (.-ctrl! clock c)
-              c))]
-    (if-let [^a/CurvedAnimation cv (.-anim clock)]
-      (.-curve! cv crv)
-      (.-anim! clock (a/CurvedAnimation .parent ctrl .curve crv)))
-    (.-duration! ctrl dur)
+              (.-anim! clock c)
+              c))
+        ;; live velocity of the value the engine reads; 0 when resting
+        ^double v0 (.-velocity ctrl)]
     (.-gen! clock (inc (.-gen clock)))
     (.-active! clock true)
-    (.forward ctrl .from 0.0)
+    (.animateWith ctrl (p/SpringSimulation (seg-spring dur) 0.0 1.0 v0))
     nil))
 
 (defn settle-clock!
@@ -115,8 +138,7 @@
 
 (defn dispose-clock!
   [^SegmentClock clock]
-  (when-let [^a/CurvedAnimation cv (.-anim clock)]
-    (.dispose cv))
+  ;; anim === ctrl (the spring drives the controller directly) — dispose once
   (when-let [^a/AnimationController c (.-ctrl clock)]
     (.dispose c))
   nil)
