@@ -1248,6 +1248,20 @@
     (double approx-off)
     stale-off))
 
+(defn reanchor-band
+  "The band a flow pass materializes/GCs/prunes against, [ws we] shifted by a
+   recorded cross-layout re-anchor. seed-cache!'s re-anchor rebased the walked
+   frame by `rsh` = approx − stale (NaN = none this pass), and the emitted
+   scrollOffsetCorrection (or the segment set-point) lands the NEXT window
+   exactly there — so this pass must fill the SHIFTED band. Filling the OLD one
+   made backfill-leading! walk the whole [old-ws, new-head) gap one leading
+   child at a time, O(gap) materialisations in one frame (the first wrap→list
+   morph freeze); the shift keeps per-pass work O(window+overscan) regardless
+   of the rebase distance — the corrected re-run absorbs the coordinate jump.
+   Pure."
+  [^double ws ^double we ^double rsh]
+  (if (.-isNaN rsh) [ws we] [(+ ws rsh) (+ we rsh)]))
+
 (defn window-far-from-band?
   "Geometric seeding decision — the cache is an accelerator, never the algorithm:
    per-pass work must stay O(window+overscan) regardless of cache contents. True
@@ -2268,7 +2282,13 @@
       (pre-gc! rs ws-o we-o)
       (seed-cache! rs layout env)
       (normalize-cache! rs layout env)
-      (let [anchor (anchor-before rs so)
+      (let [;; a cross-layout re-anchor (seed-cache!) rebased the walked frame by
+            ;; reanchorShift and the emitted correction / segment set-point lands
+            ;; the window there — materialize THIS pass against the shifted band,
+            ;; or backfill walks the whole (approx − stale) gap in one frame.
+            [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-reanchorShift rs))
+            ^double align-ws (+ ws (- ws-eff ws-o))
+            anchor (anchor-before rs so)
             ;; Phase C emission gate, phase-E suppression signal: refinement
             ;; corrections are emitted only on a resting (no-segment) pass with no
             ;; active upward drag/fling (velocity sensor) — mutually exclusive with
@@ -2288,10 +2308,10 @@
         ;; set-point. During a segment flow-layout! runs to capture the target.
         (when (nil? (.-tweenAnim rs))
           (.-restingTop! rs anchor))
-        (if-not (align-start! rs layout env ws)
+        (if-not (align-start! rs layout env align-ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr))
-          (let [walked (walk! rs layout env we-o)
+          (let [walked (walk! rs layout env we-eff)
                 ^int last-i (int (:last-i walked))
                 ;; §7b: this branch runs mid-segment only as the CAPTURE pass
                 ;; (segment-start!). Attached cells whose committed rect still
@@ -2301,16 +2321,16 @@
                                  (let [[_ kl] (widen-window! rs last-i last-i ws we)]
                                    (int kl))
                                  last-i)]
-            (post-gc! rs keep-last ws-o)
-            (let [corr (backfill-leading! rs layout env ws-o emit? origin-emit?)]
+            (post-gc! rs keep-last ws-eff)
+            (let [corr (backfill-leading! rs layout env ws-eff emit? origin-emit?)]
               ;; Row 3 memory bound: front-trim the cache to the overscan band so a
               ;; from-0-anchored deep scroll doesn't keep [0..head] on the heap. The
               ;; retained offsets stay exact (baseState re-seeds from the last
               ;; dropped entry), so this never degrades the frontier.
-              (trim-front! rs ws-o)
+              (trim-front! rs ws-eff)
               ;; Geometric checkpoint scoping (phase-E-widened): keep the overscan
-              ;; band [ws-o, we-o] plus one seed above (the D prune re-scoped).
-              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-o we-o))
+              ;; band [ws-eff, we-eff] plus one seed above (the D prune re-scoped).
+              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
               ;; Frontier reconciliation: geometric prune/trim never clears
               ;; anchoredTo0 under the Row 3 invariant — its claim is "offsets exact",
               ;; which trimming preserves; degradation is owned by the offset ops.
