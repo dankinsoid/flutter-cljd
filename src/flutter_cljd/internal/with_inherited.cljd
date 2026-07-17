@@ -7,8 +7,8 @@
 (defn ^w/Widget with-transformed-inherited*
   ([transform child]
    (bd/builder*
-    (fn [context]
-      (let [inherited-elt (#/(.getElementForInheritedWidgetOfExactType f/InheritedBindings) context)
+    (fn [^w/BuildContext context]
+      (let [^w/InheritedElement? inherited-elt (#/(.getElementForInheritedWidgetOfExactType f/InheritedBindings) context)
             bindings (or (some-> inherited-elt
                                  ^f/InheritedBindings (.-widget)
                                  .-bindings) {})

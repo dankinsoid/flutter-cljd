@@ -143,12 +143,13 @@
        child)
 
       (instance? fd/Listenable animation)
-      (w/AnimatedBuilder
+      (let [^fd/ValueListenable animation animation]
+       (w/AnimatedBuilder
        .animation animation
        .child child
        .builder (fn [_ child]
                   (let [value (.-value animation)]
-                    (apply builder (if has-child? (conj values value child) (conj values value))))))
+                    (apply builder (if has-child? (conj values value child) (conj values value)))))))
 
       :else
       (throw (ex-info "Invalid animation" {:animation animation})))))

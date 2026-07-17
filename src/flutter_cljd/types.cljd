@@ -469,7 +469,7 @@
   "Merges the specified insets with the default insets.
    The insets can be specified as a number or a map of edge names to numbers or a STEB sequence."
   [& value]
-  (reduce #(.add %1 %2) (m/EdgeInsets.zero) (map insets value)))
+  (reduce #(.add ^m/EdgeInsetsGeometry %1 %2) (m/EdgeInsets.zero) (map insets value)))
 
 (defn ^m/TextAlign text-align [align]
   (if (instance? m/TextAlign align)
@@ -2204,7 +2204,7 @@
 
 (def ^:private modifier-keys-ids
   "Set of key IDs corresponding to modifier keys: control, shift, alt, and meta."
-  (set (map #(.-keyId %) [s/LogicalKeyboardKey.control
+  (set (map #(.-keyId ^s/LogicalKeyboardKey %) [s/LogicalKeyboardKey.control
                           s/LogicalKeyboardKey.shift
                           s/LogicalKeyboardKey.alt
                           s/LogicalKeyboardKey.meta])))
@@ -2232,13 +2232,13 @@
     (or (vector? args) (seq? args))
     (let [keys (set (filter some? (map logical-keyboard-key args)))
           chars (filter one-char? args)
-          groups (group-by #(contains? modifier-keys-ids (.-keyId %)) keys)
+          groups (group-by #(contains? modifier-keys-ids (.-keyId ^s/LogicalKeyboardKey %)) keys)
           modifiers (set (get groups true `()))
           triggers (set (get groups false `()))
-          alt (some? (some #(= (.-keyId s/LogicalKeyboardKey.alt) (.-keyId %)) modifiers))
-          control (some? (some #(= (.-keyId s/LogicalKeyboardKey.control) (.-keyId %)) modifiers))
-          shift (some? (some #(= (.-keyId s/LogicalKeyboardKey.shift) (.-keyId %)) modifiers))
-          meta (some? (some #(= (.-keyId s/LogicalKeyboardKey.meta) (.-keyId %)) modifiers))
+          alt (some? (some #(= (.-keyId s/LogicalKeyboardKey.alt) (.-keyId ^s/LogicalKeyboardKey %)) modifiers))
+          control (some? (some #(= (.-keyId s/LogicalKeyboardKey.control) (.-keyId ^s/LogicalKeyboardKey %)) modifiers))
+          shift (some? (some #(= (.-keyId s/LogicalKeyboardKey.shift) (.-keyId ^s/LogicalKeyboardKey %)) modifiers))
+          meta (some? (some #(= (.-keyId s/LogicalKeyboardKey.meta) (.-keyId ^s/LogicalKeyboardKey %)) modifiers))
           args (or (some map? args) {})
           include-repeats (:include-repeats args true)]
       (if (and (false? shift) (= (count chars) 1))
@@ -2565,8 +2565,8 @@
      (number? value) (size value value)
      (map? value) (size (or (some value [:w :width :size]) 0) (or (some value [:h :height :size]) 0))
      (or (vector? value) (seq? value)) (size (get value 0 0) (get value 1 0))
-     (instance? ui/Offset value) (size (.-dx value) (.-dy value))
-     (instance? math/Point value) (size (.-x value) (.-y value))
+     (instance? ui/Offset value) (let [^ui/Offset value value] (size (.-dx value) (.-dy value)))
+     (instance? math/Point value) (let [^math/Point value value] (size (.-x value) (.-y value)))
      :else (throw (Exception. (str "Invalid size: " value))))))
 
 (defn ^ui/Offset offset
@@ -2594,8 +2594,8 @@
      (number? value) (offset value value)
      (map? value) (offset (or (some value [:dx :x :offset]) 0) (or (some value [:dy :y :offset]) 0))
      (or (vector? value) (seq? value)) (offset (get value 0 0) (get value 1 0))
-     (instance? math/Point value) (offset (.-x value) (.-y value))
-     (instance? ui/Size value) (offset (.-width value) (.-height value))
+     (instance? math/Point value) (let [^math/Point value value] (offset (.-x value) (.-y value)))
+     (instance? ui/Size value) (let [^ui/Size value value] (offset (.-width value) (.-height value)))
      :else (throw (Exception. (str "Invalid offset: " value))))))
 
 (defn ^math/Point point
@@ -2622,8 +2622,8 @@
      (number? value) (point value value)
      (map? value) (point (or (some value [:x :dx :offset]) 0) (or (some value [:y :dy :offset]) 0))
      (or (vector? value) (seq? value)) (point (get value 0 0) (get value 1 0))
-     (instance? ui/Offset value) (point (.-dx value) (.-dy value))
-     (instance? ui/Size value) (point (.-width value) (.-height value))
+     (instance? ui/Offset value) (let [^ui/Offset value value] (point (.-dx value) (.-dy value)))
+     (instance? ui/Size value) (let [^ui/Size value value] (point (.-width value) (.-height value)))
      :else (throw (Exception. (str "Invalid point: " value))))))
 
 (defn ^ui/Rect rect

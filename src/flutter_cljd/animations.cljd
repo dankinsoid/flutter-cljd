@@ -166,7 +166,8 @@
                                (when (nil? (.-effectsListener object))
                                  (.-effectsListener! object listener)
                                  (.-prevProgress! object (-> animation .-value))
-                                 (.addListener animation listener))))]
+                                 (.addListener animation listener)))
+                             nil)]
         (.-effectsStatusListener! object statusListener)
         (.addStatusListener animation statusListener)))
     (when-let [listener (.-effectsStatusListener object)]

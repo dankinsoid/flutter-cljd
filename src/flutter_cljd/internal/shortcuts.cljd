@@ -18,7 +18,7 @@
        .debugLabel debug-label
        .canRequestFocus false
        .onKeyEvent
-       (fn [node event]
+       (fn [^m/FocusNode node event]
          (if (nil? (.-context node))
            m/KeyEventResult.ignored
            (t/key-event-result

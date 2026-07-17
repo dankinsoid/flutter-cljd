@@ -556,9 +556,9 @@
           (.leaveAllEntered this)
           (let [new-target (->> targets
                                 (filter some?)
-                                (filter (fn [^DragTargetState target]
+                                (filter (fn [target]
                                           (.-enteredTargets! this (conj (.-enteredTargets this) target))
-                                          (.didEnter target this)))
+                                          (.didEnter ^DragTargetState target this)))
                                 first)]
 
             (doseq [^DragTargetState target (.-enteredTargets this)]

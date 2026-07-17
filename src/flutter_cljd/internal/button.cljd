@@ -3,6 +3,7 @@
    ["dart:core" :as core]
    ["package:flutter/foundation.dart" :as f]
    ["package:flutter/widgets.dart" :as w]
+   ["package:flutter/gestures.dart" :as g]
    ["package:flutter/services.dart" :as s]
    [flutter-cljd.core :as c]
    [flutter-cljd.types :as t]
@@ -41,7 +42,7 @@
       (.add properties (#/(f/DiagnosticsProperty s/MouseCursor) "mouseCursor" mouse-cursor)))))
 
 (defn- update-states
-  ([this value add]
+  ([^ButtonState this value add]
    (let [notifier (.-internalStatesController this)
          current (.-value notifier)]
      (set! (.-oldStates this) current)
@@ -49,13 +50,13 @@
        (set! (.-value notifier) (conj current value))
        (set! (.-value notifier) (disj current value))))))
 
-(defn- activate-on-intent [this _]
+(defn- activate-on-intent [^ButtonState this _]
   (when-let [on-tap (.-on-tap (.-widget this))]
     (when (and () (.-enable-feedback (.-widget this)))
       (w/Feedback.forTap (.-context this)))
     (on-tap)))
 
-(defn- states-controller [this]
+(defn- ^w/ValueNotifier? states-controller [^ButtonState this]
   (.-internalStatesController this))
 
 (defn- primary-button-enabled? [_ ^Button widget]
@@ -72,26 +73,26 @@
            (.-on-secondary-tap-up widget)
            (.-on-secondary-tap-down widget))))
 
-(defn- widget-enabled? [this ^Button widget]
+(defn- widget-enabled? [^ButtonState this ^Button widget]
   (or (primary-button-enabled? this widget)
       (secondary-button-enabled? this widget)))
 
-(defn- enabled? [this]
+(defn- enabled? [^ButtonState this]
   (widget-enabled? this (.-widget this)))
 
 (defn- handle-states-controller-change [_]
   nil)
 
-(defn- init-states-controller [this]
+(defn- init-states-controller [^ButtonState this]
   (set! (.-internalStatesController this) (w/ValueNotifier #{}))
   (let [controller (states-controller this)]
     (update-states this :disabled (not (enabled? this)))
     (.addListener controller (.-handleStatesControllerChange this))))
 
 (defn- update-highlight
-  ([this type value]
+  ([^ButtonState this type value]
    (update-highlight this type value true))
-  ([this type value call-on-hover]
+  ([^ButtonState this type value call-on-hover]
    ;; Update states
    (condp = type
      :pressed
@@ -116,24 +117,24 @@
 
      nil)))
 
-(defn- should-show-focus? [this]
+(defn- should-show-focus? [^ButtonState this]
   (condp = (w/MediaQuery.maybeNavigationModeOf (.-context this))
     w/NavigationMode.directional (.-hasFocus this)
     (and (enabled? this) (.-hasFocus this))))
 
-(defn- update-focus-highlights [this]
+(defn- update-focus-highlights [^ButtonState this]
   (let [show-focus (condp = (.-highlightMode (.-instance w/FocusManager))
                      w/FocusHighlightMode.traditional (should-show-focus? this)
                      false)]
     (update-highlight this :focused show-focus)))
 
-(defn- clear-offsets [this]
+(defn- clear-offsets [^ButtonState this]
   (set! (.-cursorLocalOffset this) nil)
   (set! (.-cursorGlobalOffset this) nil))
 
 ;; Focus handling
 
-(defn- handle-focus-update [this hasFocus]
+(defn- handle-focus-update [^ButtonState this ^bool hasFocus]
   (set! (.-hasFocus this) hasFocus)
   ; Set directly rather than via updateHighlight because this widget's states 
   ; include focused if it has focus, rather than if showing focus per FocusManager
@@ -143,109 +144,109 @@
     (on-change hasFocus)))
 
 ;; Tap handling
-(defn- handle-any-tap-down [this details]
+(defn- handle-any-tap-down [^ButtonState this ^g/TapDownDetails details]
   (set! (.-cursorGlobalOffset this) (.-globalPosition details))
   (set! (.-cursorLocalOffset this) (.-localPosition details))
   (update-states this :pressed true)
   ;; (.updateKeepAlive this)
   (update-highlight this :pressed true))
 
-(defn- handle-tap-down [this details]
+(defn- handle-tap-down [^ButtonState this details]
   (handle-any-tap-down this details)
   (when-let [on-tap-down (.-on-tap-down (.-widget this))]
     (on-tap-down details)))
 
-(defn- handle-tap-up [this details]
+(defn- handle-tap-up [^ButtonState this details]
   (clear-offsets this)
   (when-let [on-tap-up (.-on-tap-up (.-widget this))]
     (on-tap-up details)))
 
-(defn- handle-secondary-tap-down [this details]
+(defn- handle-secondary-tap-down [^ButtonState this details]
   (handle-any-tap-down this details)
   (when-let [on-secondary-tap-down (.-on-secondary-tap-down (.-widget this))]
     (on-secondary-tap-down details)))
 
-(defn- handle-secondary-tap-up [this details]
+(defn- handle-secondary-tap-up [^ButtonState this details]
   (clear-offsets this)
   (when-let [on-secondary-tap-up (.-on-secondary-tap-up (.-widget this))]
     (on-secondary-tap-up details)))
 
-(defn- handle-tap [this]
+(defn- handle-tap [^ButtonState this]
   (update-highlight this :pressed false)
   (when-let [on-tap (.-on-tap (.-widget this))]
     (when (.-enable-feedback (.-widget this))
       (w/Feedback.forTap (.-context this)))
     (on-tap)))
 
-(defn- handle-tap-cancel [this]
+(defn- handle-tap-cancel [^ButtonState this]
   (clear-offsets this)
   (when-let [on-tap-cancel (.-on-tap-cancel (.-widget this))]
     (on-tap-cancel))
   (update-highlight this :pressed false))
 
-(defn- handle-double-tap [this]
+(defn- handle-double-tap [^ButtonState this]
   (update-highlight this :pressed false)
   (when-let [on-double-tap (.-on-double-tap (.-widget this))]
     (on-double-tap)))
 
-(defn- handle-long-press-start [this details]
+(defn- handle-long-press-start [^ButtonState this ^g/LongPressStartDetails details]
   (set! (.-cursorGlobalOffset this) (.-globalPosition details))
   (set! (.-cursorLocalOffset this) (.-localPosition details)))
 
-(defn- handle-long-press [this]
+(defn- handle-long-press [^ButtonState this]
   (when-let [on-long-press (.-on-long-press (.-widget this))]
     (when (.-enable-feedback (.-widget this))
       (w/Feedback.forLongPress (.-context this)))
     (on-long-press)))
 
-(defn- handle-secondary-tap [this]
+(defn- handle-secondary-tap [^ButtonState this]
   (update-highlight this :pressed false)
   (when-let [on-secondary-tap (.-on-secondary-tap (.-widget this))]
     (on-secondary-tap)))
 
-(defn- handle-secondary-tap-cancel [this]
+(defn- handle-secondary-tap-cancel [^ButtonState this]
   (clear-offsets this)
   (when-let [on-secondary-tap-cancel (.-on-secondary-tap-cancel (.-widget this))]
     (on-secondary-tap-cancel))
   (update-highlight this :pressed false))
 
-(defn- handle-hover-change [this]
+(defn- handle-hover-change [^ButtonState this]
   (update-highlight this :hovered (.-hovering this)))
 
 ;; Mouse handling
-(defn- handle-mouse-enter [this event]
+(defn- handle-mouse-enter [^ButtonState this ^g/PointerEnterEvent event]
   (set! (.-hovering this) true)
   (set! (.-cursorGlobalOffset this) (.-position event))
   (set! (.-cursorLocalOffset this) (.-localPosition event))
   (when (enabled? this)
     (handle-hover-change this)))
 
-(defn- handle-mouse-move [this event]
+(defn- handle-mouse-move [^ButtonState this ^g/PointerHoverEvent event]
   (set! (.-cursorGlobalOffset this) (.-position event))
   (set! (.-cursorLocalOffset this) (.-localPosition event)))
 
-(defn- handle-mouse-exit [this _]
+(defn- handle-mouse-exit [^ButtonState this _]
   (set! (.-hovering this) false)
   (clear-offsets this)
   ; Still update highlights and run onHover even if disabled
   (handle-hover-change this))
 
-(defn- can-request-focus? [this]
+(defn- can-request-focus? [^ButtonState this]
   (condp = (w/MediaQuery.maybeNavigationModeOf (.-context this))
     w/NavigationMode.directional true
     (and (enabled? this) (.-can-request-focus (.-widget this)))))
 
-(defn- handle-focus-highlight-mode-change [this _]
+(defn- handle-focus-highlight-mode-change [^ButtonState this _]
   (when (.-mounted this)
     (.setState this (fn []
                       (update-focus-highlights this)))))
 
 ;; Button State
-(deftype ^:private ButtonState [^:mutable hovering
-                                ^:mutable hasFocus
-                                ^:mutable cursorLocalOffset
-                                ^:mutable cursorGlobalOffset
-                                ^:mutable internalStatesController
+(deftype ^:private ButtonState [^:mutable ^bool hovering
+                                ^:mutable ^bool hasFocus
+                                ^:mutable ^w/Offset? cursorLocalOffset
+                                ^:mutable ^w/Offset? cursorGlobalOffset
+                                ^:mutable ^w/ValueNotifier? internalStatesController
                                 ^:mutable handleFocusHighlightModeChange
                                 ^:mutable handleStatesControllerChange
                                 ^:mutable oldStates]

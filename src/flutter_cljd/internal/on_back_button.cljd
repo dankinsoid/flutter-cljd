@@ -10,6 +10,6 @@
    .onBackButtonPressed (fn [] 
                          (let [result (action)]
                            (cond
-                             (instance? async/Future result) (.then result #(boolean %))
+                             (instance? async/Future result) (let [^async/Future f result] (.then f #(boolean %)))
                              (boolean? result) (async/Future.value result)
                              :else (async/Future.value true))))))

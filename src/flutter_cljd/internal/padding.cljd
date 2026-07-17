@@ -6,27 +6,29 @@
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]))
 
-(defn- resolvedPadding [this] 
-  (let [cache (.-resolvedPaddingCache this) 
+(declare ^:private RenderAnyPadding)
+
+(defn- resolvedPadding [^RenderAnyPadding this]
+  (let [cache (.-resolvedPaddingCache this)
         padding (.-padding this)
-        textDirection (.-textDirection this)] 
+        textDirection (.-textDirection this)]
     (if (some? cache)
       cache
       (.-resolvedPaddingCache! this (.resolve padding textDirection)))))
 
-(defn- markNeedResolution [this]
+(defn- markNeedResolution [^RenderAnyPadding this]
   (.-resolvedPaddingCache! this nil) 
   (.markNeedsLayout this))
 
 (deftype ^:private RenderAnyPadding [^w/EdgeInsetsGeometry ^:mutable padding 
                             ^w/BuildContext context
                            ^w/TextDirection? ^:mutable textDirection
-                           ^:mutable resolvedPaddingCache]
+                           ^w/EdgeInsets? ^:mutable resolvedPaddingCache]
   :extends (r/RenderShiftedBox nil)
 
   ;; Intrinsic dimensions methods
   (computeMinIntrinsicWidth [this height]
-    (let [padding (resolvedPadding this)]
+    (let [^w/EdgeInsets padding (resolvedPadding this)]
       (if-let [child (.-child this)]
         (let [child-width (.getMinIntrinsicWidth 
                            child 
@@ -35,7 +37,7 @@
         (#/(math/max double) 0.0 (.-horizontal padding)))))
 
   (computeMaxIntrinsicWidth [this height]
-    (let [padding (resolvedPadding this)]
+    (let [^w/EdgeInsets padding (resolvedPadding this)]
       (if-let [child (.-child this)]
         (let [child-width (.getMaxIntrinsicWidth 
                            child 
@@ -44,7 +46,7 @@
         (#/(math/max double) 0.0 (.-horizontal padding)))))
 
   (computeMinIntrinsicHeight [this width]
-    (let [padding (resolvedPadding this)]
+    (let [^w/EdgeInsets padding (resolvedPadding this)]
       (if-let [child (.-child this)]
         (let [child-height (.getMinIntrinsicHeight 
                             child 
@@ -53,7 +55,7 @@
         (#/(math/max double) 0.0 (.-vertical padding)))))
 
   (computeMaxIntrinsicHeight [this width]
-    (let [padding (resolvedPadding this)]
+    (let [^w/EdgeInsets padding (resolvedPadding this)]
       (if-let [child (.-child this)]
         (let [child-height (.getMaxIntrinsicHeight 
                             child 
@@ -63,7 +65,7 @@
 
   ;; Layout methods
   (computeDryLayout [this constraints]
-    (let [padding (resolvedPadding this)]
+    (let [^w/EdgeInsets padding (resolvedPadding this)]
       (if-let [child (.-child this)]
         (let [inner-constraints (.deflate constraints padding)
               child-size (.getDryLayout child inner-constraints)]
@@ -130,7 +132,7 @@
         (r/debugPaintPadding (.-canvas context)
                              outer-rect
                              (when (.-child this)
-                               (.deflateRect (resolvedPadding this) outer-rect))))))
+                               (.deflateRect ^w/EdgeInsets (resolvedPadding this) outer-rect))))))
 
   (debugFillProperties [this properties]
     (.debugFillProperties ^super this properties)
@@ -140,12 +142,12 @@
   ^:mixin r/DebugOverflowIndicatorMixin)
 
   ;; Getters and setters
-(defn- setPadding [this value]
+(defn- setPadding [^RenderAnyPadding this value]
     (when-not (= (.-padding this) value)
       (.-padding! this value)
       (markNeedResolution this)))
 
-(defn- setTextDirection [this value]
+(defn- setTextDirection [^RenderAnyPadding this value]
     (when-not (= (.-textDirection this) value)
       (.-textDirection! this value)
       (markNeedResolution this)))

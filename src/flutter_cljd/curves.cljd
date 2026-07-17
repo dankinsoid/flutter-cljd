@@ -209,7 +209,7 @@
      (if (empty? curves)
        identity
        (fn [t]
-         (apply transform (map #(.transform % t) curves))))
+         (apply transform (map (fn [^a/Curve c] (.transform c t)) curves))))
      (fn [] (str "(transform transform-fn " (str/join " " (map #(.toString %) curves)) ")")))))
 
 (defn average
@@ -346,7 +346,7 @@
        (fn [T]
          (let [mult (* T len)
                i (max 0 (min (dec len) (int mult)))
-               curve (nth curves i)
+               ^a/Curve curve (nth curves i)
                t (if (= T 1.0) 1.0 (mod mult 1.0))]
            (.transform curve t))))
      (fn [] (str "(concat " (str/join " " (map #(.toString %) curves)) ")")))))
@@ -403,7 +403,7 @@
     (t/AnyCurve
      (fn [t]
        (or
-        (some (fn [curve]
+        (some (fn [^a/Curve curve]
                 (let [value (.transform curve t)]
                   (when-not (zero? value) value)))
               curves)
