@@ -524,6 +524,11 @@
                              ;; a single big-delta frame (desktop wheel/trackpad notch, a jumpTo, a
                              ;; correction mis-compensation, the first post-idle sample) must NOT fly.
    :ema-alpha         0.35   ;; velocity EMA weight of the current frame's instantaneous sample
+   :teleport-v      50000.0  ;; |inst| above ⇒ programmatic jumpTo teleport, not motion: reset the sensor.
+                             ;; Safely above any input device (fling caps ~8k px/s, a wheel notch reads
+                             ;; ~12k, a 3-notch frame ~36k) and below any far jump (50k ≈ >1vp per frame).
+                             ;; A far animateTo faster than ~60vp/s also reads as teleporting — it then
+                             ;; rides the geometric inverse-seed (O(window)/frame) instead of flying.
    :dir-flip-eps     90.0    ;; px/s the reversed velocity must clear before scrollSign flips (anti-thrash hysteresis)
    :suppress-v      120.0    ;; upward |v| above which above-anchor refinement corrections defer (WS2.3 tier 3)
    :lookahead-ms    120.0    ;; read-ahead horizon: velocity-scaled lead = |v|·lookahead
@@ -555,6 +560,26 @@
    doesn't swap the asymmetric overscan every frame (WS2.1 §5). Pure."
   [^int prev ^double v ^double flip-eps]
   (cond (> v flip-eps) 1 (< v (- flip-eps)) -1 :else prev))
+
+(defn fold-velocity-sample
+  "One frame's velocity-sensor fold → {:ema :run} from the instantaneous sample
+   `inst-v`. Two jump defenses (a far jumpTo delivers its whole delta as ONE
+   frame's delta — `min-fast-run` alone does not cover it):
+   - TELEPORT: |inst-v| >= `teleport-v` cannot come from any input device — it is
+     a programmatic jump. Reset the sensor instead of folding; naively folded,
+     the EMA's decay tail holds >= v-fast for ~13 still frames and leaks into
+     flying entry and refinement suppression while the user is at rest.
+   - SUSTAINED gate: the fast-run counter increments only while the INSTANTANEOUS
+     sample is also fast — a decaying EMA alone (the still frames after a wheel
+     notch / sub-teleport jump) must not accumulate a \"sustained\" run.
+   Pure."
+  [^double prev-ema ^int prev-run ^double inst-v ^double alpha ^double v-fast ^double teleport-v]
+  (if (>= (.abs inst-v) teleport-v)
+    {:ema 0.0 :run 0}
+    (let [^double ema (vel-ema prev-ema inst-v alpha)
+          ^int run (if (and (>= (.abs ema) v-fast) (>= (.abs inst-v) v-fast))
+                     (inc prev-run) 0)]
+      {:ema ema :run run})))
 
 (defn fidelity-regime
   "Classifies the pass into :resting / :flying / :landing from the smoothed speed
@@ -675,14 +700,19 @@
           (let [^double inst-v (frame-velocity prev-off so dt-micros)
                 ^double prev-ema (.-velocityEMA rs)
                 ^double old-abs (if (.-isNaN prev-ema) 0.0 (.abs prev-ema))
-                ^double ema (vel-ema prev-ema inst-v (double (:ema-alpha overscan-tunables)))
-                ^double new-abs (.abs ema)
                 ^double v-fast (double (:v-fast overscan-tunables))
+                ;; teleport clamp + sustained fast-run gate: a far jumpTo (whole
+                ;; delta in one frame) resets the sensor instead of folding, and
+                ;; only frames whose INSTANTANEOUS sample is fast extend the run —
+                ;; so neither a jump nor its EMA decay tail ever reads as a fling.
+                folded (fold-velocity-sample prev-ema (.-flyingRun rs) inst-v
+                                             (double (:ema-alpha overscan-tunables))
+                                             v-fast
+                                             (double (:teleport-v overscan-tunables)))
+                ^double ema (double (:ema folded))
+                ^double new-abs (.abs ema)
                 decel? (< new-abs old-abs)
-                ;; consecutive-fast-frame run: a single fast frame (desktop scroll
-                ;; notch, jumpTo, correction glitch) never trips flying — only a
-                ;; sustained fling of `min-fast-run` frames does.
-                ^int run (if (>= new-abs v-fast) (inc (.-flyingRun rs)) 0)]
+                ^int run (int (:run folded))]
             (.-flyingRun! rs run)
             (.-velocityEMA! rs ema)
             (.-scrollSign! rs (vel-sign (.-scrollSign rs) ema

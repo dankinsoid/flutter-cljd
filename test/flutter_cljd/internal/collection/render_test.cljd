@@ -895,6 +895,50 @@
       ;; this is why a single fast sample must not fly — it is a normal desktop nudge
       (is (< 11000.0 (render/frame-velocity 0.0 200.0 frame-us) 13000.0)))))
 
+;; --- far jumpTo must not register as a sustained fling ---
+;; update-velocity! sees the whole jump delta as ONE frame. min-fast-run alone
+;; does NOT cover it: the naive EMA fold keeps the decay tail >= v-fast for many
+;; still frames, so an EMA-fed run counter reaches min-fast-run and the jump
+;; leaks into fidelity-regime (flying) and refine suppression while the user is
+;; already at rest.
+
+(deftest far-jump-does-not-read-as-sustained-fling
+  (let [alpha 0.35 vf 3200.0 tv 50000.0 mfr 3 vs 220.0
+        frame-us 16667.0
+        jump-v (render/frame-velocity 0.0 39000.0 frame-us)]   ; ~50vp in one frame
+    (testing "why the run counter can't feed off the EMA: a single jump's decay
+              tail alone stays >= v-fast for far more than min-fast-run frames"
+      (let [tail (loop [ema (render/vel-ema nan jump-v alpha) n 0]
+                   (if (>= (.abs ^double ema) vf)
+                     (recur (render/vel-ema ema 0.0 alpha) (inc n))
+                     n))]
+        (is (> tail mfr))))
+    (testing "teleport clamp: a one-frame delta no input device can produce
+              (fling caps ~8k px/s, a wheel notch ~12k) resets the sensor"
+      (let [{ema :ema run :run} (render/fold-velocity-sample nan 0 jump-v alpha vf tv)]
+        (is (= 0.0 ema))
+        (is (= 0 run))
+        (testing "…so the pass after the jump is already resting and unsuppressed"
+          (is (= :resting (render/fidelity-regime :resting (.abs ^double ema) false (int run) vs vf mfr)))
+          (is (false? (render/refine-suppressed? 1 (.abs ^double ema) 120.0 vf))))))
+    (testing "a desktop wheel notch (~12k px/s, under the teleport ceiling) folds
+              normally, but its decay tail can't accumulate a fast run — the run
+              counter demands the INSTANTANEOUS sample stay fast too"
+      (let [{ema1 :ema run1 :run} (render/fold-velocity-sample nan 0 12000.0 alpha vf tv)
+            {ema2 :ema run2 :run} (render/fold-velocity-sample ema1 run1 0.0 alpha vf tv)
+            {run3 :run} (render/fold-velocity-sample ema2 run2 0.0 alpha vf tv)]
+        (is (>= (.abs ^double ema1) vf))     ; EMA is fast right after the notch
+        (is (= 1 run1))
+        (is (= 0 run2))                      ; still frame ⇒ run resets, not grows
+        (is (= 0 run3))))
+    (testing "a REAL sustained fling still reaches flying in min-fast-run frames"
+      (let [step (fn [[ema run] v]
+                   (let [r (render/fold-velocity-sample ema run v alpha vf tv)]
+                     [(:ema r) (:run r)]))
+            [ema run] (reduce step [nan 0] [10000.0 10000.0 10000.0])]
+        (is (= 3 run))
+        (is (= :flying (render/fidelity-regime :resting (.abs ^double ema) false (int run) vs vf mfr)))))))
+
 ;; --- symptom 2 pipeline: a 300px/s touch drag, fed frame-by-frame through the real
 ;; sensor kernels (frame-velocity → vel-ema → flyingRun → fidelity-regime), never
 ;; engages flying (stays :resting every frame). ---
