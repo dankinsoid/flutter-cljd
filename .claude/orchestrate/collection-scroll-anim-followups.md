@@ -28,6 +28,15 @@ offset stays smooth only because offset-from is captured live.
   with the visible extent, `full` = its `:full-*`. Wipe continues from the current window.
 - Verify: insert-during-insert, remove-during-insert, insert-during-remove all continue the
   wipe from where it was (no snap).
+- **Follow-up bug (2026-07-17, observed on device — §8a violation):** a38bbbd stores the
+  mid-wipe VISIBLE window in committed `:main/:cross-extent`, but only the exiting branch of
+  `keyed-tween-layout` reads `:full-*`. The stay/leave-slide branches set `full = nil`, so a
+  mid-wipe-captured committed rect consumed there is LAID OUT at the partial window (observed:
+  wrap cell at w=0.1, RenderFlex overflow) with no paint clip (full == visible ⇒ clip-window
+  nil). Candidate feeder: a completed exit's final commit (spring settles ≈0.999 ⇒ visible
+  ≈0.1) persisting 600 passes for a dead key. Fix: ALL branches lay at `:full-*` (fallback
+  visible) — lerp full extents for constraints, visible for the clip. Phase D's geometric
+  prune narrows but does not close this.
 
 ### 1.2 One-frame freeze at retrigger — **[bug/question] (#3)**
 `start-segment!` calls `.forward .from 0.0` (sliver_collection.cljd:356): the retrigger frame
