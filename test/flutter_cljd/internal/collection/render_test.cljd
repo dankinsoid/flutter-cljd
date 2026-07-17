@@ -312,6 +312,30 @@
     (let [[^double ws ^double we] (render/reanchor-band 1000.0 2200.0 517.3)]
       (is (< (.abs (- (- we ws) 1200.0)) 1e-9)))))
 
+;; --- align-start! recovery when the window sits past the content end ---
+;; At the bottom overscroll the window is entirely past the last item; align-start!
+;; found no cache entry reaching it and its attach-idx overshot to item-count. The
+;; old fallback read that as "the collection shrank" and re-flowed from index 0 —
+;; walking all N every frame while the bounce settled (the stuck-past-end freeze).
+;; Past-the-end must re-attach the LAST child at its cached offset (O(1)).
+
+(deftest align-start-fallback-past-end-attaches-last
+  (testing "window past the end (attach-idx one past, cache reaches the last item)
+            attaches the last child instead of re-flowing all N from 0"
+    (is (= :attach-last (render/align-start-fallback 2200 2200 20 2199))))
+  (testing "the collection genuinely shrank below the cached band — restart from 0"
+    ;; cache still holds indices up to 2199 but item-count dropped to 1500
+    (is (= :restart-0 (render/align-start-fallback 2200 1500 20 2199))))
+  (testing "attach-idx past the end but the cache does NOT reach the last item
+            (front-trimmed away) — no O(1) tail to reuse, restart from 0"
+    (is (= :restart-0 (render/align-start-fallback 2200 2200 20 2100))))
+  (testing "an unbounded collection (nil item-count) is never past the end"
+    (is (= :restart-0 (render/align-start-fallback 2200 nil 20 2199))))
+  (testing "attach-idx 0 with nothing attachable — the collection is empty"
+    (is (= :empty (render/align-start-fallback 0 0 0 -1))))
+  (testing "an empty cache offers no last child to reuse — restart from 0"
+    (is (= :restart-0 (render/align-start-fallback 2200 2200 0 -1)))))
+
 ;; --- materialization guard (O(window+overscan) per-pass tripwire) ---
 
 (deftest materialization-budget-bounds-pass-work

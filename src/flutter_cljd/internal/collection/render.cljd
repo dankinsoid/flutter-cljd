@@ -1468,6 +1468,31 @@
           (anchor-fn env i (double off))
           ((:init layout) env))))))
 
+(defn align-start-fallback
+  "align-start! could not attach at its bsearch target (addInitialChild returned
+   nil). Two disjoint causes decide the recovery — keyed off geometry, NEVER a
+   from-0 re-flow of a window that merely sits past the content end:
+     :attach-last — the window is entirely past the last item (attach-idx is one
+       past the end and the cache reaches that last index): re-attach the LAST
+       child at its cached offset, O(1). Restarting from 0 here re-flowed all N
+       every frame while the bottom overscroll bounced back — an O(N) per-frame
+       walk that made the bounce crawl (the stuck-past-end freeze + tripwire).
+     :restart-0 — the collection genuinely shrank below the cached band (or the
+       cache no longer reaches the end): drop the cache and re-flow from index 0.
+     :empty — attach-idx is already 0: the collection is empty.
+   `attach-idx` = cache-first + min(bsearch, cache-count); `item-count` may be nil
+   (unbounded — never 'past the end'); `cache-count` and `cache-last-index`
+   (cache-first + cache-count - 1, or -1 when empty) describe the cache. Pure."
+  [^int attach-idx item-count ^int cache-count ^int cache-last-index]
+  (cond
+    (and item-count
+         (pos? cache-count)
+         (= attach-idx (int item-count))
+         (= cache-last-index (dec (int item-count))))
+    :attach-last
+    (pos? attach-idx) :restart-0
+    :else :empty))
+
 (defn- align-start!
   "Ensures firstChild exists and starts at (or before) the first index whose
    cached max-end reaches into the window. Returns false when the collection
@@ -1485,13 +1510,20 @@
                                  :else 0.0)]
         (if (.addInitialChild rs .index attach-idx .layoutOffset attach-off)
           true
-          ;; nothing at attach-idx — the collection shrank; restart at 0
-          (if (pos? attach-idx)
+          (case (align-start-fallback attach-idx (:item-count env) (count cache)
+                                      (+ cf (dec (count cache))))
+            ;; window past the content end: re-attach the LAST child at its cached
+            ;; offset — O(1) — instead of walking all N from 0 every bounce frame.
+            :attach-last
+            (.addInitialChild rs .index (dec (int (:item-count env)))
+              .layoutOffset (double (:offset (peek cache))))
+            ;; the collection shrank below the cached band; restart at 0
+            :restart-0
             (do (.-cache! rs [])
                 (.-cacheFirst! rs 0)
                 (.-baseState! rs ((:init layout) env))
                 (.addInitialChild rs .index 0 .layoutOffset 0.0))
-            false)))
+            :empty false)))
       (loop []
         (let [^int fidx (.indexOf rs (.-firstChild rs))]
           (if (> fidx attach-idx)
