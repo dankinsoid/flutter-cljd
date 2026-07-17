@@ -92,6 +92,12 @@ hooks specced (`:renewal-point?`, monotone `:approx-offset` + engine inverse-see
 backward re-flow, fixes #5) → C(refinement + exact landing, fixes #6) → D(geometric cache
 scoping) → E(overscan); WS3 attaches after E. Refinement and the WS1.3 segment correction are
 mutually exclusive per pass (segment freezes the offset model at capture).
+**IMPLEMENTED (2026-07-17), all phases landed:** A e66a131 · B 69210af (#5 fixed) ·
+C 2b98ce3+07f764b (#6 fixed, index-0 contract fails loudly) · D 9327538 (geometric prune,
+stale-enter structurally impossible) · E 2c6f90b (velocity regime gate + directional overscan,
+`:overscan` option; thresholds in `overscan-tunables` await device calibration). Verification
+rig: example WS1 tab 065a354/00a3200, WS2 tab 8930a04. Remaining: device calibration of
+`overscan-tunables` + WS3 (3.1 gating, 3.2 window-scoped diffing).
 The big architectural piece. Reframes bugs #5/#6 (list→wrap while scrolled: off-window cells
 degenerate to a single left column; correct wrap only snaps in at the top; scroll offset settles
 in a second pass after the segment) as one root defect: **there is no true from-index-0 flow
