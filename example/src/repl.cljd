@@ -970,7 +970,7 @@
 (defn- ^w/Widget ws1-tile [item ^bool wrap?]
   (let [id (:id item)
         h (+ 48.0 (* 24 (mod id 4)))
-        tile (->> (ui/text (str id) {:size 20 :weight :bold})
+        tile (->> (ui/text (str id) {:size 20 :weight :bold :color :black})
                   (ui/center)
                   (ui/decorated {:color (c/CupertinoColors.systemGrey6)
                                  :border {:l {:color (nth colors (mod id (count colors)))
@@ -982,11 +982,20 @@
 
 (def ^:private ws1-probe-id 5)
 
+;; Compact button for the verification rigs: less padding + smaller font than
+;; the shared `btn` so the control panel leaves more room for the collection.
+(defn- ^w/Widget ws-btn [label on-tap]
+  (ui/button on-tap
+    (->> (ui/text label {:size 12 :color :white})
+         (ui/padding {:h 9 :v 3})
+         (ui/clip-corners :all 6)
+         (ui/colored (c/CupertinoColors.activeBlue)))))
+
 (defn- ^w/Widget ws1-section [label row]
   (ui/column
    :cross-axis-alignment :stretch
-   :spacing 2
-   (->> (ui/text label {:size 11 :color :grey}) (ui/padding {:l 4}))
+   :spacing 1
+   (->> (ui/text label {:size 10 :color :grey}) (ui/padding {:l 4}))
    row))
 
 (defn ^w/Widget ws1-preview
@@ -1010,27 +1019,27 @@
       :cross-axis-alignment :stretch
       (->> (ui/column
             :cross-axis-alignment :stretch
-            :spacing 6
+            :spacing 3
             (ws1-section
              (str "layout / speed · " (name layout) " · " dur "ms · " (count items) " items")
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
-              (btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
-              (btn (str "Slow: " (if slow? "ON" "OFF")) #(swap! $slow not))))
+              (ws-btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
+              (ws-btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
+              (ws-btn (str "Slow: " (if slow? "ON" "OFF")) #(swap! $slow not))))
             (ws1-section
              "retrigger combos (1.1) — B fires ~50% into A"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "ins-in-ins"
+              (ws-btn "ins-in-ins"
                    (fn []
                      (ws1-insert! $items $next-id 2)
                      (ws1-later half #(ws1-insert! $items $next-id 4))))
-              (btn "rm-in-ins"
+              (ws-btn "rm-in-ins"
                    (fn []
                      (ws1-insert! $items $next-id 2)
                      (ws1-later half #(ws1-remove-at! $items 4))))
-              (btn "ins-in-rm"
+              (ws-btn "ins-in-rm"
                    (fn []
                      (ws1-remove-at! $items 2)
                      (ws1-later half #(ws1-insert! $items $next-id 3))))))
@@ -1038,20 +1047,20 @@
              (str "stale probe — Del #" ws1-probe-id ", scroll around, then Add #" ws1-probe-id)
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn (str "Del #" ws1-probe-id) #(ws1-remove-id! $items ws1-probe-id))
-              (btn (str "Add #" ws1-probe-id) #(ws1-insert-id! $items ws1-probe-id 2))))
+              (ws-btn (str "Del #" ws1-probe-id) #(ws1-remove-id! $items ws1-probe-id))
+              (ws-btn (str "Add #" ws1-probe-id) #(ws1-insert-id! $items ws1-probe-id 2))))
             (ws1-section
              "segment (1.3) / spring (1.2) / reset"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "Shuffle" (fn [] (swap! $items shuffle)))
-              (btn "Rapid x4"
+              (ws-btn "Shuffle" (fn [] (swap! $items shuffle)))
+              (ws-btn "Rapid x4"
                    (fn []
                      (ws1-insert! $items $next-id 2)
                      (ws1-later 300 #(ws1-remove-at! $items 3))
                      (ws1-later 600 #(ws1-insert! $items $next-id 2))
                      (ws1-later 900 #(ws1-remove-at! $items 3))))
-              (btn "Reset"
+              (ws-btn "Reset"
                    (fn []
                      (reset! $items ws1-initial)
                      (reset! $next-id (count ws1-initial)))))))
@@ -1094,7 +1103,7 @@
         s (ws2-seed id)
         h (+ 44.0 (double (mod (bit-shift-right s 8) 140)))
         w (+ 56.0 (double (mod (bit-shift-right s 4) 64)))
-        tile (->> (ui/text (str id) {:size 16 :weight :bold})
+        tile (->> (ui/text (str id) {:size 16 :weight :bold :color :black})
                   (ui/center)
                   (ui/decorated {:color (c/CupertinoColors.systemGrey6)
                                  :border {:l {:color (nth colors (mod id (count colors)))
@@ -1173,39 +1182,39 @@
       :cross-axis-alignment :stretch
       (->> (ui/column
             :cross-axis-alignment :stretch
-            :spacing 6
+            :spacing 3
             (ws2-readout offset-cell (count items))
             (ws1-section
              "layout · list↔wrap while deep = #5 probe · approx compares estimate"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
-              (btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
-              (btn (str "Approx: " (if approx? "ON" "OFF")) #(swap! $approx not))))
+              (ws-btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
+              (ws-btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
+              (ws-btn (str "Approx: " (if approx? "ON" "OFF")) #(swap! $approx not))))
             (ws1-section
              "deep scroll — ~50 viewports down (estimate vs. true diverge)"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "Jump ~50vp" #(to-deep! false))
-              (btn "Animate ~50vp" #(to-deep! true))))
+              (ws-btn "Jump ~50vp" #(to-deep! false))
+              (ws-btn "Animate ~50vp" #(to-deep! true))))
             (ws1-section
              "exact top landing — must stop on item 0, no end-snap"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "animateTo 0 (slow)" #(to-top! 1600 w/Curves.easeInOut))
-              (btn "Fling top" #(to-top! 350 w/Curves.decelerate))))
+              (ws-btn "animateTo 0 (slow)" #(to-top! 1600 w/Curves.easeInOut))
+              (ws-btn "Fling top" #(to-top! 350 w/Curves.decelerate))))
             (ws1-section
              "#6 — insert/remove above window while deep in wrap: no offset settle after"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "Ins@2" #(ws1-insert! $items $next-id 2))
-              (btn "Rm@2" #(ws1-remove-at! $items 2))))
+              (ws-btn "Ins@2" #(ws1-insert! $items $next-id 2))
+              (ws-btn "Rm@2" #(ws1-remove-at! $items 2))))
             (ws1-section
              "cold start deep — content appears at once, indicator ~right, scroll up lands at 0"
              (ui/row
               :main-axis-alignment :space-evenly
-              (btn "Cold deep" #(cold-restart! ws2-deep-offset))
-              (btn "Reset"
+              (ws-btn "Cold deep" #(cold-restart! ws2-deep-offset))
+              (ws-btn "Reset"
                    (fn []
                      (reset! $items ws2-initial)
                      (reset! $next-id ws2-count)
