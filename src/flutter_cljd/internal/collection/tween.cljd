@@ -263,9 +263,11 @@
    (natural → 0) in place. When a key is re-entered/re-exited while still mid-wipe
    its captured `from` (the current VISIBLE window, stored by the host's commit) is
    kept as the wipe's start, so an interrupted segment CONTINUES from the current
-   window instead of snapping back to 0 (enter) or full (exit); the exit lays out
-   at the captured `:full-main`/`:full-cross`, not the partial window.
-   `:collapse-axis` (the layout's own declaration, default
+   window instead of snapping back to 0 (enter) or full (exit). EVERY branch lays
+   the cell at the STABLE full extent — the lerp of the two endpoints' `:full-*`
+   (visible extent when absent) — never the partial visible window, so a mid-wipe
+   commit consumed on the stay / leave-slide path can't force user content to lay
+   out at a 0.1-wide slot (§8a). `:collapse-axis` (the layout's own declaration, default
    `:main`) picks WHICH extent collapses — `:main` for a list/masonry, `:cross` for
    a grid/wrap — the other extent and offset/cross come from the target frame so the
    cell stays put while it wipes. The frame carries `:full-main-extent` and
@@ -289,43 +291,59 @@
                  :to-ctx (to-prep env)})
      :geometry (fn [env ^int i]
                  (let [ctx (:ctx env)
+                       ^double t (double (:t ctx))
                        key (key-of i)
                        to (to-frame env (:to-ctx ctx) i)
                        from (get committed key)
                        ext-key (if (= :cross collapse-axis) :cross-extent :main-extent)
                        ;; the captured `from`'s STABLE full extent on the collapse
-                       ;; axis (commit-pass!/animate-pass! store it): an exiting cell
+                       ;; axis (commit-pass!/animate-pass! store it): a cell
                        ;; interrupted mid-wipe must lay out at its real size, not the
                        ;; partial :main-extent/:cross-extent window it was clipped to.
                        full-ext-key (if (= :cross collapse-axis) :full-cross :full-main)
+                       ;; a frame's STABLE collapse-axis extent: its stored :full-*,
+                       ;; else its visible extent (targets / resting commits are full).
+                       frame-full (fn [f] (when f (double (or (get f full-ext-key)
+                                                              (get f ext-key)))))
                        ;; §8a: a cell is laid out at its STABLE full extent on BOTH
                        ;; axes (:full-main-extent/:full-cross-extent) so its content
                        ;; lays out once at a real size; the collapse axis's lerped
                        ;; VISIBLE window (:main-extent or :cross-extent) is the clip
-                       ;; the engine paints. `full` = the stable collapse-axis extent
-                       ;; (nil ⇒ not collapsing here, full == visible on both axes).
+                       ;; the engine paints. EVERY branch supplies the collapse-axis
+                       ;; full at both endpoints (ff-from/ff-to) so the lay-at extent
+                       ;; is the lerp of fulls, never the partial window — the stay /
+                       ;; leave-slide paths used to leave it nil and fall back to the
+                       ;; 0.1 visible window a mid-wipe commit carried (§8a follow-up).
                        ;; A re-entering / re-exiting cell keeps its captured `from`
                        ;; (the current visible window) so the wipe CONTINUES from
                        ;; there instead of snapping back to 0 (enter) or full (exit).
-                       [from* to* full] (cond
-                                          (contains? entering key)
-                                          [(or from (zero-axis to collapse-axis)) to
-                                           (double (or (get to ext-key) 0.0))]
-                                          (contains? exiting key)
-                                          (let [f (or from to)]
-                                            [f (zero-axis to collapse-axis)
-                                             (double (or (get f full-ext-key)
-                                                         (get f ext-key) 0.0))])
-                                          :else
-                                          ;; §7b leave-slide: the edge frame beats the
-                                          ;; target — bounded translation, size constant.
-                                          (if-some [lv (get leaving key)]
-                                            [from lv nil]
-                                            [from to nil]))
-                       fr (or (lerp-frame from* to* (double (:t ctx)))
+                       [from* to* ff-from ff-to]
+                       (cond
+                         (contains? entering key)
+                         ;; grow open at the target's full; a synthetic zero endpoint
+                         ;; (no committed history) is laid at the target full, not 0.
+                         (let [ff (frame-full to)]
+                           [(or from (zero-axis to collapse-axis)) to
+                            (or (frame-full from) ff) ff])
+                         (contains? exiting key)
+                         ;; wipe shut in place while held at the committed full.
+                         (let [f (or from to) ff (frame-full f)]
+                           [f (zero-axis to collapse-axis) ff ff])
+                         :else
+                         ;; §7b leave-slide: the edge frame beats the target — bounded
+                         ;; translation, size (and full) constant; else a plain stay.
+                         (if-some [lv (get leaving key)]
+                           [from lv (frame-full from) (frame-full lv)]
+                           [from to (frame-full from) (frame-full to)]))
+                       fr (or (lerp-frame from* to* t)
                               (zero-frame env))
                        ^double vm (double (:main-extent fr))
-                       ^double vc (double (:cross-extent fr))]
+                       ^double vc (double (:cross-extent fr))
+                       ;; nil-aware lerp of the collapse-axis fulls; a nil endpoint
+                       ;; yields the side that has an opinion (mirrors lerp-frame).
+                       full (cond (nil? ff-from) ff-to
+                                  (nil? ff-to) ff-from
+                                  :else (lerp (double ff-from) (double ff-to) t))]
                    (assoc fr
                           :full-main-extent (if (= :cross collapse-axis) vm (double (or full vm)))
                           :full-cross-extent (if (= :cross collapse-axis) (double (or full vc)) vc))))

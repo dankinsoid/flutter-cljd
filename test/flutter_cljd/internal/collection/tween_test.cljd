@@ -452,6 +452,78 @@
     (testing "t=1 collapses the cross window to 0"
       (is (close? 0.0 (:cross-extent (keyed-geo* to committed 180.0 key-of opts 1.0 0)))))))
 
+;; --- §8a follow-up: a mid-wipe commit consumed on a non-enter/exit branch must
+;;     still lay at the STABLE full extent, never the partial visible window
+;;     (which laid user content at ~0.1 px → RenderFlex overflow). ---
+
+(deftest keyed-tween-stay-midwipe-lays-at-full-not-window
+  ;; a wrap cell (:collapse-axis :cross) committed mid-wipe (visible cross 0.1,
+  ;; stable full 76) is consumed by the STAY branch: its lay-at cross must track
+  ;; the lerp of fulls (~76), never the 0.1 window, while the visible cross lerps
+  ;; up from 0.1 to drive the paint clip.
+  (let [to (tw/frozen-frame-source
+            {:base 0 :extent 200.0 :frames [(fr 0 0 60 76)]})   ; target cross 76 (full)
+        committed {:x {:offset 0.0 :cross 0.0 :main-extent 60.0 :cross-extent 0.1
+                       :full-main 60.0 :full-cross 76.0}}
+        key-of (fn [^int _i] :x)
+        opts {:collapse-axis :cross}]     ; stay: no entering/exiting/leaving
+    (testing "t=0: laid at full cross (76), visible cross at the captured 0.1"
+      (let [g (keyed-geo* to committed 200.0 key-of opts 0.0 0)]
+        (is (close? 0.1 (:cross-extent g)))
+        (is (close? 76.0 (:full-cross-extent g)))))
+    (testing "t=0.5: full stays 76, visible cross lerps 0.1 -> 76"
+      (let [g (keyed-geo* to committed 200.0 key-of opts 0.5 0)]
+        (is (close? 38.05 (:cross-extent g)))            ; lerp(0.1, 76, 0.5)
+        (is (close? 76.0 (:full-cross-extent g)))))
+    (testing "t=1: settled at full on both"
+      (let [g (keyed-geo* to committed 200.0 key-of opts 1.0 0)]
+        (is (close? 76.0 (:cross-extent g)))
+        (is (close? 76.0 (:full-cross-extent g)))))))
+
+(deftest keyed-tween-stay-nil-target-lays-at-full
+  ;; the aggravator: to-src has NO frame at the index (target outside the frozen
+  ;; window) so lerp-frame returns the committed rect VERBATIM at every t. A
+  ;; mid-wipe commit (visible cross 0.1, full 76) must still lay at 76, not the
+  ;; verbatim 0.1 window.
+  (let [to (tw/frozen-frame-source {:base 0 :extent 200.0 :frames [(fr 0 0 60 76)]})
+        committed {:x {:offset 5.0 :cross 0.0 :main-extent 60.0 :cross-extent 0.1
+                       :full-main 60.0 :full-cross 76.0}}
+        key-of (fn [^int _i] :x)
+        opts {:collapse-axis :cross}]
+    (testing "index 3 outside the window ⇒ to nil, from verbatim, laid at full"
+      (doseq [t [0.0 0.5 1.0]]
+        (let [g (keyed-geo* to committed 200.0 key-of opts t 3)]
+          (is (close? 0.1 (:cross-extent g)))            ; verbatim visible window
+          (is (close? 76.0 (:full-cross-extent g))))))))  ; laid at full, not 0.1
+
+(deftest keyed-tween-entering-nil-target-lays-at-full-not-zero
+  ;; a re-inserted cell still on-screen keeps its committed rect (full 60); if its
+  ;; target index is outside the frozen window (to nil) the enter must lay at the
+  ;; committed full, not collapse the lay-at extent to 0 (which laid at zero).
+  (let [to (tw/frozen-frame-source {:base 0 :extent 200.0 :frames [(fr 0 0 60 100)]})
+        committed {:x {:offset 0.0 :cross 0.0 :main-extent 24.0 :cross-extent 100.0
+                       :full-main 60.0 :full-cross 100.0}}
+        key-of (fn [^int _i] :x)
+        opts {:entering #{:x}}]              ; collapse :main (default)
+    (testing "to nil (index 5 outside window): laid at committed full 60, not 0"
+      (doseq [t [0.0 0.5 1.0]]
+        (let [g (keyed-geo* to committed 200.0 key-of opts t 5)]
+          (is (close? 60.0 (:full-main-extent g)))
+          (is (close? 24.0 (:main-extent g))))))))    ; verbatim visible (no target to grow toward)
+
+(deftest keyed-tween-resting-stay-full-equals-visible
+  ;; regression: a resting commit (visible == full on both axes) lays at its
+  ;; visible extent exactly as before — the all-branch full lerp is a no-op when
+  ;; nothing is mid-wipe (full == visible everywhere).
+  (let [to (tw/frozen-frame-source {:base 0 :extent 180.0 :frames [(fr 40 20 60 100)]})
+        committed {:x {:offset 0.0 :cross 20.0 :main-extent 100.0 :cross-extent 100.0
+                       :full-main 100.0 :full-cross 100.0}}
+        key-of (fn [^int _i] :x)]
+    (doseq [t [0.0 0.5 1.0]]
+      (let [g (keyed-geo* to committed 180.0 key-of {} t 0)]
+        (is (close? (:main-extent g) (:full-main-extent g)))
+        (is (close? (:cross-extent g) (:full-cross-extent g)))))))
+
 ;; --- 3c: the collapse axis is DECLARED by the layout (main vs cross) ---
 
 (deftest keyed-tween-cross-collapse-wipes-cross-not-main
