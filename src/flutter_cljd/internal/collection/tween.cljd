@@ -187,6 +187,35 @@
                              :cross-extent (lay/size-cross env size)})))
         (persistent! out)))))
 
+(defn flow-run-entries
+  "Runs a FLOW layout's :place over a contiguous, ascending seq of measured cells
+   seeded with `seed-state`, producing the engine's per-index cache entries
+   {:offset :cross :extent :end :max-end :state} — the exact shape `walk!` builds.
+   This is what a checkpoint-seeded BACKWARD re-flow uses: seed the run's exact
+   state at a renewal point (or the retained `:state`), walk forward, get real
+   `:cross` and per-run `:offset` instead of the old one-child-per-slot estimate.
+
+   `sized` is a seq of [abs-index ui/Size main-extent], where `main-extent` is the
+   child's measured main-axis paint extent (the engine passes `paintExtentOf`; a
+   pure test passes `size-main`). `:state` on entry i is the flow state AFTER i
+   (== the state before i+1), matching `walk!`. `:max-end` is a running max of
+   `:end` seeded fresh, so entry 0's max-end is its own end; `stitch-prefix`
+   restores the global running-max across a prepend seam. Pure."
+  [layout env sized seed-state]
+  (let [place-fn (:place layout)]
+    (loop [s (seq sized) st seed-state prev-max nil out (transient [])]
+      (if s
+        (let [[^int i ^ui/Size size ^double ext] (first s)
+              [gm st'] (place-fn env i size st)
+              ^double off (double (:offset gm))
+              ^double cross (double (or (:cross gm) 0.0))
+              ^double end (+ off ext)
+              ^double mx (if (or (nil? prev-max) (> end ^double prev-max)) end prev-max)]
+          (recur (next s) st' mx
+                 (conj! out {:offset off :cross cross :extent ext
+                             :end end :max-end mx :state st'})))
+        (persistent! out)))))
+
 (defn flow-seed-state
   "Seed flow state for `flow-frames`: :init when the window starts at index 0,
    otherwise :anchor at the window's first index and offset (dead-reckoning)."

@@ -86,8 +86,16 @@
                           ;; instead of popping in at target (docs §7c). Consumed and cleared per segment.
    ^:mutable approxSize   ;; approximate-item-size seed (double | ui/Size | nil) — the cold prior for
                           ;; :avg-main/:avg-cross before any cell is measured (WS2.2 §1.1)
-   ^:mutable measuredAgg] ;; nil | {:avg-main d :avg-cross d} — EMA over the live window; overrides the
+   ^:mutable measuredAgg  ;; nil | {:avg-main d :avg-cross d} — EMA over the live window; overrides the
                           ;; seed once cells exist. Populated by the consuming phase (flying regime); nil here.
+   ^:mutable checkpoints  ;; sparse {^int index -> {:offset ^double :state <flow-state>}} — the exact flow
+                          ;; state BEFORE that index, retained past GC as a backward-re-flow seed (WS2.2 §2.1).
+                          ;; Recorded at renewal points (or a periodic stride when the layout has no
+                          ;; :renewal-point?, e.g. masonry); pruned to the visible+cache band + one seed above.
+   ^:mutable ^bool anchoredTo0] ;; true once a pass placed index 0 at offset 0 with an unbroken cache down to
+                          ;; the live window ⇒ reported offsets are truth. false on cold deep start / far jump /
+                          ;; invalidation above the frontier ⇒ offsets are checkpoint-relative estimates (§2.4).
+                          ;; Phase C consumes it for the scroll indicator + refinement gate.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -162,7 +170,11 @@
       (when (not= (.-crossAxisExtent c) (.-crossCached this))
         (.-crossCached! this (.-crossAxisExtent c))
         (.-cache! this [])
-        (.-baseState! this nil))
+        (.-baseState! this nil)
+        ;; cross-extent change re-packs every wrap/masonry run — all checkpoints
+        ;; are stale (list's are cross-independent, but dropping all is cheap).
+        (.-checkpoints! this {})
+        (.-anchoredTo0! this false))
       (cond
         ;; RESTING: no animation — run the plain target through its natural driver.
         (nil? (.-tweenAnim this))
@@ -191,6 +203,110 @@
    seed plus the engine's measured EMA (nil until a consuming phase populates it)."
   [^CollectionRenderSliver rs]
   {:approx-size (.-approxSize rs) :measured (.-measuredAgg rs)})
+
+;; --- checkpoint store (WS2.2 §2.1) — pure kernels over a {idx -> {:offset :state}} map ---
+
+(def ^:private checkpoint-stride
+  "Index stride at which a layout WITHOUT :renewal-point? (e.g. masonry) gets a
+   periodic full-:state checkpoint. Coarser than a natural run boundary but still
+   an exact backward-re-flow seed."
+  32)
+
+(defn cp-record
+  "Adds/refreshes the checkpoint at `index`: `offset` is that index's main-axis
+   offset, `state` the flow state BEFORE it (the walk's state-before-i). Pure."
+  [checkpoints ^int index ^double offset state]
+  (assoc checkpoints index {:offset offset :state state}))
+
+(defn cp-nearest-at-or-below
+  "The checkpoint with the greatest index <= `target`, as {:index :offset :state},
+   or nil. This is the seed for a backward re-flow of the run(s) above `target`. Pure."
+  [checkpoints ^int target]
+  (reduce-kv (fn [best k v]
+               (if (and (<= ^int k target)
+                        (or (nil? best) (> ^int k ^int (:index best))))
+                 (assoc v :index k)
+                 best))
+             nil checkpoints))
+
+(defn cp-drop-from
+  "Drops checkpoints with index >= `j` — a resize / mutation at `j` shifts every
+   offset prefix-sum below it, so those seeds are stale. Pure."
+  [checkpoints ^int j]
+  (reduce-kv (fn [m k v] (if (>= ^int k j) m (assoc m k v))) {} checkpoints))
+
+(defn cp-prune-offset
+  "Interim Phase-B memory bound: keep checkpoints whose stored :offset is within
+   the [ws, we] band (the visible+cache region's run starts), PLUS the single
+   greatest-index checkpoint strictly above the band (offset < ws) as the seed a
+   backward re-flow walks forward from. Everything further above is dropped and
+   re-recorded on the next downward walk. Bounded O((we-ws)/min-run-height). Pure.
+   Phase D/E re-scope [ws, we] to the velocity-widened overscan window and unify
+   this with the committed-cache prune."
+  [checkpoints ^double ws ^double we]
+  (let [seed (reduce-kv (fn [best k v]
+                          (if (< ^double (:offset v) ws)
+                            (if (or (nil? best) (> ^int k ^int best)) k best)
+                            best))
+                        nil checkpoints)]
+    (reduce-kv (fn [m k v]
+                 (let [^double o (double (:offset v))]
+                   (if (or (and (>= o ws) (<= o we))
+                           (and seed (= ^int k ^int seed)))
+                     (assoc m k v)
+                     m)))
+               {} checkpoints)))
+
+(defn stitch-prefix
+  "Prepends the `prefix` cache entries (index-ascending, each carrying a running
+   :max-end seeded fresh from the prefix) onto `cache`, restoring the GLOBAL
+   running-max :max-end invariant across the seam so bsearch-max-end stays sound.
+   `prefix` covers indices strictly above cache[0]; a tall mid-run item above the
+   seam can push :max-end past the old head, so carry the prefix's final max-end
+   forward into the old entries until it is absorbed (usually one step). Pure."
+  [prefix cache]
+  (if (empty? prefix)
+    cache
+    (let [^double carry (double (:max-end (peek prefix)))]
+      (into (vec prefix)
+            (loop [^int i 0 out (transient [])]
+              (if (< i (count cache))
+                (let [e (nth cache i)
+                      ^double me (double (:max-end e))]
+                  (if (>= me carry)
+                    ;; carry absorbed — the rest of the cache is already a correct
+                    ;; running max (it is non-decreasing from here).
+                    (persistent! (reduce conj! out (subvec cache i)))
+                    (recur (inc i) (conj! out (assoc e :max-end carry)))))
+                (persistent! out)))))))
+
+;; --- cold-start / far-jump index seeding: invert the monotone :approx-offset ---
+
+(defn invert-approx-offset
+  "Binary-searches the MONOTONE non-decreasing `approx-fn` (int index -> double
+   main offset) for the greatest index whose approx offset is <= `target`, i.e.
+   the index to attach a cold deep window at. Lands within one item of the true
+   index on a well-formed monotone estimate. `n` bounds the search (item count);
+   nil ⇒ gallop up to `unbounded-cap`. On a DEGENERATE estimate (constant density,
+   e.g. no seeded/measured avg) the result saturates at the last index — the
+   caller (seed-cache!) guards on approx(start) actually reaching `target`. Pure."
+  [approx-fn ^double target n]
+  (let [unbounded-cap 16777216
+        ^int hi (if n
+                  (int n)
+                  ;; gallop to bracket the target when the count is unknown/infinite
+                  (loop [^int h 1]
+                    (cond
+                      (> (double (approx-fn h)) target) h
+                      (>= h unbounded-cap) unbounded-cap
+                      :else (recur (* 2 h)))))]
+    (loop [^int lo 0 ^int hi hi]
+      (if (< lo hi)
+        (let [^int mid (bit-shift-right (+ lo hi) 1)]
+          (if (<= (double (approx-fn mid)) target)
+            (recur (inc mid) hi)
+            (recur lo mid)))
+        (math/max 0 (dec lo))))))
 
 ;; --- keyed rect commit (v2 persistent {key -> content-space rect}) ---
 
@@ -358,6 +474,12 @@
     (when layout-changed
       (.-cache! rs [])
       (.-baseState! rs nil))
+    ;; checkpoints invalidate in lockstep with the cache: a layout :id change
+    ;; re-packs everything; a count change shifts offset prefix-sums (no diff index
+    ;; available here → drop all, per docs §2.1). Both un-anchor the frontier.
+    (when (or layout-changed count-changed)
+      (.-checkpoints! rs {})
+      (.-anchoredTo0! rs false))
     (.-prevLayout! rs (next-prev-layout (.-prevLayout rs) old
                                         (boolean layout-changed) (some? tween-anim)))
     ;; always swap the fns — same :id means same behavior, fresher closures
@@ -542,18 +664,47 @@
       (.collectGarbage rs leading trailing))))
 
 (defn- seed-cache!
-  "When the geometry cache is empty, re-anchors it: at the first attached
-   child's last-frame offset (dead reckoning via :anchor) or at index 0."
+  "When the geometry cache is empty, re-anchors it: on a cold deep start (nothing
+   attached, window far down) invert the monotone :approx-offset to pick the start
+   index; otherwise at the first attached child's last-frame offset (dead reckoning
+   via :anchor) or at index 0."
   [^CollectionRenderSliver rs layout env]
   (when (empty? (.-cache rs))
     (let [init-fn (:init layout)
           anchor-fn (:anchor layout)
+          approx-fn (:approx-offset layout)
+          ^r/SliverConstraints c (:constraints env)
+          ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
           fc (.-firstChild rs)
           idx (if fc (.indexOf rs ^r/RenderBox fc) 0)]
       (cond
+        ;; COLD DEEP START / far jump: nothing attached and the window sits far
+        ;; down. Invert the monotone :approx-offset to seed the start index instead
+        ;; of walking O(n) from 0 (align-start! attaches, walk! places from
+        ;; baseState). anchoredTo0 := false — offsets are estimates until refined.
+        (and (nil? fc) approx-fn (> ws 0.5))
+        (let [^int raw (invert-approx-offset (fn [^int i] (approx-fn env i))
+                                             ws (.-itemCount rs))
+              ^int n (int (or (.-itemCount rs) 0))
+              ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))
+              ^double off-start (double (approx-fn env start))]
+          ;; Trust the inverse-seed only when the estimate's density actually
+          ;; reaches the window — a degenerate (unseeded) density saturates at the
+          ;; last index at offset ≪ ws, which we reject and walk from 0 instead.
+          (if (and (pos? start) (>= off-start (* 0.5 ws)))
+            (do (.-cacheFirst! rs start)
+                (.-baseState! rs (if anchor-fn
+                                   (anchor-fn env start off-start)
+                                   (init-fn env)))
+                (.-anchoredTo0! rs false))
+            (do (.-cacheFirst! rs 0)
+                (.-baseState! rs (init-fn env))
+                (.-anchoredTo0! rs true))))
+
         (or (nil? fc) (zero? ^int idx))
         (do (.-cacheFirst! rs 0)
-            (.-baseState! rs (init-fn env)))
+            (.-baseState! rs (init-fn env))
+            (.-anchoredTo0! rs true))
 
         (some? anchor-fn)
         (let [off (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)]
@@ -564,7 +715,8 @@
         :else
         (do (.collectGarbage rs (count-attached rs) 0)
             (.-cacheFirst! rs 0)
-            (.-baseState! rs (init-fn env)))))))
+            (.-baseState! rs (init-fn env))
+            (.-anchoredTo0! rs true))))))
 
 (defn- normalize-cache!
   "Keyed reconciliation may remap attached child indices arbitrarily between
@@ -630,10 +782,23 @@
               true)
             true))))))
 
+(defn- record-checkpoint!
+  "Retains index `i` in the checkpoint store as a backward-re-flow seed when it
+   begins a fresh run (:renewal-point?), or — for a layout without the hook
+   (masonry) — at a periodic stride. `state` is the flow state BEFORE `i` (the
+   seed for a forward re-walk from it); `off`/`cross` are i's just-placed frame."
+  [^CollectionRenderSliver rs layout env ^int i ^double off ^double cross state]
+  (let [rp (:renewal-point? layout)]
+    (when (if rp
+            (boolean (rp env i {:offset off :cross cross}))
+            (zero? (mod i checkpoint-stride)))
+      (.-checkpoints! rs (cp-record (.-checkpoints rs) i off state)))))
+
 (defn- walk!
   "Lays out children forward from firstChild until the window is filled or
    children run out. Cache entries whose measured extent matches are reused;
-   the first mismatch truncates the cache and re-places from there.
+   the first mismatch truncates the cache (and checkpoints at/below it) and
+   re-places from there. Records renewal-point/stride checkpoints as it walks.
    Returns {:last-i int :end double :reached bool}."
   [^CollectionRenderSliver rs layout env ^double we]
   (let [measure-fn (:measure layout)
@@ -656,7 +821,11 @@
                  (:state entry) (double (:max-end entry))]
                 (do
                   (when entry
-                    (.-cache! rs (into [] (subvec cache 0 rel))))
+                    ;; measured-size mismatch at i: truncate the cache AND drop
+                    ;; checkpoints with index >= i — their offset prefix-sums shifted.
+                    (.-cache! rs (into [] (subvec cache 0 rel)))
+                    (.-checkpoints! rs (cp-drop-from (.-checkpoints rs) i))
+                    (.-anchoredTo0! rs false))
                   (let [[gm st] (place-fn env i (.-size child) state)
                         ^double off (double (:offset gm))
                         ^double cross (double (or (:cross gm) 0.0))
@@ -671,6 +840,8 @@
                     [off cross st mx])))]
           (set-layout-offset! child off)
           (set-cross-axis-offset! child cross)
+          ;; `state` is the flow state BEFORE i — the exact seed to store.
+          (record-checkpoint! rs layout env i off cross state)
           (let [^double fe (if flow-end-fn
                              (double (flow-end-fn env next-state))
                              max-end)]
@@ -710,45 +881,120 @@
         ^int leading (math/max 0 (math/min leading (- total trailing 1)))]
     (.collectGarbage rs leading trailing)))
 
-(defn- backfill-leading!
-  "Materializes children above the cached region by backward estimation:
-   each leading child is assumed to end where the region starts. When the
-   backfill reaches index 0 away from offset 0, drops the cache and returns
-   a scroll correction; the next pass re-flows exactly from the top."
-  [^CollectionRenderSliver rs layout env ^double ws]
+(defn- reflow-from-checkpoint!
+  "One backward re-flow step (WS2.2 §2.2). Seeds at checkpoint `cp` (index k <=
+   cf-1), materialises [k .. cf-1] as leading children and places them FORWARD via
+   the checkpoint's exact flow state — real :cross and real per-run :offset, not
+   the one-child-per-slot estimate — then stitches the produced entries onto the
+   cache and lowers cacheFirst to the reached top. Re-records renewal-point
+   checkpoints for the re-flowed runs. Returns true iff it re-flowed a run, false
+   (no leading child available) to let the caller stop."
+  [^CollectionRenderSliver rs layout env cp]
+  (let [measure-fn (:measure layout)
+        ^int cf (.-cacheFirst rs)
+        ^int k (int (:index cp))
+        seed-state (:state cp)
+        ;; insert cf-1, cf-2, …, k as leading children (each prepends before firstChild)
+        inserted (loop [^int i (dec cf) acc (transient {})]
+                   (if (>= i k)
+                     (if-let [c (.insertAndLayoutLeadingChild rs
+                                 ^r/BoxConstraints (measure-fn env i)
+                                 .parentUsesSize true)]
+                       (recur (dec i) (assoc! acc i c))
+                       (persistent! acc))
+                     (persistent! acc)))]
+    (if (empty? inserted)
+      false
+      ;; lowest contiguous index we actually materialised (usually k)
+      (let [^int lo (loop [^int i (dec cf)]
+                      (if (and (>= i k) (contains? inserted i)) (recur (dec i)) (inc i)))
+            use-seed (if (= lo k)
+                       seed-state
+                       ;; ran out before the checkpoint — dead-reckon the seed at lo
+                       ;; (approximate; the child manager normally reaches k)
+                       (if-let [anchor-fn (:anchor layout)]
+                         (anchor-fn env lo (double (or (.childScrollOffset rs ^r/RenderBox (get inserted lo)) 0.0)))
+                         ((:init layout) env)))
+            sized (mapv (fn [^int i]
+                          (let [^r/RenderBox c (get inserted i)]
+                            [i (.-size c) (.paintExtentOf rs c)]))
+                        (range lo cf))
+            entries (tw/flow-run-entries layout env sized use-seed)]
+        (dotimes [j (count entries)]
+          (let [^int i (+ lo j)
+                e (nth entries j)
+                ^r/RenderBox c (get inserted i)
+                ^double off (double (:offset e))
+                ^double cross (double (:cross e))
+                state-before (if (zero? j) use-seed (:state (nth entries (dec j))))]
+            (set-layout-offset! c off)
+            (set-cross-axis-offset! c cross)
+            (record-checkpoint! rs layout env i off cross state-before)))
+        (.-cache! rs (stitch-prefix entries (.-cache rs)))
+        (.-cacheFirst! rs lo)
+        (.-baseState! rs use-seed)
+        true))))
+
+(defn- estimate-leading-step!
+  "Fallback backward step when NO checkpoint covers the region above the cache
+   (cold / never-visited off-screen margin): one leading child assumed to end
+   where the region starts, :cross dead-reckoned to 0. Approximate — the old
+   list-shaped estimator, retained only for the no-seed case (docs §2/§4 accept a
+   transiently approximate off-screen leading margin). Returns true iff it stepped."
+  [^CollectionRenderSliver rs layout env]
   (let [measure-fn (:measure layout)
         anchor-fn (:anchor layout)
-        init-fn (:init layout)]
+        init-fn (:init layout)
+        cache (.-cache rs)
+        ^int cf (.-cacheFirst rs)]
+    (if-let [c (.insertAndLayoutLeadingChild rs
+                ^r/BoxConstraints (measure-fn env (dec cf))
+                .parentUsesSize true)]
+      (let [^double ext (.paintExtentOf rs ^r/RenderBox c)
+            ^double head (double (:offset (nth cache 0)))
+            ^double noff (- head ext)
+            st (if anchor-fn (anchor-fn env cf head) (init-fn env))
+            entry {:offset noff :cross 0.0 :extent ext
+                   :end head
+                   :max-end (math/min head ^double (:max-end (nth cache 0)))
+                   :state st}]
+        (set-layout-offset! c noff)
+        (set-cross-axis-offset! c 0.0)
+        (.-cache! rs (into [entry] cache))
+        (.-cacheFirst! rs (dec cf))
+        (.-baseState! rs (if anchor-fn (anchor-fn env (dec cf) noff) (init-fn env)))
+        true)
+      false)))
+
+(defn- backfill-leading!
+  "Materialises the leading margin [ws, cache[0].offset) above the cached region as
+   REAL runs (WS2.2 §2.2): each step seeds at the nearest checkpoint at-or-above the
+   target and re-flows forward (real :cross / per-run :offset — kills #5's single
+   left column), falling back to the one-child estimator only where no checkpoint
+   exists. When the backfill reaches index 0 away from offset 0, drops the cache and
+   returns a scroll correction; the next pass re-flows exactly from the top."
+  [^CollectionRenderSliver rs layout env ^double ws]
+  (let [init-fn (:init layout)
+        finish (fn [^bool did]
+                 (when (and did (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
+                   (let [^double z (double (:offset (nth (.-cache rs) 0)))]
+                     (if (> (.abs z) 1e-3)
+                       (do (.-cache! rs [])
+                           (.-baseState! rs (init-fn env))
+                           (.-anchoredTo0! rs false)
+                           (- z))
+                       (do (.-anchoredTo0! rs true)
+                           nil)))))]
     (loop [did false]
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
         (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
-          (if-let [c (.insertAndLayoutLeadingChild rs
-                      ^r/BoxConstraints (measure-fn env (dec cf))
-                      .parentUsesSize true)]
-            (let [^double ext (.paintExtentOf rs ^r/RenderBox c)
-                  ^double head (double (:offset (nth cache 0)))
-                  ^double noff (- head ext)
-                  st (if anchor-fn (anchor-fn env cf head) (init-fn env))
-                  entry {:offset noff :cross 0.0 :extent ext
-                         :end head
-                         :max-end (math/min head ^double (:max-end (nth cache 0)))
-                         :state st}]
-              (set-layout-offset! c noff)
-              (set-cross-axis-offset! c 0.0)
-              (.-cache! rs (into [entry] cache))
-              (.-cacheFirst! rs (dec cf))
-              (.-baseState! rs (if anchor-fn
-                                 (anchor-fn env (dec cf) noff)
-                                 (init-fn env)))
-              (recur true))
-            nil)
-          (when (and did (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
-            (let [^double z (double (:offset (nth (.-cache rs) 0)))]
-              (when (> (.abs z) 1e-3)
-                (.-cache! rs [])
-                (.-baseState! rs (init-fn env))
-                (- z)))))))))
+          (let [cp (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
+                stepped (if cp
+                          (reflow-from-checkpoint! rs layout env cp)
+                          (estimate-leading-step! rs layout env))]
+            (if stepped (recur true) (finish did)))
+          (finish did))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
@@ -839,13 +1085,17 @@
                                    (int kl))
                                  last-i)]
             (post-gc! rs keep-last ws)
-            (if-let [corr (backfill-leading! rs layout env ws)]
-              (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
-                  (.didFinishLayout mgr))
-              (if-let [delta (anchor-delta rs anchor)]
-                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
+            (let [corr (backfill-leading! rs layout env ws)]
+              ;; Interim Phase-B memory bound: keep checkpoints in the visible+cache
+              ;; band [ws, we] plus one seed above (Phase D/E widen to overscan).
+              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws we))
+              (if corr
+                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                     (.didFinishLayout mgr))
-                (finish-flow-geometry! rs layout env c walked)))))))))
+                (if-let [delta (anchor-delta rs anchor)]
+                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
+                      (.didFinishLayout mgr))
+                  (finish-flow-geometry! rs layout env c walked))))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -1350,7 +1600,7 @@
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil approxSize nil)]
+                                     fadeEnter fadeExit nil approxSize nil {} false)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

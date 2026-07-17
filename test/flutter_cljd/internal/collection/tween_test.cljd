@@ -80,6 +80,56 @@
           frames (tw/flow-frames l venv [[7 (ui/Size 300 40)]] seed)]
       (is (close? 500.0 (:offset (nth frames 0)))))))
 
+;; --- flow-run-entries: checkpoint-seeded backward re-flow (WS2 phase B) ---
+
+(defn- sized3
+  "[i size main-extent] triples flow-run-entries consumes (main-extent = size-main)."
+  [env sizes]
+  (vec (map-indexed (fn [i s] [i s (lay/size-main env s)]) sizes)))
+
+(def ^:private wrap-mixed-sizes
+  ;; cross-extent 200, width 90, spacing 0 ⇒ 2 items/run; mixed heights so run
+  ;; boundaries (and thus renewal points) land at 0,2,4,6.
+  [(ui/Size 90 40) (ui/Size 90 55) (ui/Size 90 30) (ui/Size 90 20)
+   (ui/Size 90 60) (ui/Size 90 25) (ui/Size 90 45) (ui/Size 90 33)])
+
+(deftest flow-run-entries-real-cross-offsets
+  ;; the #5 fix: a wrap re-flow produces REAL per-item :cross (0, 90, 0, 90…),
+  ;; not the one-child-per-slot single-left-column (all :cross 0).
+  (let [env (assoc base-env :cross-extent 200.0)
+        wrap (lay/wrap-layout {:spacing 0 :run-spacing 6})
+        entries (tw/flow-run-entries wrap env (sized3 env wrap-mixed-sizes)
+                                     ((:init wrap) env))]
+    (testing "second item of each run sits at cross = 90, not 0"
+      (is (close? 0 (:cross (nth entries 0))))
+      (is (close? 90 (:cross (nth entries 1))))
+      (is (close? 0 (:cross (nth entries 2))))
+      (is (close? 90 (:cross (nth entries 3)))))
+    (testing "run offsets stack by run height + run-spacing (mixed heights)"
+      (is (close? 0 (:offset (nth entries 0))))     ; run 0
+      (is (close? 61 (:offset (nth entries 2))))    ; 0 + max(40,55) + 6
+      (is (close? 97 (:offset (nth entries 4))))    ; 61 + max(30,20) + 6
+      (is (close? 163 (:offset (nth entries 6)))))  ; 97 + max(60,25) + 6
+    (testing "entries carry a monotone running max-end (for bsearch)"
+      (is (apply <= (map :max-end entries))))))
+
+(deftest flow-run-entries-seed-reproduces-from-0
+  ;; the KEY correctness property: a mini-walk seeded at a run boundary's stored
+  ;; state reproduces the from-0 walk's geometry EXACTLY (offset + cross) for the
+  ;; whole tail — this is what makes backward re-flow exact.
+  (let [env (assoc base-env :cross-extent 200.0)
+        wrap (lay/wrap-layout {:spacing 0 :run-spacing 6})
+        sized (sized3 env wrap-mixed-sizes)
+        from0 (tw/flow-run-entries wrap env sized ((:init wrap) env))]
+    (doseq [k (range 1 (count wrap-mixed-sizes))
+            :when (close? 0 (:cross (nth from0 k)))]   ; k is a run start (renewal pt)
+      (testing (str "seeded at run boundary " k)
+        (let [seed (:state (nth from0 (dec k)))        ; state BEFORE k (checkpoint payload)
+              seeded (tw/flow-run-entries wrap env (subvec sized k) seed)]
+          (dotimes [j (count seeded)]
+            (is (close? (:offset (nth from0 (+ k j))) (:offset (nth seeded j))))
+            (is (close? (:cross (nth from0 (+ k j))) (:cross (nth seeded j))))))))))
+
 ;; --- indexed source wraps a live layout ---
 
 (defn- ^r/SliverConstraints sliver-constraints [^double cross ^double main]
