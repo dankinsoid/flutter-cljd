@@ -15,12 +15,11 @@
   ;; a resting / non-collapsing child (clip nil) commits visible == full on both
   ;; axes, so nothing downstream that falls back to :main-extent changes.
   (let [rect {:offset 10.0 :cross 5.0 :main-extent 60.0 :cross-extent 100.0}
-        c (render/committed-rect rect nil 42)]
+        c (render/committed-rect rect nil)]
     (is (= 60.0 (:main-extent c)))
     (is (= 100.0 (:cross-extent c)))
     (is (= 60.0 (:full-main c)))
     (is (= 100.0 (:full-cross c)))
-    (is (= 42 (:seen c)))
     (is (= 10.0 (:offset c)))))
 
 (deftest committed-rect-clipped-stores-visible-window-and-full
@@ -28,32 +27,60 @@
   ;; committed keeps the VISIBLE extent (so a retrigger continues the wipe) AND
   ;; the FULL laid extent (so an exit re-lays at the stable size, not the window).
   (let [rect {:offset 10.0 :cross 5.0 :main-extent 60.0 :cross-extent 100.0}
-        c (render/committed-rect rect [24.0 100.0] 7)]
+        c (render/committed-rect rect [24.0 100.0])]
     (is (= 24.0 (:main-extent c)))     ; visible window on the collapse axis
     (is (= 100.0 (:cross-extent c)))   ; non-collapse axis unchanged
     (is (= 60.0 (:full-main c)))       ; stable full laid extent preserved
-    (is (= 100.0 (:full-cross c)))
-    (is (= 7 (:seen c)))))
+    (is (= 100.0 (:full-cross c)))))
 
-;; --- prune-committed ---
+;; --- prune-committed (geometric, WS2 phase D — replaced the 600-pass age prune) ---
 
-(deftest prune-committed-drops-only-stale
-  (let [m {:a {:offset 0.0 :seen 100}
-           :b {:offset 1.0 :seen 500}
-           :c {:offset 2.0 :seen 700}}]
-    (testing "entries older than max-age are dropped, fresher ones kept"
-      ;; pass-tick 701, max-age 600 ⇒ :a age 601 pruned, :b/:c kept
-      (let [p (render/prune-committed m 701 600)]
-        (is (= #{:b :c} (set (keys p))))
-        (is (nil? (:a p)))
-        (is (= (:b m) (:b p)))))
-    (testing "boundary is strict >: exactly max-age old survives"
-      ;; :a seen 100, pass-tick 700 ⇒ age 600, not > 600 ⇒ kept
-      (is (contains? (render/prune-committed m 700 600) :a))
-      ;; pass-tick 701 ⇒ age 601 > 600 ⇒ pruned
-      (is (not (contains? (render/prune-committed m 701 600) :a))))
-    (testing "nothing stale ⇒ map unchanged"
-      (is (= m (render/prune-committed m 700 10000))))))
+(deftest prune-committed-geometric-band
+  ;; band [ws=100, we=500): keep any entry whose span still overlaps it.
+  (let [m {:above   {:offset 0.0 :main-extent 50.0}     ; ends at 50 < ws
+           :seam-lo {:offset 60.0 :main-extent 50.0}    ; ends at 110 — overlaps
+           :inside  {:offset 200.0 :main-extent 40.0}
+           :seam-hi {:offset 480.0 :main-extent 40.0}   ; starts before we — overlaps
+           :below   {:offset 500.0 :main-extent 40.0}}  ; starts at we — outside
+        p (render/prune-committed m 100.0 500.0)]
+    (testing "entries overlapping the band are kept, with their rects intact"
+      (is (= #{:seam-lo :inside :seam-hi} (set (keys p))))
+      (is (= (:inside m) (:inside p))))
+    (testing "entries whose rect left the band are dropped on either side"
+      (is (nil? (:above p)))
+      (is (nil? (:below p))))
+    (testing "a mid-wipe cell overlaps by its FULL span, not the visible window"
+      ;; visible collapsed to 5px (ends at 65 < ws) but full-main still reaches in
+      (let [m2 {:wiping {:offset 60.0 :main-extent 5.0 :full-main 50.0}}]
+        (is (contains? (render/prune-committed m2 100.0 500.0) :wiping))))))
+
+(deftest prune-committed-stale-enter-impossible
+  ;; The §2.1 stale-`from` bug class: a key scrolled far away keeps no committed
+  ;; entry, so re-inserting it later structurally CANNOT glide from a stale
+  ;; offset — with no entry it falls back to the enter-wipe / edge-slide path.
+  (let [m {:gone {:offset 12000.0 :main-extent 40.0 :full-main 40.0}
+           :here {:offset 250.0 :main-extent 40.0 :full-main 40.0}}
+        p (render/prune-committed m 100.0 500.0)]
+    (is (nil? (get p :gone)))
+    (is (some? (get p :here)))))
+
+(deftest prune-committed-box-band-keeps-all
+  ;; The box host's "band" is the whole (never-scrolled) box: [0, ∞) — the
+  ;; geometric rule must degrade to keep-all there, never drop-all.
+  (let [m {:a {:offset 0.0 :main-extent 40.0}
+           :b {:offset 900.0 :main-extent 40.0}
+           :z {:offset 1.0e9 :main-extent 40.0}}]
+    (is (= m (render/prune-committed m 0.0 (/ 1.0 0.0))))))
+
+(deftest commit-prune-only-between-segments
+  (testing "a playing segment exempts everything — no prune mid-segment, so
+            active participants and the `from` capture survive to segment end"
+    (is (false? (render/commit-prune? true false)))
+    (is (false? (render/commit-prune? true true))))
+  (testing "a correction pass defers to its coherent corrected re-run"
+    (is (false? (render/commit-prune? false true))))
+  (testing "a resting, correction-free pass prunes"
+    (is (true? (render/commit-prune? false false)))))
 
 ;; --- widen-window-indices ---
 
@@ -131,6 +158,21 @@
             p2 (render/cp-prune-offset cps2 250.0 700.0)]
         (is (contains? p2 3))
         (is (not (contains? p2 2)))))))
+
+(deftest frontier-survives-prune-degrades-with-cache
+  ;; Phase D frontier reconciliation: the geometric prunes never touch the
+  ;; anchoredTo0 claim — it rides the geometry cache's from-0 prefix — so an
+  ;; anchored pass keeps the flag with zero churn. But once the anchoring
+  ;; geometry itself is gone (cache re-anchored above index 0 after a loss /
+  ;; far jump), a surviving claim would be stale and must clear.
+  (testing "pruning the from-0 region's checkpoints/committed keeps the claim
+            while the cache stays rooted at index 0 (no per-pass churn)"
+    (is (true? (render/frontier-after-prune true true))))
+  (testing "the claim clears once the cache is no longer anchored at index 0"
+    (is (false? (render/frontier-after-prune true false))))
+  (testing "an un-anchored frontier never resurrects from a prune pass"
+    (is (false? (render/frontier-after-prune false true)))
+    (is (false? (render/frontier-after-prune false false)))))
 
 (deftest stitch-prefix-restores-global-running-max
   (let [prefix [{:offset 0.0 :end 40.0 :max-end 40.0}

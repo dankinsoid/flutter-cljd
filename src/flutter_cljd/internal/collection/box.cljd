@@ -69,7 +69,9 @@
    ^:mutable ^a/Animation? tweenAnim   ;; drives per-tick relayout during a segment
    ^:mutable tweenListener             ;; listener registered on tweenAnim
    ^:mutable keyOf        ;; (fn [^int i] -> key) — animation identity of child i
-   ^:mutable committed    ;; {key -> rect} content-space; updated every pass
+   ^:mutable committed    ;; {key -> rect} content-space; rebuilt from ALL children each
+                          ;; pass — the box's "band" is the whole box, so the sliver's
+                          ;; geometric prune (WS2 phase D) degrades to keep-all here
    ^:mutable fromRects    ;; {key -> rect} frozen committed at segment start
    ^:mutable ^ui/Size? fromSize    ;; box size frozen at segment start
    ^:mutable ^ui/Size? targetSize  ;; PURE-LIVE content size at segment target (gap-closed)
