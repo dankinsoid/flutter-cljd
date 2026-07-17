@@ -1205,9 +1205,13 @@
    ONE step; with none stored, upward backfill re-seeds via the renewal-point path
    (synth-renewal-checkpoint), whole runs, band-bounded. anchoredTo0 := false —
    offsets are estimates until refined. Returns false WITHOUT touching state when
-   the estimate's density never reaches the window (a degenerate, unseeded density
-   saturates at the last index at offset ≪ ws) — the caller keeps its previous
-   frontier instead."
+   the estimate cannot place the window. Returns:
+     :seeded     — re-anchored near the window (estimates until refined).
+     :at-top     — the inversion put the window inside index 0's span: the exact
+                   from-0 seed is the right (and O(window)) move; caller seeds it.
+     :degenerate — the estimate's density never reaches the window (an unseeded
+                   density saturates at the last index at offset ≪ ws); state
+                   untouched, the caller keeps its previous frontier."
   [^CollectionRenderSliver rs layout env ^double ws]
   (let [approx-fn (:approx-offset layout)
         anchor-fn (:anchor layout)
@@ -1216,7 +1220,8 @@
         ^int n (int (or (.-itemCount rs) 0))
         ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))
         ^double off-start (double (approx-fn env start))]
-    (if (and (pos? start) (>= off-start (* 0.5 ws)))
+    (cond
+      (and (pos? start) (>= off-start (* 0.5 ws)))
       (do (.-cache! rs [])
           (.-checkpoints! rs {})
           (.-cacheFirst! rs start)
@@ -1225,8 +1230,20 @@
                              ((:init layout) env)))
           (.-anchoredTo0! rs false)
           (.-crossLayoutReanchor! rs false)
-          true)
-      false)))
+          :seeded)
+      (zero? start) :at-top
+      :else :degenerate)))
+
+(defn- seed-at-0!
+  "Exact from-0 seed: drops the band + checkpoints and re-flows from :init.
+   O(window) when the window is at the scroll top."
+  [^CollectionRenderSliver rs layout env]
+  (.-cache! rs [])
+  (.-checkpoints! rs {})
+  (.-cacheFirst! rs 0)
+  (.-baseState! rs ((:init layout) env))
+  (.-anchoredTo0! rs true)
+  (.-crossLayoutReanchor! rs false))
 
 (defn- seed-cache!
   "Re-anchors the geometry cache when it cannot serve this pass's window. Two
@@ -1236,8 +1253,9 @@
      the known band (window-far-from-band?). trim-front! always keeps >= 1 cache
      entry, so gating the inverse seed on emptiness left it unreachable after any
      initial layout — a far jump then walked the gap from the stale band, O(gap)
-     in one frame. Geometry now selects the inverse seed regardless of cache
-     contents.
+     in one frame. Geometry now selects the seed regardless of cache contents:
+     the inverse seed for a deep window, the exact from-0 seed for a jump to the
+     scroll top (backfill would otherwise walk the whole gap down to 0).
    - EMPTY cache (cold start / invalidation): on a cold deep start take the same
      inverse seed; otherwise anchor at the first attached child's last-frame
      offset (dead reckoning via :anchor) or at index 0."
@@ -1250,14 +1268,23 @@
         ^double we (+ ws (.-remainingCacheExtent c))
         fc (.-firstChild rs)
         ;; deep window with nothing attached and an invertible estimate — the
-        ;; precondition for the O(1) inverse seed on either trigger
+        ;; cold-start precondition for the O(1) inverse seed
         deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))]
     (cond
-      ;; FAR JUMP over a live band: seed by geometry. A degenerate estimate
-      ;; (inverse-seed! false) keeps the band — walking the gap is then the
-      ;; best available move, and the estimate seeds itself on that pass.
-      (and deep? (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we))
-      (do (inverse-seed! rs layout env ws) nil)
+      ;; FAR JUMP over a live band: seed by geometry.
+      (and (nil? fc) (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we))
+      (cond
+        ;; jumped to the scroll top: the exact from-0 seed IS O(window) there;
+        ;; keeping the deep band would make backfill walk the whole gap to 0.
+        (<= ws 0.5) (seed-at-0! rs layout env)
+        approx-fn (case (inverse-seed! rs layout env ws)
+                    :at-top (seed-at-0! rs layout env)
+                    ;; :degenerate keeps the band (walking the gap is the best
+                    ;; available move — and a live band implies a measured
+                    ;; density, so this practically cannot occur); :seeded done.
+                    nil)
+        ;; no :approx-offset — the window can't be placed O(1); keep the band
+        :else nil)
 
       (seq (.-cache rs)) nil   ;; band serves the window — nothing to re-seed
 
@@ -1272,7 +1299,7 @@
           ;; Inverse-seed instead of walking O(n) from 0; a degenerate estimate
           ;; falls back to the from-0 walk (nothing better exists yet).
           deep?
-          (when-not (inverse-seed! rs layout env ws)
+          (when-not (= :seeded (inverse-seed! rs layout env ws))
             (.-cacheFirst! rs 0)
             (.-baseState! rs (init-fn env))
             (.-anchoredTo0! rs true))

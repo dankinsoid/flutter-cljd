@@ -275,6 +275,9 @@
       (is (true? (render/window-far-from-band? (band 0.0 1800.0) 40000.0 41800.0))))
     (testing "a far jump UP (band far below the window) is far too"
       (is (true? (render/window-far-from-band? (band 40000.0 41800.0) 0.0 1800.0))))
+    (testing "a jump to the very top (ws 0) is far by the same geometry — the
+              stale deep band must not make backfill walk the whole gap to 0"
+      (is (true? (render/window-far-from-band? (band 40000.0 41800.0) 0.0 1000.0))))
     (testing "a window intersecting the band keeps the walk (normal scroll)"
       (is (false? (render/window-far-from-band? (band 0.0 1800.0) 900.0 2700.0))))
     (testing "a gap within one window extent keeps the walk — walking it is
