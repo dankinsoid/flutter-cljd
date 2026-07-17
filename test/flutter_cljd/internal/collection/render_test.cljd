@@ -340,6 +340,26 @@
   (testing "suppressed segment pass defers on both counts"
     (is (false? (render/refine-emit? true true)))))
 
+;; --- origin corrections fire while flinging (#B: gap above item 0 during a fast up-fling) ---
+(deftest origin-refine-emit-ignores-velocity
+  ;; The exact-landing (index 0 at offset 0) and top-underflow (indices stranded at
+  ;; the origin) corrections reconcile the SCROLL BOUNDARY the motion heads toward.
+  ;; They are one-shot, convergent and pixel-stable, and Flutter resolves the
+  ;; scrollOffsetCorrection within the same frame — so unlike above-anchor seam
+  ;; refinement they must NOT be deferred by ballistic velocity, or a gap opens
+  ;; above item 0 during a fast up-fling and only closes at deceleration (#B).
+  (testing "origin corrections emit regardless of velocity / direction"
+    (is (true? (render/origin-refine-emit? false))))    ; resting flow pass
+  (testing "a playing segment still owns the pass — origin corrections defer (WS1.3)"
+    (is (false? (render/origin-refine-emit? true))))
+  (testing "the split is real: at a fast up-fling SEAM refinement is suppressed but
+            the origin correction still fires"
+    (let [seg? false
+          suppressed? (render/refine-suppressed? -1 4000.0 120.0 3200.0)]  ; fast up
+      (is (true? suppressed?))
+      (is (false? (render/refine-emit? seg? suppressed?)))   ; seam refinement deferred
+      (is (true? (render/origin-refine-emit? seg?))))))       ; origin clamp still fires
+
 ;; wrap fixture: cross-extent 200, items 90x40 ⇒ 2 per run, run pitch 40.
 ;; Truth: index i at offset 40*(i div 2), cross 90*(i mod 2).
 (def ^:private wrap-env {:axis :vertical :cross-extent 200.0 :item-count 12})

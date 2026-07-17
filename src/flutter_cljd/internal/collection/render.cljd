@@ -408,9 +408,24 @@
    are emitted only on a RESTING flow pass — a playing segment freezes the offset
    model at capture and emits only the segment set-point correction, so the two
    are mutually exclusive per pass — and only while not suppressed by active
-   backward motion. Pure."
+   backward motion. This gates the ABOVE-ANCHOR seam refinement (reflow-from-
+   checkpoint!), which is mid-content churn a fast motion would race. Pure."
   [^bool segment? ^bool suppressed?]
   (and (not segment?) (not suppressed?)))
+
+(defn origin-refine-emit?
+  "Emission gate for the ORIGIN corrections — exact-landing (index 0 at offset 0)
+   and top-underflow (indices stranded at/above the coordinate origin). Unlike the
+   above-anchor seam refinement (refine-emit?), these reconcile the SCROLL BOUNDARY
+   the motion is heading toward: one-shot, convergent and pixel-stable (shift-
+   attached-from! / from-:init re-flow hold the visible children put), and Flutter
+   resolves the scrollOffsetCorrection within the same frame. So firing them during
+   a fast fling closes the boundary WITHIN the frame instead of leaving a gap above
+   item 0 until deceleration re-enables refinement (#B) — they are NOT gated by
+   ballistic/drag velocity. Only the WS1.3 segment exclusivity applies (a playing
+   segment freezes the offset model at capture). Pure."
+  [^bool segment?]
+  (not segment?))
 
 (defn refine-seam-delta
   "How far a checkpoint-seeded re-flow says the cache head REALLY sits from
@@ -1617,14 +1632,20 @@
    at offset 0 with pixels unmoved; scroll stops exactly on the first element and
    anchoredTo0 flips true. The landing check runs every pass (not only after a
    step) so a residual deferred by suppression / a segment is picked up by the
-   next resting pass; while `emit?` is false the offset model stays frozen."
-  [^CollectionRenderSliver rs layout env ^double ws ^bool emit?]
+   next resting pass; while `emit?` is false the offset model stays frozen.
+
+   `emit?` gates the above-anchor SEAM refinement (reflow-from-checkpoint!) — off
+   during a fast fling so a mid-content correction doesn't race the simulation.
+   `origin-emit?` gates the ORIGIN corrections (exact landing at index 0, top-
+   underflow); it is off only mid-segment, NOT for velocity, so a fast up-fling
+   still lands index 0 exactly instead of leaving a gap above it (#B)."
+  [^CollectionRenderSliver rs layout env ^double ws ^bool emit? ^bool origin-emit?]
   (let [init-fn (:init layout)
         approx-fn (:approx-offset layout)
         land (fn []
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
                  (let [^double z (double (:offset (nth (.-cache rs) 0)))]
-                   (case (landing-decision z emit? (.-landingEmitted rs))
+                   (case (landing-decision z origin-emit? (.-landingEmitted rs))
                      :converged (do (.-anchoredTo0! rs true)
                                     (.-landingEmitted! rs false)
                                     nil)
@@ -1666,7 +1687,7 @@
                                      approx-fn (double (approx-fn env cf))
                                      (pos? avg) (* cf avg)
                                      :else head)]
-                (when (= :emit (underflow-decision cf head honest emit?))
+                (when (= :emit (underflow-decision cf head honest origin-emit?))
                   (let [^double deficit (- honest head)]
                     (shift-attached-from! rs cf deficit)
                     (.-cache! rs [])
@@ -1940,10 +1961,17 @@
             ;; corrections are emitted only on a resting (no-segment) pass with no
             ;; active upward drag/fling (velocity sensor) — mutually exclusive with
             ;; the WS1.3 segment correction per pass.
-            emit? (refine-emit? (some? (.-tweenAnim rs))
+            seg? (some? (.-tweenAnim rs))
+            emit? (refine-emit? seg?
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
                                                     (double (:suppress-v overscan-tunables))
-                                                    (double (:v-fast overscan-tunables))))]
+                                                    (double (:v-fast overscan-tunables))))
+            ;; Origin corrections (exact landing at 0, top-underflow) are boundary
+            ;; reconciliations — pixel-stable and same-frame-convergent — so they
+            ;; fire even under ballistic suppression, only deferring mid-segment.
+            ;; Without this a fast up-fling leaves a gap above item 0 until it
+            ;; decelerates (#B).
+            origin-emit? (origin-refine-emit? seg?)]
         ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
         ;; set-point. During a segment flow-layout! runs to capture the target.
         (when (nil? (.-tweenAnim rs))
@@ -1962,7 +1990,7 @@
                                    (int kl))
                                  last-i)]
             (post-gc! rs keep-last ws-o)
-            (let [corr (backfill-leading! rs layout env ws-o emit?)]
+            (let [corr (backfill-leading! rs layout env ws-o emit? origin-emit?)]
               ;; Row 3 memory bound: front-trim the cache to the overscan band so a
               ;; from-0-anchored deep scroll doesn't keep [0..head] on the heap. The
               ;; retained offsets stay exact (baseState re-seeds from the last
