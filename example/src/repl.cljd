@@ -964,16 +964,17 @@
 ;; Distinct identity: color stripe (by id) + big number; varied height so a
 ;; collapse/expand or move is obvious. In wrap mode cells are fixed-width so the
 ;; collapse axis is cross, exercising cross-window continuity.
+;; No flex inside: a stay cell captured mid-wipe can be re-laid at its partial
+;; window (near-zero extent), and a Row with a fixed stripe asserts below 8px;
+;; a border stripe + centered text degrade cleanly at any constraints.
 (defn- ^w/Widget ws1-tile [item ^bool wrap?]
   (let [id (:id item)
         h (+ 48.0 (* 24 (mod id 4)))
-        tile (->> (ui/row
-                   :cross-axis-alignment :stretch
-                   (ui/sized {:w 8} (ui/colored (nth colors (mod id (count colors)))))
-                   (ui/expanded
-                    (->> (ui/text (str id) {:size 20 :weight :bold})
-                         (ui/center)
-                         (ui/colored (c/CupertinoColors.systemGrey6)))))
+        tile (->> (ui/text (str id) {:size 20 :weight :bold})
+                  (ui/center)
+                  (ui/decorated {:color (c/CupertinoColors.systemGrey6)
+                                 :border {:l {:color (nth colors (mod id (count colors)))
+                                              :width 8}}})
                   (ui/clip-corners :all 8))]
     (if wrap?
       (ui/sized {:w 76 :h h} tile)
