@@ -493,6 +493,104 @@
                            (if (and (< s (dec n)) (not (nth live-mask (inc s)))) (recur (inc s)) s))))))
      :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))})))
 
+;; --- WS3.2: window-scoped shadow frame source (sparse dying representation) ---
+;;
+;; `shadow-frame-source` above prebuilds three O(n) vectors (live-mask, live-before,
+;; live->shadow) over the WHOLE shadow index space — paid on every segment even when
+;; the segment materializes only a 30-cell window of a 10k-item list. The virtualized
+;; sliver host never has children off the window, so the collapse remap only needs to
+;; ANSWER for in-window indices; off-window dying slots contribute nothing but an
+;; index shift. `windowed-shadow-frame-source` is the byte-for-byte equivalent that
+;; represents the dying slots SPARSELY — a sorted `[{:index :committed}]` vector,
+;; #dying entries — and answers every live/dying query by binary search over it, so a
+;; segment's per-item cost is O(window·log #dying) after the host's single key scan,
+;; not O(n). The box host (which materializes every child) keeps the dense form.
+
+;; @ai-generated(solo)
+(defn ^int dying-before
+  "Count of dying slots with `:index` strictly < `i` in `dying` (a vector sorted
+   ascending by `:index`). Binary search — O(log #dying). This is the entire
+   off-window shift: shadow index i's pure-live index is `i − (dying-before i)`."
+  [dying ^int i]
+  (loop [^int lo 0 ^int hi (count dying)]
+    (if (< lo hi)
+      (let [^int mid (bit-shift-right (+ lo hi) 1)]
+        (if (< (int (:index (nth dying mid))) i)
+          (recur (inc mid) hi)
+          (recur lo mid)))
+      lo)))
+
+;; @ai-generated(solo)
+(defn windowed-shadow-frame-source
+  "Window-scoped equivalent of `shadow-frame-source`: instead of a dense O(n)
+   `entries` vec it takes the total shadow count `n` and the SPARSE, ascending-by-
+   :index vector `dying` = `[{:index shadow-i :committed rect} ...]` (only the dying
+   slots; #dying entries, typically ≪ n). Live/dying classification and the
+   live↔shadow index maps are answered by binary search over `dying` (O(log
+   #dying)) rather than prebuilt O(n) masks, so a segment over a large collection
+   with a small removal pays no per-item cost for off-window indices (WS3.2). For
+   every in-range index the frame, first/last-index and extent are byte-for-byte
+   identical to `shadow-frame-source` (property-tested). `collapse-axis` as there."
+  ([to-src ^int n dying] (windowed-shadow-frame-source to-src n dying :main))
+  ([to-src ^int n dying collapse-axis]
+   (let [dying (vec dying)
+         ^int dn (count dying)
+         ^int live-count (- n dn)
+         to-prep (:prepare to-src)
+         to-frame (:frame to-src)
+         to-first (:first-index to-src)
+         to-last (:last-index to-src)
+         to-ext (:extent to-src)
+         ;; pure-live (post-removal) index of a live shadow index i
+         live-before (fn ^int [^int i] (- i (dying-before dying i)))
+         ;; is shadow index i a dying slot? (membership via the bisect position)
+         dying-at (fn [^int i]
+                    (let [^int p (dying-before dying i)]
+                      (when (and (< p dn) (= i (int (:index (nth dying p)))))
+                        (nth dying p))))
+         live? (fn ^bool [^int i] (nil? (dying-at i)))
+         ;; shadow index of the d-th live entry: s = d + k where k = #dying at
+         ;; shadow index ≤ s. Walk the sparse dying ascending — O(#dying).
+         live->shadow (fn ^int [^int d]
+                        (loop [^int k 0]
+                          (if (and (< k dn) (<= (int (:index (nth dying k))) (+ d k)))
+                            (recur (inc k))
+                            (+ d k))))
+         gap-frame (fn [env ctx ^int i ^int d]
+                     (let [surv (when (< d live-count) (to-frame env ctx d))
+                           ^double off (if surv
+                                         (double (:offset surv))
+                                         (double (or (to-ext env ctx live-count) 0.0)))
+                           cm (:committed (dying-at i))]
+                       (assoc {:offset off
+                               :cross (double (or (:cross cm) (:cross surv) 0.0))
+                               :main-extent (double (or (:main-extent cm) 0.0))
+                               :cross-extent (double (or (:cross-extent cm) (:cross-extent surv)
+                                                         (:cross-extent env) 0.0))}
+                              (if (= :cross collapse-axis) :cross-extent :main-extent) 0.0)))]
+     {:prepare (fn [env] (to-prep env))
+      :frame (fn [env ctx ^int i]
+               (when (and (>= i 0) (< i n))
+                 (let [^int d (live-before i)]
+                   (if (live? i)
+                     (to-frame env ctx d)
+                     (gap-frame env ctx i d)))))
+      :first-index (fn [env ctx ^double off]
+                     (when (pos? live-count)
+                       (when-let [d0 (to-first env ctx off)]
+                         (let [^int d (max 0 (min (int d0) (dec live-count)))
+                               ^int s0 (live->shadow d)]
+                           (loop [^int s s0]
+                             (if (and (> s 0) (not (live? (dec s)))) (recur (dec s)) s))))))
+      :last-index (fn [env ctx ^double off]
+                    (when (pos? live-count)
+                      (when-let [d1 (to-last env ctx off)]
+                        (let [^int d (max 0 (min (int d1) (dec live-count)))
+                              ^int s1 (live->shadow d)]
+                          (loop [^int s s1]
+                            (if (and (< s (dec n)) (not (live? (inc s)))) (recur (inc s)) s))))))
+      :extent (fn [env ctx ^int _n] (to-ext env ctx live-count))})))
+
 ;; @ai-generated(solo)
 (defn edge-slide-block
   "Translate a set of off-window cells so each edge-group keeps its RELATIVE layout

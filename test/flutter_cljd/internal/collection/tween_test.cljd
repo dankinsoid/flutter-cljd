@@ -705,6 +705,80 @@
           ctx ((:prepare src) env)]
       (is (close? 100.0 (:offset ((:frame src) env ctx 2)))))))  ; live total = 2×50
 
+;; --- WS3.2: window-scoped shadow frame source (sparse) ---
+
+(deftest dying-before-binary-search
+  (let [dying [{:index 1} {:index 3} {:index 7}]]
+    (is (= 0 (tw/dying-before dying 0)))
+    (is (= 0 (tw/dying-before dying 1)))   ; strictly-before
+    (is (= 1 (tw/dying-before dying 2)))
+    (is (= 2 (tw/dying-before dying 4)))
+    (is (= 3 (tw/dying-before dying 8)))
+    (testing "empty dying is always 0"
+      (is (= 0 (tw/dying-before [] 5))))))
+
+(defn- frame-eq? [a b]
+  (cond (and (nil? a) (nil? b)) true
+        (or (nil? a) (nil? b)) false
+        :else (frame= a b)))
+
+(deftest windowed-shadow-source-matches-dense
+  ;; Property: the sparse windowed source answers byte-for-byte identically to the
+  ;; dense `shadow-frame-source` for EVERY in-range index, across removals above /
+  ;; below / inside the (would-be) window — the equivalence the sliver relies on
+  ;; when it swaps the O(n) dense builder for the O(#dying) sparse one (WS3.2).
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        check
+        (fn [^int n key-of exiting committed]
+          (let [entries (tw/shadow-entries n key-of exiting committed)
+                dense (tw/shadow-frame-source to entries :main)
+                dying (into [] (keep-indexed
+                                (fn [^int i e] (when (= :dying (:type e))
+                                                 {:index i :committed (:committed e)})))
+                            entries)
+                sparse (tw/windowed-shadow-frame-source to n dying :main)
+                env (assoc base-env :item-count n)
+                dctx ((:prepare dense) env)
+                sctx ((:prepare sparse) env)]
+            (doseq [i (range n)]
+              (is (frame-eq? ((:frame dense) env dctx i) ((:frame sparse) env sctx i))))
+            (doseq [off [0.0 40.0 60.0 110.0 160.0 240.0 500.0]]
+              (is (= ((:first-index dense) env dctx off) ((:first-index sparse) env sctx off)))
+              (is (= ((:last-index dense) env dctx off) ((:last-index sparse) env sctx off))))
+            (is (close? ((:extent dense) env dctx n) ((:extent sparse) env sctx n)))))]
+    (testing "remove ABOVE the window (dying at shadow 0 shifts every survivor's index)"
+      (check 5 (fn [^int i] (nth [:x :a :b :c :d] i)) #{:x} {:x (fr 0 0 50 200)}))
+    (testing "remove BELOW (dying trails all survivors, no shift)"
+      (check 5 (fn [^int i] (nth [:a :b :c :d :x] i)) #{:x} {:x (fr 200 0 50 200)}))
+    (testing "remove INSIDE"
+      (check 5 (fn [^int i] (nth [:a :b :x :c :d] i)) #{:x} {:x (fr 100 0 50 200)}))
+    (testing "multiple dying interleaved"
+      (check 6 (fn [^int i] (nth [:a :x :b :y :c :d] i)) #{:x :y}
+             {:x (fr 50 0 50 200) :y (fr 150 0 50 200)}))
+    (testing "adjacent dying slots (widening walks over both)"
+      (check 6 (fn [^int i] (nth [:a :x :y :b :c :d] i)) #{:x :y}
+             {:x (fr 50 0 50 200) :y (fr 100 0 50 200)}))
+    (testing "all dying (empty survivors)"
+      (check 3 (fn [^int i] (nth [:x :y :z] i)) #{:x :y :z}
+             {:x (fr 0 0 50 200) :y (fr 50 0 50 200) :z (fr 100 0 50 200)}))
+    (testing "no dying (pure passthrough is identity)"
+      (check 4 (fn [^int i] (nth [:a :b :c :d] i)) #{} {}))))
+
+(deftest windowed-shadow-source-cross-collapse
+  ;; the :cross collapse axis must be respected identically to the dense source
+  (let [to (tw/indexed-frame-source (lay/resolve-layout :list {:item-extent 50}))
+        key-of (fn [^int i] (nth [:a :x :b] i))
+        committed {:x (fr 50 0 50 200)}
+        entries (tw/shadow-entries 3 key-of #{:x} committed)
+        dense (tw/shadow-frame-source to entries :cross)
+        dying [{:index 1 :committed (fr 50 0 50 200)}]
+        sparse (tw/windowed-shadow-frame-source to 3 dying :cross)
+        env (assoc base-env :item-count 3)
+        dctx ((:prepare dense) env)
+        sctx ((:prepare sparse) env)]
+    (doseq [i (range 3)]
+      (is (frame-eq? ((:frame dense) env dctx i) ((:frame sparse) env sctx i))))))
+
 (deftest flow-live-only-reflow-collapses-gap
   ;; Flow analogue of the indexed collapse remap (the `live-only-flow-window` core):
   ;; a flow list [a b c d] (natural 50 tall, spacing 10 → committed 0/60/120/180)

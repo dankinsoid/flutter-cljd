@@ -278,4 +278,51 @@
   (testing "dying old-index beyond the end clamps"
     (let [shadow (an/build-shadow-data [{:id :a}] :id
                                        [{:key :z :old-index 9 :item {:id :z}}])]
-      (is (= [:a :z] (mapv :key shadow))))))
+      (is (= [:a :z] (mapv :key shadow)))))
+  (testing "multiple dying clamped beyond the live length keep the highest-first order"
+    ;; the single-pass rebuild must reproduce the retired highest-first array splice:
+    ;; y(oi 6) inserts at 1, then x(oi 5) clamps to 2 (after y) → [a y x], NOT [a x y]
+    (let [shadow (an/build-shadow-data [{:id :a}] :id
+                                       [{:key :x :old-index 5 :item {:id :x}}
+                                        {:key :y :old-index 6 :item {:id :y}}])]
+      (is (= [:a :y :x] (mapv :key shadow)))))
+  (testing "two dying inside preserve their old-index order"
+    (let [shadow (an/build-shadow-data [{:id :a} {:id :b}] :id
+                                       [{:key :x :old-index 0 :item {:id :x}}
+                                        {:key :y :old-index 1 :item {:id :y}}])]
+      (is (= [:x :a :y :b] (mapv :key shadow))))))
+
+;; --- WS3.2: sparse dying slots, diff gate, memoized child-index ---
+
+(deftest shadow-dying-slots-sparse
+  (let [shadow (an/build-shadow-data [{:id :a} {:id :c}] :id
+                                     [{:key :b :old-index 1 :item {:id :b}}])]
+    (is (= [{:index 1 :key :b}] (an/shadow-dying-slots shadow))))
+  (testing "no dying ⇒ empty vector"
+    (is (= [] (an/shadow-dying-slots (an/build-shadow-data [{:id :a}] :id []))))))
+
+(deftest diff-enabled-gate
+  (testing "keyed + animated + changed data + not reordering ⇒ diff runs"
+    (is (an/diff-enabled? :id {:duration 1} [{:id 1}] [{:id 2}] false)))
+  (testing "no key-fn short-circuits (non-keyed collection skips the O(n) diff)"
+    (is (not (an/diff-enabled? nil {:duration 1} [{:id 1}] [{:id 2}] false))))
+  (testing "no anim-config short-circuits (static collection skips the diff)"
+    (is (not (an/diff-enabled? :id nil [{:id 1}] [{:id 2}] false))))
+  (testing "identical data short-circuits"
+    (let [d [{:id 1}]] (is (not (an/diff-enabled? :id {:duration 1} d d false)))))
+  (testing "mid-reorder short-circuits (the reorderable list animates it itself)"
+    (is (not (an/diff-enabled? :id {:duration 1} [{:id 1}] [{:id 2}] true)))))
+
+(deftest memoized-key->index-reuses-on-identity
+  (let [src [{:id :a} {:id :b}]
+        calls (atom 0)
+        build (fn [] (swap! calls inc) {:a 0 :b 1})
+        [m1 c1] (an/memoized-key->index nil src build)
+        [m2 c2] (an/memoized-key->index c1 src build)]
+    (testing "same source identity ⇒ same map instance, no rebuild"
+      (is (identical? m1 m2))
+      (is (= 1 @calls)))
+    (testing "a new (non-identical) source rebuilds"
+      (let [[m3 _] (an/memoized-key->index c2 [{:id :a} {:id :b}] build)]
+        (is (= 2 @calls))
+        (is (not (identical? m1 m3)))))))

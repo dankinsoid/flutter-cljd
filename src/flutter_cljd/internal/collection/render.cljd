@@ -123,9 +123,12 @@
                           ;; must re-anchor it at the NEW layout's :approx-offset (not the stale, differently
                           ;; scaled offset) so the leading extent above the window matches the new layout and
                           ;; backfill can still walk to index 0. Set by update-render!, consumed by seed-cache!.
-   ^:mutable ^double reanchorShift] ;; NaN | the (approx − stale) offset delta a cross-layout re-anchor
+   ^:mutable ^double reanchorShift ;; NaN | the (approx − stale) offset delta a cross-layout re-anchor
                           ;; introduced this pass; flow-layout! emits it as a scrollOffsetCorrection so the
                           ;; visible child holds still while the indicator jumps to the new-layout estimate.
+   ^:mutable dyingSlots] ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
+                          ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
+                          ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -833,7 +836,7 @@
    sliver rests on `target-layout` and all segment state is cleared. A changed
    layout :id invalidates the flow geometry cache."
   [^CollectionRenderSliver rs target-layout item-count ^a/Animation? tween-anim
-   ^int gen entering exiting key-of ^bool fade-enter ^bool fade-exit]
+   ^int gen entering exiting key-of ^bool fade-enter ^bool fade-exit dying-slots]
   (let [old (.-layoutModel rs)
         layout-changed (or (nil? (:id target-layout))
                            (not= (:id old) (:id target-layout)))
@@ -866,6 +869,7 @@
     (.-exiting! rs (or exiting #{}))
     (.-fadeEnter! rs (boolean fade-enter))
     (.-fadeExit! rs (boolean fade-exit))
+    (.-dyingSlots! rs (or dying-slots []))
     (set-tween-anim! rs tween-anim)
     (when-not tween-anim  ;; back to resting — forget the segment
       (.-segGen! rs -1)
@@ -2207,26 +2211,25 @@
                             (tw/indexed-frame-source layout))
                         (do (flow-layout! rs layout c)
                             (tw/frozen-frame-source (live-only-flow-window rs layout c))))
+        ;; WS3.2: the dying slots come from the host as a SPARSE, ascending-by-shadow-
+        ;; index vector (built in the already-O(n) rebuild-shadow!), so the segment
+        ;; never rebuilds an O(n) live/dying mask. Off-window dying slots are only an
+        ;; index shift; the windowed source binary-searches them. Attach each slot's
+        ;; committed rect (nil ⇒ gap-frame falls back) for the gap frames.
+        ^int n (int (or (.-itemCount rs) 0))
+        dying (mapv (fn [ds] {:index (int (:index ds))
+                              :committed (get committed-from (:key ds))})
+                    (.-dyingSlots rs))
         ;; survivors map to pure-new indices (glide up); dying slots present
         ;; zero-extent gaps (shrink in place).
-        shadow (tw/shadow-entries (int (or (.-itemCount rs) 0))
-                                  (fn [^int i] (key-for rs i))
-                                  (.-exiting rs) committed-from)
-        to-src (tw/shadow-frame-source pure-live-src shadow collapse-axis) ; (c)
+        to-src (tw/windowed-shadow-frame-source pure-live-src n dying collapse-axis) ; (c)
         ;; §7b leave-slide frame lookup is over PURE-LIVE indices, but the attached
         ;; `cells` carry SHADOW indices (dying cells stay in-tree). Translate
         ;; shadow→pure-live = shadow − (dying slots before it); identity when nothing
-        ;; is exiting (the spaces coincide). Reuse `shadow`'s live/dying classification.
-        shadow->live (if (empty? (.-exiting rs))
+        ;; is dying (the spaces coincide). Sparse binary search — no O(n) prefix scan.
+        shadow->live (if (empty? dying)
                        identity
-                       (let [^int sn (count shadow)
-                             live-before (loop [i 0 c 0 acc (transient [])]
-                                           (if (< i sn)
-                                             (recur (inc i)
-                                                    (if (= :live (:type (nth shadow i))) (inc c) c)
-                                                    (conj! acc c))
-                                             (persistent! acc)))]
-                         (fn [^int i] (nth live-before i))))
+                       (fn [^int i] (- i (tw/dying-before dying i))))
         env (lay/make-env c (.-itemCount rs) (env-agg rs))
         ctx ((:prepare to-src) env)
         ;; §7c: `from` = committed ∪ edge slide for cells entering the viewport.
@@ -2348,7 +2351,8 @@
    ^bool fadeEnter  ;; fade entering cells with the collapse (default enter/exit fade)
    ^bool fadeExit   ;; fade exiting cells with the collapse
    approxSize   ;; approximate-item-size seed (double | ui/Size | nil) — cold prior for :avg-main/:avg-cross
-   overscanConfig] ;; normalized :overscan spec (render/resolve-overscan) — WS2 phase E
+   overscanConfig ;; normalized :overscan spec (render/resolve-overscan) — WS2 phase E
+   dyingSlots]  ;; WS3.2: sparse [{:index :key} ...] dying slots for the window-scoped segment diff
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
@@ -2357,7 +2361,7 @@
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     false dc/double.nan)]
+                                     false dc/double.nan (or dyingSlots []))]
       (set-tween-anim! rs tweenAnim)
       rs))
 
@@ -2365,13 +2369,16 @@
     (.-approxSize! ^CollectionRenderSliver render-object approxSize)
     (.-overscanConfig! ^CollectionRenderSliver render-object overscanConfig)
     (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf
-                    fadeEnter fadeExit)))
+                    fadeEnter fadeExit dyingSlots)))
 
 (defn ^w/Widget collection-sliver-widget
   "Creates the collection sliver from a builder, item count (nil = infinite),
    the PLAIN target layout map and options {:key :find-child-index :auto-keep-alive
    :repaint-boundaries :semantic-indexes :tween-anim :seg-gen :entering :exiting
-   :key-of :fade-entering :fade-exiting :approximate-item-size :overscan}.
+   :key-of :fade-entering :fade-exiting :approximate-item-size :overscan
+   :dying-slots}. :dying-slots is the host's sparse [{:index :key} ...] dying
+   representation (an/shadow-dying-slots) the engine window-scopes the segment
+   diff over (WS3.2).
    :overscan is the pre-normalized overscan spec (render/resolve-overscan) driving
    the velocity-scaled directional materialisation band (WS2 phase E).
    :approximate-item-size is the cold prior (double | ui/Size) seeding the engine's
@@ -2400,4 +2407,5 @@
    (boolean (:fade-entering opts))
    (boolean (:fade-exiting opts))
    (:approximate-item-size opts)
-   (or (:overscan opts) (resolve-overscan nil))))
+   (or (:overscan opts) (resolve-overscan nil))
+   (or (:dying-slots opts) [])))

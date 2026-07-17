@@ -12,21 +12,36 @@
    ```
    {:inserts [{:key k :new-index i} ...]
     :removes [{:key k :old-index i :item item} ...]}
-   ```"
+   ```
+
+   Three single passes (down from six): the old-key membership map (its keys are
+   the old-set), then new-keys → inserts + the new-set, then old-keys → removes.
+   The full-N key scan is irreducible — a move INTO the window can only be
+   detected against every key — but it feeds no O(N) intermediate structures
+   downstream (WS3.2)."
   [old-data new-data key-fn]
-  (let [old-keys (mapv key-fn old-data)
-        new-keys (mapv key-fn new-data)
-        old-set (set old-keys)
-        new-set (set new-keys)
-        inserts (into []
-                      (keep-indexed
-                       (fn [i k] (when-not (contains? old-set k)
-                                   {:key k :new-index i})))
-                      new-keys)
-        removes (into []
-                      (keep-indexed
-                       (fn [i k] (when-not (contains? new-set k)
-                                   {:key k :old-index i :item (nth old-data i)})))
-                      old-keys)]
+  (let [;; pass 1: old key -> old-index (its key-set is the old-membership test)
+        old-index (loop [s (seq old-data) ^int i 0 m (transient {})]
+                    (if s
+                      (recur (next s) (inc i) (assoc! m (key-fn (first s)) i))
+                      (persistent! m)))
+        ;; pass 2: new keys → inserts (absent from old) + the new-membership set
+        [inserts new-set]
+        (loop [s (seq new-data) ^int i 0 ins (transient []) ns (transient #{})]
+          (if s
+            (let [k (key-fn (first s))]
+              (recur (next s) (inc i)
+                     (if (contains? old-index k) ins (conj! ins {:key k :new-index i}))
+                     (conj! ns k)))
+            [(persistent! ins) (persistent! ns)]))
+        ;; pass 3: old keys → removes (absent from new)
+        removes (loop [s (seq old-data) ^int i 0 rem (transient [])]
+                  (if s
+                    (let [item (first s) k (key-fn item)]
+                      (recur (next s) (inc i)
+                             (if (contains? new-set k)
+                               rem
+                               (conj! rem {:key k :old-index i :item item}))))
+                    (persistent! rem)))]
     {:inserts inserts
      :removes removes}))

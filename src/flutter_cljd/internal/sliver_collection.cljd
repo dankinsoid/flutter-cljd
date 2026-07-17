@@ -90,6 +90,8 @@
      nil                ;; shadowData
      false              ;; reorderInProgress
      #{}                ;; prefetched
+     []                 ;; dyingSlots
+     nil                ;; childIdxCache
      (an/segment-clock))))
 
 (deftype SliverCollectionState
@@ -99,6 +101,8 @@
    ^:mutable shadowData          ;; vec of {:type :live/:dying, :key, ...} or nil
    ^:mutable ^bool reorderInProgress
    ^:mutable prefetched          ;; set of identity keys (indices without key-fn)
+   ^:mutable dyingSlots          ;; WS3.2: sparse [{:index :key} ...] dying slots, rebuilt with shadowData
+   ^:mutable childIdxCache       ;; WS3.2: {:src :map} identity memo for the findChildIndexCallback map
    ^an/SegmentClock clock]       ;; the one segment clock (shared host shell)
   :extends (#/(w/State SliverCollection))
   ^:mixin #/(w/TickerProviderStateMixin SliverCollection)
@@ -118,10 +122,10 @@
                            (not= (.-itemCount widget) (.-itemCount oldWidget)))
           layout-changed (not= (:id (.-layoutImpl oldWidget)) (:id (.-layoutImpl widget)))]
       ;; classify enter/exit into the key sets when keyed animations are on; a
-      ;; reorder-driven change is skipped once — SliverReorderableList animates it
-      (when (and key-fn anim-config new-data old-data
-                 (not (identical? new-data old-data))
-                 (not (.-reorderInProgress this)))
+      ;; reorder-driven change is skipped once — SliverReorderableList animates it.
+      ;; The gate short-circuits before any O(n) diff/shadow work for a non-keyed or
+      ;; non-animated collection (WS3.2).
+      (when (an/diff-enabled? key-fn anim-config new-data old-data (.-reorderInProgress this))
         (apply-diff* this old-data new-data key-fn))
       ;; one segment covers move + morph + enter + exit; the engine builds it on
       ;; the gen bump and captures the target from the new tree
@@ -192,20 +196,24 @@
                  .child (item-builder ctx index)))
               item-builder))
 
-          ;; findChildIndexCallback — same index space as the builder
+          ;; findChildIndexCallback — same index space as the builder. The
+          ;; {key -> index} map is identity-memoized on its source (the shadow vec
+          ;; or the data vec), so a rebuild with unchanged items reuses the map
+          ;; instead of rebuilding the O(n) map every build (WS3.2 outcome 1).
+          idx-src (cond use-shadow shadow (and key-fn data) data :else nil)
           find-child-index
-          (if use-shadow
-            (let [key->idx (an/shadow-key->index shadow)]
+          (when idx-src
+            (let [[k->i cache] (an/memoized-key->index
+                                (.-childIdxCache this) idx-src
+                                (fn [] (if use-shadow
+                                         (an/shadow-key->index shadow)
+                                         (into {} (map-indexed
+                                                   (fn [i item] [(key-fn item) i])
+                                                   data)))))]
+              (.-childIdxCache! this cache)
               (fn [^w/Key child-key]
                 (when (instance? w/ValueKey child-key)
-                  (get key->idx (.-value ^w/ValueKey child-key)))))
-            (when (and key-fn data)
-              (let [key->index (into {} (map-indexed
-                                         (fn [i item] [(key-fn item) i])
-                                         data))]
-                (fn [^w/Key child-key]
-                  (when (instance? w/ValueKey child-key)
-                    (get key->index (.-value ^w/ValueKey child-key)))))))
+                  (get k->i (.-value ^w/ValueKey child-key))))))
 
           ;; prefetch runs in data space; dying entries don't prefetch
           final-builder
@@ -244,6 +252,7 @@
                         :approximate-item-size (.-approxItemSize widget)
                         :overscan (.-overscanConfig widget)
                         :seg-gen (.-gen clock)
+                        :dying-slots (.-dyingSlots this)
                         :entering inserts
                         :exiting exiting
                         ;; default opacity fade rides the collapse; a disabled
@@ -275,8 +284,13 @@
         key-fn (.-keyFn widget)
         dying (.-dyingItems state)]
     (if (and key-fn data)
-      (.-shadowData! state (an/build-shadow-data data key-fn dying))
-      (.-shadowData! state nil))))
+      (let [sd (an/build-shadow-data data key-fn dying)]
+        (.-shadowData! state sd)
+        ;; WS3.2: the sparse dying representation the engine window-scopes over.
+        ;; Derived here (rebuild-shadow! is already O(n)) so the segment pays none.
+        (.-dyingSlots! state (if (seq dying) (an/shadow-dying-slots sd) [])))
+      (do (.-shadowData! state nil)
+          (.-dyingSlots! state [])))))
 
 (defn- apply-diff*
   "Accumulates enter/exit key sets from a key diff. Removes become dying shadow

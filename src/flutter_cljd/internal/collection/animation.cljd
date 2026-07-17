@@ -168,25 +168,77 @@
 
 (defn build-shadow-data
   "Merges new-data (live items) with dying items into a unified shadow vec.
-   Dying items are inserted at their old-index positions (clamped)."
+   Dying items are inserted at their old-index positions (clamped).
+
+   Semantics are identical to the retired highest-first `into`/`subvec` reduce
+   (which was O(n·#dying) — a whole-vector copy per dying item), but the dying
+   positions are resolved on an index-only simulation (O(#dying²), #dying small)
+   and the merge is one O(n) pass, so a small removal over a large collection no
+   longer copies the vector per dying slot (WS3.2)."
   [new-data key-fn dying-items]
-  (let [live (mapv (fn [i item] {:type :live :key (key-fn item) :data-index i})
-                   (range (count new-data)) new-data)]
+  (let [^int total-live (count new-data)
+        live (fn [^int i] {:type :live :key (key-fn (nth new-data i)) :data-index i})]
     (if (empty? dying-items)
-      live
-      ;; insert from highest old-index to lowest so earlier insertions
-      ;; don't shift later ones
-      (let [sorted (sort-by :old-index > dying-items)]
-        (reduce
-         (fn [v dying]
-           (let [idx (min (:old-index dying) (count v))]
-             (into (subvec v 0 idx)
-                   (cons (assoc dying :type :dying)
-                         (subvec v idx)))))
-         live
-         sorted)))))
+      (into [] (map live) (range total-live))
+      ;; Resolve each dying slot's FINAL position by simulating the highest-first
+      ;; array insertion on positions only: insert at min(old-index, len), shifting
+      ;; every already-placed dying slot at ≥ that position — an exact mirror of the
+      ;; old vector splice, without copying the live entries.
+      (let [placed (loop [ds (seq (sort-by :old-index > dying-items))
+                          ^int len total-live
+                          acc []]
+                     (if ds
+                       (let [d (first ds)
+                             ^int idx (min (int (:old-index d)) len)
+                             acc' (mapv (fn [[^int p dd]] (if (>= p idx) [(inc p) dd] [p dd])) acc)]
+                         (recur (next ds) (inc len) (conj acc' [idx (assoc d :type :dying)])))
+                       acc))
+            dpos (into {} placed)
+            ^int total (+ total-live (count dying-items))]
+        (loop [^int pos 0 ^int li 0 out (transient [])]
+          (if (< pos total)
+            (if-let [d (get dpos pos)]
+              (recur (inc pos) li (conj! out d))
+              (recur (inc pos) (inc li) (conj! out (live li))))
+            (persistent! out)))))))
+
+(defn shadow-dying-slots
+  "Sparse ascending `[{:index i :key k} ...]` of the dying slots in `shadow-data`
+   — the window-scoped diff engine's off-window offset representation (WS3.2). A
+   dying slot far above the materialized window is never expanded per-item; it is
+   only a shadow-index shift, so the engine consumes this sparse form and binary-
+   searches it instead of prebuilding an O(n) live/dying mask. Empty when nothing
+   is dying. Pure."
+  [shadow-data]
+  (into []
+        (keep-indexed (fn [^int i entry]
+                        (when (= :dying (:type entry))
+                          {:index i :key (:key entry)})))
+        shadow-data))
 
 (defn shadow-key->index
   "Builds {key -> shadow-index} from shadow-data."
   [shadow-data]
   (into {} (map-indexed (fn [i entry] [(:key entry) i]) shadow-data)))
+
+(defn diff-enabled?
+  "The WS3.2 gate: run the enter/exit key diff (and the shadow bookkeeping it
+   feeds) ONLY for a keyed, animated collection with both data snapshots present,
+   actually changed, and not mid-reorder. A non-keyed or non-animated collection
+   short-circuits before any O(n) diff / shadow work. Pure."
+  [key-fn anim-config new-data old-data ^bool reorder-in-progress]
+  (boolean (and key-fn anim-config new-data old-data
+                (not (identical? new-data old-data))
+                (not reorder-in-progress))))
+
+(defn memoized-key->index
+  "Identity-memoized {key -> index} build for the findChildIndexCallback. `cache`
+   is the caller's held `{:src <last source> :map <last built map>}` (nil first
+   time); when `src` is `identical?` to the cached source the map is reused, so a
+   rebuild with unchanged items pays O(1) here instead of rebuilding the O(n) map
+   on every build (WS3.2). Returns `[map new-cache]`; the caller stores new-cache.
+   Pure — `build-fn` is a 0-arg thunk producing the map for `src`."
+  [cache src build-fn]
+  (if (and cache (identical? src (:src cache)))
+    [(:map cache) cache]
+    (let [m (build-fn)] [m {:src src :map m}])))
