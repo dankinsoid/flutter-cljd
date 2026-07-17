@@ -199,6 +199,17 @@ reads as a fling). Suite 272 green. Deliberate leftovers: degenerate-estimate fa
 walks (tripwire-covered), far animateTo >~60vp/s rides inverse-seed instead of flying,
 measuredAgg not reset on layout morph (origin clamp covers the symptom).
 
+Third device round (2026-07-17): 23b719e — tripwire false positive after deep list→wrap toggle:
+`measuredAgg` survives layout morph, list's avg-cross==crossAxisExtent made the wrap budget model
+1-item-per-run (82 > 80.75); fixed by sampling density from the current pass (`tripwire-env`) and
+widening (not collapsing) the budget on unknown cross stats. 3276183 — replacements after a
+delete appeared only post-animation: the capture flow walked the shadow band [ws,we] where dying
+cells still hold extent, so the pure-live snapshot fell short; capture now extends walk-ahead by
+`vacated-trailing-extent` (grouped per wrap row, cascading), so the full visible+cache band —
+including replacements — materializes in the same frame as the update. Verdict: independent
+defects, only thematically related (band accounting under updates). Suite 279 green.
+`measuredAgg` still deliberately not reset on morph (stale beats nil for `:approx-offset`).
+
 Correction-loop crash (2026-07-17, found by the fail-loud guard during wrap animateTo):
 landing `:emit` dropped the cache but the reseed dead-reckoned from a surviving attached child +
 stale checkpoints, re-deriving the same residual (−76.43 = one run pitch, the synth-checkpoint
