@@ -322,6 +322,38 @@
         (is (= (- ^double (:offset (nth anchored j)) ^double (:offset (nth truth j)))
                (- d)))))))
 
+(deftest landing-decision-one-shot
+  (testing "built-in path: emit once, the corrected from-:init re-flow converges"
+    (is (= :emit (render/landing-decision 40.0 true false)))
+    (is (= :converged (render/landing-decision 0.0 true true))))
+  (testing "suppressed / mid-segment landing defers (offset model frozen)"
+    (is (= :defer (render/landing-decision 40.0 false false)))
+    (is (= :defer (render/landing-decision 40.0 false true))))
+  (testing "sub-pixel residual converges without emitting"
+    (is (= :converged (render/landing-decision 0.0005 true false)))))
+
+(deftest landing-violation-does-not-reemit
+  ;; A contract-violating layout whose :init/:place puts index 0 at offset 40:
+  ;; the first landing pass emits the correction once; the from-:init re-flow
+  ;; reproduces z=40, and the second pass reports the violation (debug asserts,
+  ;; release accepts the constant inset) instead of re-emitting the same
+  ;; residual every pass forever.
+  (let [padded {:init (fn [_env] 40.0)   ; violates ":init places index 0 at 0"
+                :place (fn [env _i size ^double off]
+                         [{:offset off :cross 0.0}
+                          (+ off ^double (lay/size-main env size))])}
+        sized (wrap-sized 0 2)
+        walk1 (tw/flow-run-entries padded wrap-env sized ((:init padded) wrap-env))
+        ^double z1 (:offset (nth walk1 0))
+        ;; the emitted correction drops the cache; the re-run re-flows from :init
+        walk2 (tw/flow-run-entries padded wrap-env sized ((:init padded) wrap-env))
+        ^double z2 (:offset (nth walk2 0))]
+    (is (= 40.0 z1))
+    (is (= :emit (render/landing-decision z1 true false)))
+    (is (= 40.0 z2))
+    (testing "second pass does not emit again — the contract fails loudly instead"
+      (is (= :violated (render/landing-decision z2 true true))))))
+
 (deftest ema-agg-seeds-then-blends
   (testing "nil prev seeds directly from the first live-window sample"
     (is (= {:avg-main 40.0 :avg-cross 90.0} (render/ema-agg nil 40.0 90.0))))
