@@ -58,7 +58,9 @@
   (-contains-key? [this key]
     (c/-contains-key? (.-value this) key)))
 
-(defn- set-value [this new-value]
+(declare AnimatedValue)
+
+(defn- set-value [^AnimatedValue this new-value]
   (let [tween (.-tween this)
         old-value (.-end tween)
         controller (.-controller this)
@@ -73,11 +75,11 @@
       (.forward controller .from 0.0)
       nil)))
 
-(defn- get-state [this]
+(defn- get-state [^AnimatedValue this]
   (-> this .-tween .-end))
 
 (deftype AnimatedValue
-         [tween
+         [^w/Tween tween
           ^a/AnimationController controller
           ^a/Animation parent]
   :extends (a/Animation)
@@ -142,7 +144,7 @@
   (.-cachedValue! controller value)
   (.-cachedValueProgress! controller (-> controller .-parent .-value)))
 
-(defn- set-side-effects [side-effects object animation]
+(defn- set-side-effects [side-effects object ^a/Animation animation]
   (if side-effects
     (when (nil? (.-effectsStatusListener object))
       (let [listener
@@ -451,14 +453,16 @@
   ([motion]
    (cond
      (instance? Motion motion)
-     {:prepare-motion (.-prepare motion)
-      :to-string (.-toStr motion)}
+     (let [^Motion motion motion]
+       {:prepare-motion (.-prepare motion)
+        :to-string (.-toStr motion)})
 
      (instance? w/Animatable motion)
-     {:prepare-motion (fn [_ duration]
-                        {:interpolate (fn [_ t] (.transform motion t))
-                         :duration duration})
-      :to-string #(.toString motion)}
+     (let [^w/Animatable motion motion]
+       {:prepare-motion (fn [_ duration]
+                          {:interpolate (fn [_ t] (.transform motion t))
+                           :duration duration})
+        :to-string #(.toString motion)})
 
      (nil? motion)
      nil
@@ -988,12 +992,13 @@
              {:keys [interpolate duration relative-duration side-effects]} ((:prepare-motion motion) value (from-mcs dur-mcs))
              dur-mcs (when (and delay-mcs duration) (+ delay-mcs (in-mcs duration)))
              curve (curves/interval delay nil :linear)]
-         {:interpolate (fn [value t] (interpolate value (.transform curve (double t))))
+         {:interpolate (fn [value t] (let [^a/Curve curve curve] (interpolate value (.transform curve (double t)))))
           :relative-duration (when relative-duration (+ delay relative-duration))
           :duration (from-mcs dur-mcs)
           :side-effects (when side-effects
                           (fn [interval]
-                            (side-effects (map #(.transform curve (double %)) interval))))}))
+                            (let [^a/Curve curve curve]
+                              (side-effects (map #(.transform curve (double %)) interval)))))}))
      (fn [] (str "(relative-delay " delay " " ((:to-string motion)) ")")))))
 
 (defn ^Motion delay
@@ -1021,14 +1026,15 @@
                    1.0)
              curve (when start (curves/interval start end :linear))]
          {:interpolate (if curve
-                         (fn [value t] (interpolate value (.transform curve (double t))))
+                         (fn [value t] (let [^a/Curve curve curve] (interpolate value (.transform curve (double t)))))
                          interpolate)
           :relative-duration relative-duration
           :duration (from-mcs full-dur-mcs)
           :side-effects (when side-effects
                           (if curve
                             (fn [interval]
-                              (side-effects (map #(.transform curve (double %)) interval)))
+                              (let [^a/Curve curve curve]
+                                (side-effects (map #(.transform curve (double %)) interval))))
                             side-effects))}))
      (fn [] (str "(delay " delay " " ((:to-string motion)) ")")))))
 
