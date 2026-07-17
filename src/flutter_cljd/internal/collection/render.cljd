@@ -1056,6 +1056,41 @@
       {:frames frames :base base :extent (tw/frames-main-extent frames)})))
 
 ;; @ai-generated(solo)
+(defn vacated-trailing-extent
+  "Main-axis space the dying cells will vacate inside the band [ws, we) — the
+   extra walk-ahead a remove-segment's flow capture needs. The capture walks the
+   SHADOW band, in which dying cells still hold their full extent, so without
+   this the pure-live `to` snapshot falls short of `we` by exactly this much and
+   the replacements rising in from below are only materialized after the segment.
+
+   `rects` are the dying slots' committed rects. Rects sharing one :offset are a
+   wrap run dying together — the run vacates its height ONCE (the group's max
+   :full-main), which for a list (distinct offsets) degrades to the plain sum.
+   Ascending cascade: a rect beyond `we` but inside the band EXTENDED by the
+   space vacated above it also counts. Rects wholly above `ws` contribute
+   nothing — removals above the anchor are absorbed by the segment scroll
+   correction, not the trailing backfill. Partially-dying runs over-count (upper
+   bound): a few extra materialized cells, never a shortfall. Pure."
+  [rects ^double ws ^double we]
+  (let [groups (->> rects
+                    (reduce (fn [m r]
+                              (let [^double off (double (:offset r))
+                                    ^double fm (double (or (:full-main r) (:main-extent r) 0.0))
+                                    ^double cur (double (or (get m off) 0.0))]
+                                (assoc m off (math/max cur fm))))
+                            {})
+                    (sort-by key))]
+    (loop [gs (seq groups) ^double acc 0.0]
+      (if gs
+        (let [e (first gs)
+              ^double off (key e)
+              ^double fm (val e)]
+          (recur (next gs)
+                 (if (and (< off (+ we acc)) (> (+ off fm) ws))
+                   (+ acc fm)
+                   acc)))
+        acc))))
+
 (defn- live-only-flow-window
   "Frozen PURE-LIVE `to` endpoint for a FLOW remove segment — the flow analogue of
    an indexed source over pure-live indices. After `flow-layout!` has materialized
@@ -2670,8 +2705,25 @@
                         (do (.-segAnchor! rs nil)
                             (indexed-layout! rs layout c)
                             (tw/indexed-frame-source layout))
-                        (do (flow-layout! rs layout c)
-                            (tw/frozen-frame-source (live-only-flow-window rs layout c))))
+                        ;; The capture walk fills the SHADOW band, where dying cells
+                        ;; still hold their full extent — extend it by the extent they
+                        ;; will vacate (vacated-trailing-extent) so the pure-live `to`
+                        ;; snapshot covers the FULL band and every replacement rising
+                        ;; in from below is materialized in THIS frame, before the
+                        ;; removal collapse plays, not after it.
+                        (let [^double cap-ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+                              ^double cap-we (+ cap-ws (.-remainingCacheExtent c))
+                              ^double extra (if (.-isFinite cap-we)
+                                              (vacated-trailing-extent
+                                               (into [] (keep #(get committed-from (:key %)))
+                                                     (.-dyingSlots rs))
+                                               cap-ws cap-we)
+                                              0.0)
+                              ^double ahead0 (.-overscanAhead rs)]
+                          (.-overscanAhead! rs (+ ahead0 extra))
+                          (flow-layout! rs layout c)
+                          (.-overscanAhead! rs ahead0)
+                          (tw/frozen-frame-source (live-only-flow-window rs layout c))))
         ;; WS3.2: the dying slots come from the host as a SPARSE, ascending-by-shadow-
         ;; index vector (built in the already-O(n) rebuild-shadow!), so the segment
         ;; never rebuilds an O(n) live/dying mask. Off-window dying slots are only an

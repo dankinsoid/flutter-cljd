@@ -360,6 +360,52 @@
     (testing "no sample (nothing sized this pass) keeps the EMA env"
       (is (= ema-env (render/tripwire-env ema-env nil))))))
 
+;; --- remove-segment capture band: vacated trailing extent ---
+
+(deftest vacated-trailing-extent-extends-capture-band
+  ;; Remove-segment capture walks the SHADOW band [ws, we] in which dying cells
+  ;; still hold their full extent, so the pure-live `to` snapshot fell short of
+  ;; `we` by exactly the extent they vacate — replacements rising in from below
+  ;; were only materialized after the segment ended. This kernel is the extra
+  ;; walk-ahead that closes the shortfall.
+  (testing "list: each dying rect in the band adds its full-main"
+    (is (= 240.0 (render/vacated-trailing-extent
+                  [{:offset 100.0 :full-main 100.0}
+                   {:offset 300.0 :full-main 80.0}
+                   {:offset 500.0 :full-main 60.0}]
+                  0.0 645.0))))
+  (testing "cascade: a dying rect beyond we but inside the EXTENDED band counts —
+            the space vacated above it pulls it into the band"
+    ;; band ends at 645; the rect at 700 is outside — until the 100px vacated
+    ;; above extends the band to 745.
+    (is (= 180.0 (render/vacated-trailing-extent
+                  [{:offset 100.0 :full-main 100.0}
+                   {:offset 700.0 :full-main 80.0}]
+                  0.0 645.0))))
+  (testing "a dying rect below even the extended band contributes nothing"
+    (is (= 100.0 (render/vacated-trailing-extent
+                  [{:offset 100.0 :full-main 100.0}
+                   {:offset 2000.0 :full-main 80.0}]
+                  0.0 645.0))))
+  (testing "a dying rect wholly above the band contributes nothing (removals
+            above the anchor are absorbed by the segment scroll correction, not
+            the trailing backfill)"
+    (is (= 0.0 (render/vacated-trailing-extent
+                [{:offset 100.0 :full-main 50.0}]
+                645.0 1290.0))))
+  (testing "wrap: a whole dying run shares one :offset — the run vacates its
+            height once (max full-main of the group), not the per-tile sum"
+    (is (= 120.0 (render/vacated-trailing-extent
+                  (vec (repeat 7 {:offset 200.0 :full-main 120.0}))
+                  0.0 645.0))))
+  (testing "mid-wipe the VISIBLE extent is not the span — :full-main wins over
+            :main-extent (the cell still occupies its full slot)"
+    (is (= 90.0 (render/vacated-trailing-extent
+                 [{:offset 100.0 :main-extent 5.0 :full-main 90.0}]
+                 0.0 645.0))))
+  (testing "no dying rects — no extension"
+    (is (= 0.0 (render/vacated-trailing-extent [] 0.0 645.0)))))
+
 ;; --- cold-start inverse-seed binary search ---
 
 (deftest invert-approx-offset-lands-within-one-item
