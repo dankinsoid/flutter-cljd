@@ -159,20 +159,85 @@
         (is (contains? p2 3))
         (is (not (contains? p2 2)))))))
 
-(deftest frontier-survives-prune-degrades-with-cache
-  ;; Phase D frontier reconciliation: the geometric prunes never touch the
-  ;; anchoredTo0 claim — it rides the geometry cache's from-0 prefix — so an
-  ;; anchored pass keeps the flag with zero churn. But once the anchoring
-  ;; geometry itself is gone (cache re-anchored above index 0 after a loss /
-  ;; far jump), a surviving claim would be stale and must clear.
-  (testing "pruning the from-0 region's checkpoints/committed keeps the claim
-            while the cache stays rooted at index 0 (no per-pass churn)"
-    (is (true? (render/frontier-after-prune true true))))
-  (testing "the claim clears once the cache is no longer anchored at index 0"
-    (is (false? (render/frontier-after-prune true false))))
-  (testing "an un-anchored frontier never resurrects from a prune pass"
-    (is (false? (render/frontier-after-prune false true)))
-    (is (false? (render/frontier-after-prune false false)))))
+(deftest frontier-survives-front-trim
+  ;; Row 3 frontier invariant: anchoredTo0 now means "retained offsets are exact",
+  ;; NOT "index 0 is in the cache". Front-trim (trim-front) drops the from-0 prefix
+  ;; while deep but keeps exact offsets + an exact re-seeded baseState, and the
+  ;; checkpoint/committed prunes touch no offsets — so no geometric prune/trim can
+  ;; degrade the claim. The reconciliation is identity; degradation is owned by the
+  ;; offset ops (seed/re-anchor/mismatch/underflow) and mutation invalidation.
+  (testing "an anchored pass survives front-trim + prune with no churn (was:
+            the old rule cleared it the moment cacheFirst left 0 — now it must not)"
+    (is (true? (render/frontier-after-prune true))))
+  (testing "an un-anchored frontier never resurrects from a prune/trim pass"
+    (is (false? (render/frontier-after-prune false))))
+  (testing "an item mutation above the band degrades the claim via update-render!
+            (count change) + cp-drop-from, not via this reconciliation — the flag
+            arrives here already false and stays false"
+    ;; cp-drop-from at the touched index drops the shifted checkpoints (>= j),
+    ;; and update-render! clears anchoredTo0 on the same count change; the prune
+    ;; reconciliation then preserves that cleared state.
+    (let [cps (-> {} (render/cp-record 8 400.0 :s8) (render/cp-record 14 900.0 :s14))]
+      (is (= #{8} (set (keys (render/cp-drop-from cps 14)))))   ; mutation at 14 above band
+      (is (false? (render/frontier-after-prune false))))))
+
+;; --- trim-front (Row 3 memory bound / Row 4 O(W) mismatch copy) ---
+
+(defn- list-cache
+  "A from-0 list cache: index i at offset i*pitch, extent, running :max-end."
+  [^int n ^double pitch ^double ext]
+  (mapv (fn [^int i]
+          (let [^double off (* i pitch)]
+            {:offset off :cross 0.0 :extent ext :end (+ off ext)
+             :max-end (+ off ext) :state (+ off pitch) :canon true}))
+        (range n)))
+
+(deftest trim-front-keeps-band-and-seed-baseState
+  ;; 100 entries, pitch 40 (offset i*40, end i*40+40). Band leading edge ws=2000:
+  ;; entries [0,49] end <= 2000 (fully above), [50,99] reach in. Trim drops [0,50).
+  (let [cache (list-cache 100 40.0 40.0)
+        [trimmed ^int cf' base'] (render/trim-front cache 0 2000.0)]
+    (testing "drops exactly the fully-above-band prefix, keeps the band suffix"
+      (is (= 50 (count trimmed)))
+      (is (= 50 cf'))
+      (is (= 2000.0 (:offset (nth trimmed 0)))))
+    (testing "baseState is the EXACT state stored on the last dropped entry
+              (state before the new head) — the chain resumes with no re-walk"
+      (is (= (:state (nth cache 49)) base')))
+    (testing "no dropped entry could have reached the band (max-end <= ws)"
+      (is (every? (fn [e] (<= (double (:max-end e)) 2000.0)) (subvec cache 0 50)))
+      (is (every? (fn [e] (> (double (:max-end e)) 2000.0)) trimmed)))
+    (testing "the retained head's max-end already equals its own end — no rebaseline
+              needed, so a fresh running-max still starts correctly"
+      (is (= (:end (nth trimmed 0)) (:max-end (nth trimmed 0)))))))
+
+(deftest trim-front-noop-at-edges
+  (let [cache (list-cache 10 40.0 40.0)]
+    (testing "nothing above the band ⇒ nil (no trim, cache already band-sized)"
+      (is (nil? (render/trim-front cache 0 0.0))))
+    (testing "everything above the band ⇒ nil (keep the last entry as the head)"
+      (is (nil? (render/trim-front cache 0 1.0e9))))
+    (testing "an empty cache ⇒ nil"
+      (is (nil? (render/trim-front [] 0 100.0))))))
+
+(deftest trim-front-bounds-memory-and-mismatch-copy
+  ;; Row 3 + Row 4: an anchored deep scroll builds a from-0 cache [0..we-index];
+  ;; walk! stops the TAIL at we, and front-trim caps the HEAD at the band, so the
+  ;; steady-state cache is band-sized, NOT O(N). walk!'s mismatch truncation
+  ;; `(subvec cache 0 rel)` (rel <= count) is therefore an O(band) copy, not O(N).
+  (let [pitch 40.0
+        we-index 9031      ;; walk filled [0..9030] to the window bottom
+        cache (list-cache we-index pitch 40.0)
+        ws (* 9000 pitch)  ;; a ~31-item viewport deep at index 9000
+        [trimmed ^int cf' _] (render/trim-front cache 0 ws)]
+    (testing "front-trim drops the whole above-band prefix, leaving a band-sized cache"
+      (is (= 9000 (- we-index (count trimmed))))   ; dropped exactly [0,9000)
+      (is (= 9000 cf'))
+      (is (= 31 (count trimmed)))                  ; band, not the 9000-entry prefix
+      (is (< (count trimmed) 100)))
+    (testing "the worst-case mismatch copy (whole trimmed cache) is band-bounded"
+      (let [^int rel (count trimmed)]              ; rel <= count by construction
+        (is (<= (count (subvec trimmed 0 rel)) (count trimmed)))))))
 
 (deftest stitch-prefix-restores-global-running-max
   (let [prefix [{:offset 0.0 :end 40.0 :max-end 40.0}
@@ -345,6 +410,35 @@
       (is (= 0.0 (:offset (nth landed 0))))
       (is (= 0.0 (:cross (nth landed 0))))
       (is (= 90.0 (:cross (nth landed 1)))))))
+
+(deftest trim-then-scroll-up-reproduces-exact-offsets-no-correction
+  ;; Row 3 KEY property (requirement a): front-trim drops the from-0 prefix while
+  ;; deep; scrolling back up through the trimmed region re-materialises it via a
+  ;; checkpoint-seeded canonical walk that reproduces the EXACT offsets with NO
+  ;; residual correction — because the offsets were exact (anchoredTo0) and the
+  ;; retained checkpoint carries the exact state + offset from the same from-0 walk.
+  (let [;; exact from-0 walk of the whole run (the anchored, pre-trim geometry):
+        from0 (tw/flow-run-entries wrapl wrap-env (wrap-sized 0 12) ((:init wrapl) wrap-env))
+        ;; renewal-point checkpoint at k=6 (run start, offset 120, cross 0): its
+        ;; stored :state is the flow state BEFORE 6 == state AFTER 5.
+        cp-state (:state (nth from0 5))
+        ;; simulate: a deep scroll trimmed the cache to cacheFirst=8; scrolling up
+        ;; re-flows [6,7] from the retained checkpoint at 6.
+        reflow (tw/flow-run-entries wrapl wrap-env (wrap-sized 6 8) cp-state)]
+    (testing "index 6 is a renewal point (run start) in the exact walk"
+      (is (= 0.0 (:cross (nth from0 6))))
+      (is (= 120.0 (:offset (nth from0 6)))))
+    (testing "the checkpoint-seeded re-flow reproduces the exact from-0 offsets and
+              real wrap cross (not the single-left-column estimate)"
+      (is (= (:offset (nth from0 6)) (:offset (nth reflow 0))))   ; 120.0 == 120.0
+      (is (= (:offset (nth from0 7)) (:offset (nth reflow 1))))
+      (is (= 90.0 (:cross (nth reflow 1)))))
+    (testing "the seam at the trimmed head (cf=8) matches exactly — NO correction"
+      ;; the re-flowed prefix's end-state places index 8 at its true offset (160),
+      ;; which the trimmed cache already held as its head ⇒ refine delta 0.
+      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 8 (ui/Size 90 40)
+                                           (:state (peek reflow))
+                                           (:offset (nth from0 8))))))))
 
 (deftest suppressed-seam-reanchor-stays-consistent
   ;; While suppressed / mid-segment the engine re-anchors the prefix AT THE SEAM

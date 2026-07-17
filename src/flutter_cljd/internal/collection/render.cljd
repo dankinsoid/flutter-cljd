@@ -331,17 +331,21 @@
                {} checkpoints)))
 
 (defn frontier-after-prune
-  "anchoredTo0 after a geometric prune pass (Phase D reconciliation with the
-   Phase C frontier): pruning committed rects / checkpoints never clears the
-   frontier — its truth claim rides the geometry cache's unbroken from-0 prefix,
-   which no prune touches — so an anchored cache stays anchored pass after pass
-   (no churn). But a stale claim must not survive the anchoring prefix itself
-   being gone: once the cache is re-anchored above index 0 (dead-reckoned
-   re-anchor after a cache loss, far-jump inverse seed) the reported offsets are
-   estimates again, so the flag degrades with it. Keeps `anchored` iff the cache
-   is still rooted at index 0. Pure."
-  [^bool anchored ^bool cache-at-0?]
-  (and anchored cache-at-0?))
+  "anchoredTo0 after a geometric prune / front-trim pass — the NEW frontier
+   invariant (Row 3). anchoredTo0 no longer claims \"index 0 is still in the
+   cache\" (front-trim drops the from-0 prefix while deep); it claims the retained
+   entries' OFFSETS ARE EXACT — chained from a from-0-exact walk. trim-front drops
+   the exact prefix but keeps the retained offsets and re-seeds baseState from the
+   exact stored state, and the checkpoint / committed prunes touch no offsets at
+   all — so NO geometric prune can degrade the claim. Degradation is owned entirely
+   by the offset-PRODUCING ops that introduce estimates (cold / far inverse seed
+   and dead-reckon re-anchor in seed-cache!, walk!'s mismatch truncation, the
+   underflow branch) plus mutation invalidation in update-render! (a count change
+   shifts the retained offsets, drops all checkpoints, and clears the flag). Each
+   sets the flag directly, so this reconciliation is the identity — it exists to
+   state, at the one prune site, that pruning/trimming preserves the frontier. Pure."
+  [^bool anchored]
+  anchored)
 
 (defn stitch-prefix
   "Prepends the `prefix` cache entries (index-ascending, each carrying a running
@@ -1040,6 +1044,35 @@
           (recur (inc mid) hi)))
       lo)))
 
+;; @ai-generated(guided)
+(defn trim-front
+  "Front-trims the flow geometry cache to the leading band edge `ws` (Row 3 memory
+   bound). Returns [trimmed-cache new-cache-first new-base-state], or nil when
+   nothing is trimmable.
+
+   `bsearch-max-end` gives `t` = the first entry whose running :max-end reaches
+   into the band (> ws); entries [0, t) are therefore FULLY above the band (their
+   furthest edge <= ws) and are dropped. The new baseState is the exact flow state
+   stored on the last dropped entry (cache[t-1].:state = state AFTER the new head's
+   predecessor = state BEFORE the new head), so the retained head resumes an exact
+   chain with no re-walk.
+
+   The retained head's :max-end already equals its own :end — it dominates every
+   dropped entry (all ending <= ws < its own end) — so the running-max invariant
+   survives the cut with NO rebaseline; downstream bsearch-max-end stays sound.
+
+   A FRESH vector is realized (into [], not a subvec view) so the O(N) dropped
+   prefix is actually released to GC — the whole point of the bound. The copy is
+   O((count cache) − t) = O(band entries), which also bounds walk!'s mismatch
+   truncation `(subvec cache 0 rel)` (rel <= count) at O(band) — Row 4. No-op (nil)
+   when t==0 (nothing above the band) or t==count (keep the last entry). Pure."
+  [cache ^int cache-first ^double ws]
+  (let [^int t (bsearch-max-end cache ws)]
+    (when (and (pos? t) (< t (count cache)))
+      [(into [] (subvec cache t))
+       (+ cache-first t)
+       (:state (nth cache (dec t)))])))
+
 ;; ============================================================
 ;; Flow driver
 ;; ============================================================
@@ -1521,6 +1554,22 @@
         true)
       false)))
 
+;; @ai-generated(guided)
+(defn- trim-front!
+  "Applies trim-front to the live cache (Row 3): drops the fully-above-band prefix
+   and re-seeds cacheFirst/baseState so the retained band IS the whole cache.
+   Without it a from-0-anchored deep scroll keeps every entry [0..head] on the heap
+   (O(N) memory) — cacheFirst never leaves 0. The dropped prefix's children were
+   already collected by pre-/post-gc! over the same [ws-o, we-o] band, so no child
+   is orphaned. anchoredTo0 is untouched: trimming preserves the exact-offsets claim
+   (frontier-after-prune). Runs every flow pass, after backfill has lowered
+   cacheFirst to the band top."
+  [^CollectionRenderSliver rs ^double ws]
+  (when-let [[cache' ^int cf' base'] (trim-front (.-cache rs) (.-cacheFirst rs) ws)]
+    (.-cache! rs cache')
+    (.-cacheFirst! rs cf')
+    (.-baseState! rs base')))
+
 (defn- backfill-leading!
   "Materialises the leading margin [ws, cache[0].offset) above the cached region as
    REAL runs (WS2.2 §2.2): each step seeds at the nearest checkpoint at-or-above the
@@ -1881,14 +1930,18 @@
                                  last-i)]
             (post-gc! rs keep-last ws-o)
             (let [corr (backfill-leading! rs layout env ws-o emit?)]
+              ;; Row 3 memory bound: front-trim the cache to the overscan band so a
+              ;; from-0-anchored deep scroll doesn't keep [0..head] on the heap. The
+              ;; retained offsets stay exact (baseState re-seeds from the last
+              ;; dropped entry), so this never degrades the frontier.
+              (trim-front! rs ws-o)
               ;; Geometric checkpoint scoping (phase-E-widened): keep the overscan
               ;; band [ws-o, we-o] plus one seed above (the D prune re-scoped).
               (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-o we-o))
-              ;; Frontier reconciliation (Phase D): the prunes above never clear
-              ;; anchoredTo0 — its claim rides the cache's from-0 prefix — but a
-              ;; claim whose cache is no longer rooted at 0 is stale and drops.
-              (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)
-                                                       (zero? (.-cacheFirst rs))))
+              ;; Frontier reconciliation: geometric prune/trim never clears
+              ;; anchoredTo0 under the Row 3 invariant — its claim is "offsets exact",
+              ;; which trimming preserves; degradation is owned by the offset ops.
+              (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
               ;; measured aggregates track the live window on resting passes so
               ;; :approx-offset / extent extrapolation follow reality (§1.1).
               (when (nil? (.-tweenAnim rs))
