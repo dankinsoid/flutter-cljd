@@ -210,6 +210,20 @@ including replacements — materializes in the same frame as the update. Verdict
 defects, only thematically related (band accounting under updates). Suite 279 green.
 `measuredAgg` still deliberately not reset on morph (stale beats nil for `:approx-offset`).
 
+Fourth device round (2026-07-17) — two more O(N)-from-0 walks the cache-as-accelerator principle
+forbids; the Fable subagent produced the first fix then died on usage credits, finished by hand on
+Opus. 7b9f58b — first wrap→list morph lag: a cross-layout re-anchor emits a scrollOffsetCorrection
+landing the NEXT window at the shifted offset, but the same pass filled the OLD band, so
+`backfill-leading!` walked the whole (approx−stale) gap one child at a time; `reanchor-band` shifts
+[ws,we] by `reanchorShift` so the fill tracks the correction. 370b534 — scrolled to the list bottom
+then overscrolled past the end and got STUCK, tripwire firing every frame ("laid out 2200 children
+in ONE pass"): with the window entirely past the last item, `align-start!`'s attach-idx overshoots
+to item-count, addInitialChild fails, and the old fallback treated every failure as a shrink →
+re-flow from 0 → walk all N each bounce frame. `align-start-fallback` splits past-the-end (attach
+the last child at its cached offset, O(1)) from a genuine shrink (restart 0); the bounce now costs
+one child/frame. Symptom 2 (every-frame full walk) and symptom 3 (stuck) were the same root — the
+O(N) walk made the ~500px bounce crawl. Suite 281 green, bin/check clean.
+
 Correction-loop crash (2026-07-17, found by the fail-loud guard during wrap animateTo):
 landing `:emit` dropped the cache but the reseed dead-reckoned from a surviving attached child +
 stale checkpoints, re-deriving the same residual (−76.43 = one run pitch, the synth-checkpoint
