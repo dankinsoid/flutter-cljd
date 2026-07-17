@@ -181,6 +181,24 @@ Post-WS2 device bugs fixed along the way: 97d3877 (flying opt-in + macOS discret
 velocity), eb21b82 (cross-layout re-anchor), ab39a00 (canonical in-window placement + debug
 guard), d0ac020 (top-underflow correction).
 
+Second device round (2026-07-17): bfc56e9 (wrap above-window backfill re-flows whole runs via
+the new `:renewal-index` hook + `synth-renewal-checkpoint` — killed the single-left-column +
+huge top correction), 17d1c43 (origin corrections split from seam-refinement gating — fast
+up-fling lands index 0 exactly, no gap above item 0).
+
+Standing design principle adopted (user directive): **cache is an accelerator only** — per-frame
+work must be O(window+overscan) unconditionally; cache/checkpoints may improve precision but
+never select the algorithm or gate a path. The first-Jump freeze was the violation that prompted
+it: a populated cache made the O(1) inverse-seed branch unreachable, forcing an O(N) walk!.
+Fixed: 3c5764b (seeding keys off window-to-band geometry via `window-far-from-band?`; a far seed
+also drops stale checkpoints), c62a6c4 (far jump to top takes the exact from-0 seed), fc4ff65
+(kDebugMode materialization tripwire `assert-materialization-bounded!`, budget
+`32 + 4×(band/avg-main)×max(1, cross/avg-cross)`), 29133dd (velocity sensor: teleport clamp
+`:teleport-v` 50k px/s + fast-run counts only sustained instantaneous samples — jumpTo no longer
+reads as a fling). Suite 272 green. Deliberate leftovers: degenerate-estimate far branch still
+walks (tripwire-covered), far animateTo >~60vp/s rides inverse-seed instead of flying,
+measuredAgg not reset on layout morph (origin clamp covers the symptom).
+
 ### 3.1 Double (before→after) layout only when a segment will actually run — **(user pt 2)**
 Guard the two-pass layout compute behind "an animation is pending", so the static case pays for
 one pass.
