@@ -325,6 +325,41 @@
       (is (= (render/materialization-budget band avg-main cross cross)
              (render/materialization-budget band avg-main (* 2.0 cross) cross))))))
 
+(deftest materialization-budget-unknown-cross-widens
+  ;; Device false positive (wrap [:wrap 6 6], 82 children in a 1369.77px band):
+  ;; with avg-main known but cross density UNKNOWN (bare-double
+  ;; :approximate-item-size seeds only the main aggregate) the budget modeled the
+  ;; wrap band as ONE item per run and rejected a legitimate dense pass. Unknown
+  ;; density must WIDEN the budget — a cold pass may legitimately fill an
+  ;; unknown band — never collapse it to 1-per-run.
+  (let [band 1369.771568238837 cross 956.0]
+    (testing "unknown cross density → infinite budget (like unknown avg-main)"
+      (is (false? (.-isFinite ^double (render/materialization-budget band 114.0 0.0 cross)))))
+    (testing "a MEASURED full-width cross density (a real list) still caps at 1 per run"
+      (is (true? (.-isFinite ^double (render/materialization-budget band 114.0 cross cross)))))))
+
+(deftest materialization-tripwire-uses-pass-sample
+  ;; The persistent EMA goes stale across a layout :id change: list-era
+  ;; :avg-cross == cross-extent (list children span the cross axis) models the
+  ;; NEW wrap band as one item per run — budget 80.75 rejected a legitimate
+  ;; 82-child band relayout (the on-device assert). The tripwire env must prefer
+  ;; THIS pass's attached-window sample means over the EMA.
+  (let [band 1369.771568238837 cross 956.0
+        ema-env {:avg-main 112.386 :avg-cross 956.0 :cross-extent cross}
+        sample {:avg-main 112.386 :avg-cross 88.0}
+        env (render/tripwire-env ema-env sample)]
+    (testing "stale list-era EMA under-budgets the wrap band (why the sample must win)"
+      (is (< ^double (render/materialization-budget
+                      band (double (:avg-main ema-env)) (double (:avg-cross ema-env)) cross)
+             82.0)))
+    (testing "the pass sample overrides the EMA and the legit dense band fits"
+      (is (= 88.0 (:avg-cross env)))
+      (is (> ^double (render/materialization-budget
+                      band (double (:avg-main env)) (double (:avg-cross env)) cross)
+             82.0)))
+    (testing "no sample (nothing sized this pass) keeps the EMA env"
+      (is (= ema-env (render/tripwire-env ema-env nil))))))
+
 ;; --- cold-start inverse-seed binary search ---
 
 (deftest invert-approx-offset-lands-within-one-item

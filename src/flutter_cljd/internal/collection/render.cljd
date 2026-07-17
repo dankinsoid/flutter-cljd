@@ -1560,7 +1560,9 @@
 (defn- update-measured-agg!
   "Refreshes the :avg-main/:avg-cross measured aggregates from the attached
    window (design §1.1) so :approx-offset / extent extrapolation track measured
-   reality instead of the cold approximate-item-size prior."
+   reality instead of the cold approximate-item-size prior. Returns this pass's
+   RAW sample means {:avg-main :avg-cross} (nil when nothing is sized) — the
+   materialization tripwire reads them instead of the EMA (see tripwire-env)."
   [^CollectionRenderSliver rs env]
   (loop [child (.-firstChild rs) ^double sm 0.0 ^double sc 0.0 ^int n 0]
     (if child
@@ -1572,7 +1574,9 @@
                  (inc n))
           (recur (.childAfter rs ch) sm sc n)))
       (when (pos? n)
-        (.-measuredAgg! rs (ema-agg (.-measuredAgg rs) (/ sm n) (/ sc n)))))))
+        (let [^double mm (/ sm n) ^double mc (/ sc n)]
+          (.-measuredAgg! rs (ema-agg (.-measuredAgg rs) mm mc))
+          {:avg-main mm :avg-cross mc})))))
 
 (defn- shift-attached-from!
   "Adds `d` to the layoutOffset of every attached child with index >= `from-idx`
@@ -2007,17 +2011,29 @@
    never depends on cache contents or jump distance):
      floor + factor * (band-extent / avg-main) * items-per-run
    where items-per-run = max(1, cross-extent / avg-cross) (a wrap packs several
-   items per main-axis run; a list's children span the cross axis → 1). Infinite
-   while the density is unknown (nothing measured yet — a cold first pass may
-   legitimately walk an unknown band). Pure."
+   items per main-axis run; a list's MEASURED full-width children → 1). Infinite
+   while EITHER density is unknown (nothing measured yet — a cold first pass may
+   legitimately walk an unknown band): an unknown cross density must WIDEN the
+   budget, never collapse it to 1-per-run — a bare-double approximate-item-size
+   seeds only the main aggregate, and modeling a wrap band as one item per run
+   was the on-device false positive. Pure."
   [^double band-extent ^double avg-main ^double avg-cross ^double cross-extent]
-  (if-not (and (pos? avg-main) (.-isFinite avg-main))
+  (if-not (and (pos? avg-main) (.-isFinite avg-main)
+               (pos? avg-cross) (.-isFinite avg-cross) (pos? cross-extent))
     dc/double.infinity
-    (let [^double per-run (if (and (pos? avg-cross) (.-isFinite avg-cross) (pos? cross-extent))
-                            (math/max 1.0 (/ cross-extent avg-cross))
-                            1.0)]
+    (let [^double per-run (math/max 1.0 (/ cross-extent avg-cross))]
       (+ materialize-budget-floor
          (* materialize-budget-factor per-run (/ band-extent avg-main))))))
+
+(defn tripwire-env
+  "env for the materialization tripwire: THIS pass's attached-window sample
+   means override the persistent EMA. The EMA goes stale across a layout :id
+   change (update-render! keeps it — a stale estimate beats none for
+   :approx-offset), but for the tripwire a list-era :avg-cross == cross-extent
+   models the new wrap band as ONE item per run and collapses the budget under a
+   legitimate dense relayout. nil sample (nothing sized) keeps the EMA env. Pure."
+  [env sample]
+  (if sample (merge env sample) env))
 
 (defn- assert-materialization-bounded!
   "kDebugMode tripwire for the O(window+overscan) per-pass bound: a resting flow
@@ -2267,10 +2283,14 @@
               ;; measured aggregates track the live window on resting passes so
               ;; :approx-offset / extent extrapolation follow reality (§1.1).
               (when (nil? (.-tweenAnim rs))
-                (update-measured-agg! rs env)
-                ;; O(window+overscan) tripwire (debug, resting passes — a segment
-                ;; capture legitimately widens the window via widen-window!).
-                (assert-materialization-bounded! rs layout env (- we-o ws-o)))
+                (let [sample (update-measured-agg! rs env)]
+                  ;; O(window+overscan) tripwire (debug, resting passes — a segment
+                  ;; capture legitimately widens the window via widen-window!). The
+                  ;; budget's density comes from THIS pass's sample, not the EMA:
+                  ;; env was built pre-pass and the EMA is stale across a layout
+                  ;; :id change (tripwire-env).
+                  (assert-materialization-bounded! rs layout (tripwire-env env sample)
+                                                   (- we-o ws-o))))
               ;; A cross-layout re-anchor (seed-cache!) takes precedence: this pass's
               ;; anchor was captured AFTER the re-anchor so anchor-delta reads ~0; the
               ;; recorded shift is the real correction that keeps the visible child put
