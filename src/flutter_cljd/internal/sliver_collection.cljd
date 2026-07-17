@@ -78,7 +78,8 @@
    ^int prefetchDistance
    ^bool autoKeepAlive
    extraOpts         ;; reorder passthrough opts
-   approxItemSize]   ;; approximate-item-size seed (double | Size | nil) — engine cold prior
+   approxItemSize    ;; approximate-item-size seed (double | Size | nil) — engine cold prior
+   overscanConfig]   ;; normalized :overscan spec (render/resolve-overscan) — WS2 phase E
   :extends (w/StatefulWidget .key k)
 
   (createState [^SliverCollection this]
@@ -241,6 +242,7 @@
          (cond-> (assoc opts
                         :key-of key-of
                         :approximate-item-size (.-approxItemSize widget)
+                        :overscan (.-overscanConfig widget)
                         :seg-gen (.-gen clock)
                         :entering inserts
                         :exiting exiting
@@ -391,4 +393,5 @@
      (boolean (:auto-keep-alive args true))
      (select-keys args [:item-extent :on-reorder-start :on-reorder-end
                         :proxy-decorator])
-     (:approximate-item-size args))))
+     (:approximate-item-size args)
+     (render/resolve-overscan (:overscan args)))))

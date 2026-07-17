@@ -277,3 +277,12 @@
       (is (close? (nth (get (.-clips rb) 2) 2) 0.5)))
     (testing "survivors keep their rects and the box grows toward three cells"
       (is (size? rb 40 50)))))
+
+(deftest box-ignores-overscan
+  ;; WS2 phase E: overscan is a no-op for the non-scrolling box host
+  ;; (remainingCacheExtent = main-max, userScrollDirection idle). A present
+  ;; :overscan must be accepted-and-ignored — never break construction (open Q5).
+  (testing "collection-box builds with an :overscan option present"
+    (is (instance? w/Widget
+                   (box/collection-box (l/list) {:overscan {:viewport 0.5}}
+                                       [(fixed-child 40 20)])))))

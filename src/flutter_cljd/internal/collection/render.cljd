@@ -41,7 +41,8 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare flow-layout! indexed-layout! commit-pass! commit-prune? env-agg segment-start!)
+(declare flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
+         segment-start! update-velocity! overscan-extent)
 
 ;; --- Render object ---
 
@@ -101,10 +102,20 @@
                           ;; correction that pass emitted (so a same-frame correction re-run reads as no motion).
                           ;; NaN before the first pass. Drives the refinement suppression gate: a negative
                           ;; pass-over-pass delta = active backward drag / ballistic-up (WS2.3 tier 3).
-   ^:mutable ^bool landingEmitted] ;; one-shot: the previous pass emitted an exact-landing correction, so the
+   ^:mutable ^bool landingEmitted ;; one-shot: the previous pass emitted an exact-landing correction, so the
                           ;; current geometry is a fresh from-:init re-flow. If index 0 is STILL off zero the
                           ;; layout broke the ":init places index 0 at 0" contract — assert in debug, accept a
                           ;; constant inset in release (see landing-decision) instead of re-emitting forever.
+   ;; --- WS2 phase E: velocity sensor + directional overscan + regime gate ---
+   ^:mutable overscanConfig  ;; normalized :overscan spec (resolve-overscan); never nil (zero-config ⇒ {:mode :dynamic})
+   ^:mutable ^double velocityEMA ;; smoothed signed scroll velocity px/s (correction-compensated). 0 at rest.
+   ^:mutable ^int scrollSign  ;; hysteresis-smoothed scroll direction: +1 forward/down, -1 back/up, 0 idle
+   ^:mutable ^double lastVelStamp ;; frame timestamp (micros) of the last velocity update; NaN before the first.
+                          ;; Gates the EMA to once per frame — a same-frame correction re-run must not decay it.
+   ^:mutable curRegime    ;; :resting | :flying | :landing — the fidelity regime the last velocity update classified.
+                          ;; Drives the flow dispatch (flying ⇒ approximate placement) and overscan gating.
+   ^:mutable ^double overscanBehind ;; this frame's resolved leading/trailing overscan margins (px), computed once
+   ^:mutable ^double overscanAhead] ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -185,12 +196,26 @@
         (.-checkpoints! this {})
         (.-anchoredTo0! this false)
         (.-landingEmitted! this false))
+      ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
+      ;; frame's directional overscan window BEFORE dispatching. A playing segment
+      ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
+      ;; the window there, so the regime gate must not fight it (scenario 6).
+      (update-velocity! this c)
+      (let [seg? (some? (.-tweenAnim this))
+            [^double behind ^double ahead] (if seg? [0.0 0.0]
+                                             (overscan-extent this c (.-curRegime this)))]
+        (.-overscanBehind! this behind)
+        (.-overscanAhead! this ahead))
       (cond
         ;; RESTING: no animation — run the plain target through its natural driver.
+        ;; A flow layout in the flying regime takes the approximate-placement path.
         (nil? (.-tweenAnim this))
-        (if (:geometry (.-layoutModel this))
-          (indexed-layout! this (.-layoutModel this) c)
-          (flow-layout! this (.-layoutModel this) c))
+        (let [layout (.-layoutModel this)]
+          (cond
+            (:geometry layout) (indexed-layout! this layout c)
+            (and (= :flying (.-curRegime this)) (:approx-offset layout))
+            (flying-flow! this layout c)
+            :else (flow-layout! this layout c)))
 
         ;; SEGMENT START: host bumped gen — capture the target from the new tree.
         (not= (.-curGen this) (.-segGen this))
@@ -202,17 +227,19 @@
       ;; Refinement motion sensor: remember this pass's offset compensated by any
       ;; correction it emitted, so the correction's same-frame re-run (and the
       ;; corrected next frame) read as no user motion — only real drag/ballistic
-      ;; deltas reach the suppression gate.
+      ;; deltas reach the velocity sensor + suppression gate.
       (let [^r/SliverGeometry g (.-geometry this)]
         (.-refineLastOffset! this (+ (.-scrollOffset c)
                                      (double (or (.-scrollOffsetCorrection g) 0.0)))))
-      ;; Phase D geometric committed scoping: prune to the cache band, but only
-      ;; between segments and never on a correction pass (commit-prune?).
+      ;; Phase D geometric committed scoping, phase-E-widened to the overscan band:
+      ;; prune to [ws − behind, we + ahead], but only between segments and never on
+      ;; a correction pass (commit-prune?).
       (let [^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
             ^double we (+ ws (.-remainingCacheExtent c))
             ^r/SliverGeometry g (.-geometry this)
             corrected? (some? (.-scrollOffsetCorrection g))]
-        (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this)) ws we
+        (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this))
+                      (- ws (.-overscanBehind this)) (+ we (.-overscanAhead this))
                       (commit-prune? (some? (.-tweenAnim this)) corrected?)))))
 
   (dispose [^CollectionRenderSliver this]
@@ -348,21 +375,9 @@
         (math/max 0 (dec lo))))))
 
 ;; --- progressive offset refinement (WS2 phase C) — pure kernels ---
-
-(def ^:private ^double refine-suppress-eps
-  "Per-pass upward scrollOffset motion (px) above which refinement corrections
-   are deferred: a same-frame offset jump must not race an active backward drag
-   or ballistic-up (WS2.3 tier 3 / the TanStack rule). Tunable; Phase E's
-   velocity sensor supersedes this per-pass signal."
-  0.5)
-
-(defn refine-suppressed?
-  "True when the correction-compensated pass-over-pass scrollOffset delta shows
-   active backward (upward) motion, so refinement corrections defer to the next
-   low-velocity pass. `last-off` NaN (no previous pass) reads as at-rest. Pure."
-  [^double last-off ^double so]
-  (and (not (.-isNaN last-off))
-       (< (- so last-off) (- refine-suppress-eps))))
+;; Note: Phase C's per-pass `refine-suppress-eps` / `refine-suppressed?` signal was
+;; retired in Phase E — refinement suppression now reads the velocity sensor
+;; (see refine-suppressed? in the phase-E section above).
 
 (defn refine-emit?
   "The WS1.3 exclusivity + suppression gate in one place: refinement corrections
@@ -420,6 +435,167 @@
                   (* agg-ema-alpha mean-main))
      :avg-cross (+ (* (- 1.0 agg-ema-alpha) (double (:avg-cross prev)))
                    (* agg-ema-alpha mean-cross))}))
+
+;; --- velocity sensor + directional overscan + regime gate (WS2 phase E) — pure kernels ---
+
+(def ^:private overscan-tunables
+  "Every Phase E threshold in ONE place. All values are reasoned starting points
+   and AWAIT ON-DEVICE CALIBRATION (WS2.1 §9 open Q3) — see the phase-E device-
+   calibration checklist. Units: :v-* px/s, :lookahead-ms ms, fractions of the
+   viewport main extent, alpha dimensionless."
+  {:v-slow          220.0    ;; |v| below ⇒ resting band: refinement on, small symmetric base overscan
+   :v-fast         3200.0    ;; |v| above ⇒ flying: approximate placement, overscan + refinement OFF
+   :ema-alpha         0.35   ;; velocity EMA weight of the current frame's instantaneous sample
+   :dir-flip-eps     90.0    ;; px/s the reversed velocity must clear before scrollSign flips (anti-thrash hysteresis)
+   :suppress-v      120.0    ;; upward |v| above which above-anchor refinement corrections defer (WS2.3 tier 3)
+   :lookahead-ms    120.0    ;; read-ahead horizon: velocity-scaled lead = |v|·lookahead
+   :ahead-max-frac    1.0    ;; the velocity-scaled ahead margin is capped at this × viewport
+   :base-frac         0.25}) ;; zero-config symmetric base as a fraction of viewport when no :avg-main is known yet
+
+(defn vel-ema
+  "Folds one frame's instantaneous velocity `sample` into the EMA. NaN prev (no
+   prior sample) seeds directly. Pure."
+  [^double prev ^double sample ^double alpha]
+  (if (.-isNaN prev) sample (+ (* (- 1.0 alpha) prev) (* alpha sample))))
+
+(defn vel-sign
+  "Hysteresis direction: keeps `prev` sign until the signed velocity clears
+   ±`flip-eps`, so a brief zero-crossing at a fling's tail or a jittery drag
+   doesn't swap the asymmetric overscan every frame (WS2.1 §5). Pure."
+  [^int prev ^double v ^double flip-eps]
+  (cond (> v flip-eps) 1 (< v (- flip-eps)) -1 :else prev))
+
+(defn fidelity-regime
+  "Classifies the pass into :resting / :flying / :landing from the smoothed speed
+   `absv`, the deceleration flag `decel?`, and the previous regime (WS2.1 §2.3).
+   Hysteresis band [v-slow, v-fast]: enter flying above v-fast, stay flying down
+   to v-slow; drop out of flying while still decelerating ⇒ landing (re-enables
+   real materialisation + refinement + overscan so the stop lands exactly), which
+   relaxes to resting once motion dies. A medium drag that never reaches v-fast
+   stays resting (Phase D behavior, just a wider band). Pure."
+  [prev ^double absv ^bool decel? ^double v-slow ^double v-fast]
+  (cond
+    (>= absv v-fast) :flying
+    (and (= prev :flying) (> absv v-slow)) :flying
+    (and (or (= prev :flying) (= prev :landing)) decel? (> absv 1.0)) :landing
+    :else :resting))
+
+(defn refine-suppressed?
+  "WS2.3 tier-3 gate on the VELOCITY signal (Phase E supersedes Phase C's per-pass
+   eps): defer above-anchor refinement corrections while the user is actively
+   dragging/flinging UP (scrollSign < 0) fast enough that a same-frame offset jump
+   would race the motion. `absv` px/s. Pure."
+  [^int scroll-sign ^double absv ^double suppress-v]
+  (and (neg? scroll-sign) (> absv suppress-v)))
+
+(defn resolve-overscan
+  "Normalizes the :overscan config form once at build (mirrors parse-anim-config).
+   Forms:
+     number px          → fixed symmetric px, no velocity scaling
+     {:viewport f}      → fixed symmetric fraction of the viewport main extent
+     {:ahead :behind :max :lookahead-ms}  → velocity-scaled dynamic (any subset; rest default)
+     false | 0 | :none  → disabled (Flutter :cache-extent still applies)
+     (fn [ctx] …)       → escape hatch, re-normalized per frame (ctx per WS2.1 §6)
+     nil (not given)    → zero-config dynamic default (small symmetric base + ~120ms lookahead, ~1vp cap)
+   Returns a normalized spec map (never nil). Pure."
+  [overscan]
+  (cond
+    (nil? overscan) {:mode :dynamic}
+    (false? overscan) {:disabled true}
+    (= :none overscan) {:disabled true}
+    (and (number? overscan) (zero? overscan)) {:disabled true}
+    (number? overscan) {:mode :fixed :px (double overscan)}
+    (fn? overscan) {:mode :fn :fn overscan}
+    (map? overscan)
+    (if (contains? overscan :viewport)
+      {:mode :viewport :frac (double (:viewport overscan))}
+      (cond-> {:mode :dynamic}
+        (:ahead overscan) (assoc :base-ahead (double (:ahead overscan)))
+        (:behind overscan) (assoc :base-behind (double (:behind overscan)))
+        (:max overscan) (assoc :max (double (:max overscan)))
+        (:lookahead-ms overscan) (assoc :lookahead-ms (double (:lookahead-ms overscan)))))
+    :else {:mode :dynamic}))
+
+(defn overscan-window
+  "Pure directional overscan resolver → [behind ahead] px. `spec` is a normalized
+   resolve-overscan result (NOT the :fn form — the caller pre-resolves that).
+   nil / :disabled ⇒ [0 0]. Velocity law (WS2.1 §2.2):
+     lead   = clamp(base_ahead, |v|·lookahead/1000, ahead-max)
+     ahead  = forward? lead : base_behind ;  behind = forward? base_behind : lead
+   so the wide margin follows the motion sign; at rest (absv 0, any sign) it
+   collapses to the small symmetric base. Fixed / viewport specs ignore velocity.
+   `avg-main` seeds the zero-config base (one item); falls back to base-frac·vp. Pure."
+  [spec ^double absv ^int sign ^double viewport ^double avg-main
+   ^double lookahead-ms ^double ahead-max-frac ^double base-frac]
+  (if (or (nil? spec) (:disabled spec))
+    [0.0 0.0]
+    (case (:mode spec)
+      :fixed (let [^double p (double (:px spec))] [p p])
+      :viewport (let [^double p (* (double (:frac spec)) viewport)] [p p])
+      ;; :dynamic (and the zero-config default)
+      (let [^double default-base (if (and (pos? avg-main) (.-isFinite avg-main))
+                                   avg-main (* base-frac viewport))
+            ^double base-ahead (double (:base-ahead spec default-base))
+            ^double base-behind (double (:base-behind spec default-base))
+            ^double ahead-max (double (:max spec (* ahead-max-frac viewport)))
+            ^double lm (double (:lookahead-ms spec lookahead-ms))
+            ^double lead (math/min ahead-max (math/max base-ahead (* absv (/ lm 1000.0))))
+            fwd (>= sign 0)]
+        [(if fwd base-behind lead)
+         (if fwd lead base-behind)]))))
+
+(defn- update-velocity!
+  "Once-per-frame velocity sensor (WS2.1 §2.1), render-object-local. The delta is
+   correction-compensated: `refineLastOffset` already carries the last pass's
+   scrollOffset PLUS the correction that pass emitted, so a same-frame correction
+   re-run and a WS1.3/WS2.3 reconciliation read as no user motion — only real
+   drag/ballistic deltas survive. Folds the instantaneous velocity into the EMA,
+   updates the hysteresis direction sign and the fidelity regime. Gated on the
+   frame timestamp so the several layout passes a frame can hold don't decay it."
+  [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  (let [^double stamp (double (.-inMicroseconds
+                               ^dc/Duration (.-currentFrameTimeStamp w/WidgetsBinding.instance)))
+        ^double last (.-lastVelStamp rs)
+        ^double prev-off (.-refineLastOffset rs)
+        ^double so (.-scrollOffset c)]
+    (when (and (not (.-isNaN last)) (not (.-isNaN prev-off)) (> stamp last))
+      (let [^double dt (/ (- stamp last) 1000000.0)]
+        (when (pos? dt)
+          (let [^double inst-v (/ (- so prev-off) dt)
+                ^double prev-ema (.-velocityEMA rs)
+                ^double old-abs (if (.-isNaN prev-ema) 0.0 (.abs prev-ema))
+                ^double ema (vel-ema prev-ema inst-v (double (:ema-alpha overscan-tunables)))
+                ^double new-abs (.abs ema)
+                decel? (< new-abs old-abs)]
+            (.-velocityEMA! rs ema)
+            (.-scrollSign! rs (vel-sign (.-scrollSign rs) ema
+                                        (double (:dir-flip-eps overscan-tunables))))
+            (.-curRegime! rs (fidelity-regime (.-curRegime rs) new-abs decel?
+                                              (double (:v-slow overscan-tunables))
+                                              (double (:v-fast overscan-tunables))))))))
+    (.-lastVelStamp! rs stamp)))
+
+(defn- overscan-extent
+  "This frame's [behind ahead] overscan margins (px): [0 0] while flying or when
+   the config is disabled. Resolves the :fn config form against the live sensor
+   ctx, then applies the pure velocity law (overscan-window)."
+  [^CollectionRenderSliver rs ^r/SliverConstraints c regime]
+  (let [spec (.-overscanConfig rs)]
+    (if (or (nil? spec) (:disabled spec) (= :flying regime))
+      [0.0 0.0]
+      (let [^double viewport (.-viewportMainAxisExtent c)
+            ^double absv (.abs (.-velocityEMA rs))
+            ^int sign (.-scrollSign rs)
+            ^double avg-main (double (or (:avg-main (lay/make-env c (.-itemCount rs) (env-agg rs))) 0.0))
+            spec (if (= :fn (:mode spec))
+                   (resolve-overscan ((:fn spec) {:velocity (.-velocityEMA rs) :direction sign
+                                                  :viewport viewport :item-count (.-itemCount rs)
+                                                  :cache-extent (.-remainingCacheExtent c)}))
+                   spec)]
+        (overscan-window spec absv sign viewport avg-main
+                         (double (:lookahead-ms overscan-tunables))
+                         (double (:ahead-max-frac overscan-tunables))
+                         (double (:base-frac overscan-tunables)))))))
 
 ;; --- keyed rect commit (v2 persistent {key -> content-space rect}) ---
 
@@ -1294,6 +1470,104 @@
       (.setDidUnderflow mgr true))
     (.didFinishLayout mgr)))
 
+;; @ai-generated(solo)
+(defn- flying-flow!
+  "Flying-regime approximate placement (WS2.1 §4). Lays ONLY the visible window
+   [ws, we] at monotone :approx-offset positions — no overscan, no backfill, no
+   refinement, no checkpoint reflow — so a fast fling / far animateTo doesn't pay
+   O(gap) real layout for frames that fly past unseen. Children still self-size
+   (they must, to paint) but stack at the estimate with cross 0 (fly-by frames
+   aren't scrutinised — a wrap window shows a transient single column mid-fling).
+   Clears the persistent real cache and un-anchors the frontier, so the next
+   resting/landing pass dead-reckons from the attached top and refines to land
+   exactly. Falls back to the real driver when the estimate is degenerate (no
+   measured :avg-main yet)."
+  [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
+        env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
+        approx-fn (:approx-offset layout)]
+    (if (or (nil? approx-fn) (not (pos? (double (or (:avg-main env) 0.0)))))
+      (flow-layout! rs layout c)   ; can't estimate yet — stay on real geometry
+      (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
+        (.didStartLayout mgr)
+        (.setDidUnderflow mgr false)
+        (.-clips! rs {})
+        (let [measure-fn (:measure layout)
+              anchor-fn (:anchor layout)
+              init-fn (:init layout)
+              item-count (:item-count env)
+              approx (fn ^double [^int i] (double (approx-fn env i)))
+              ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+              ^double we (+ ws (.-remainingCacheExtent c))
+              ^int n (int (or item-count 0))
+              ^int raw (invert-approx-offset approx ws item-count)
+              ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))]
+          ;; drop the stale real cache — flying owns approximate offsets; landing
+          ;; rebuilds real geometry (seed-cache! dead-reckons from the attached top).
+          (.-cache! rs [])
+          (.-cacheFirst! rs start)
+          (.-baseState! rs (if anchor-fn (anchor-fn env start (approx start)) (init-fn env)))
+          (.-anchoredTo0! rs false)
+          (if (.-firstChild rs)
+            (.collectGarbage rs (.calculateLeadingGarbage rs .firstIndex start) 0)
+            (.collectGarbage rs 0 0))
+          (if (and (nil? (.-firstChild rs))
+                   (not (.addInitialChild rs .index start .layoutOffset (approx start))))
+            (do (.-geometry! rs r/SliverGeometry.zero) (.didFinishLayout mgr))
+            (do
+              ;; ensure firstChild sits at/above `start`
+              (loop []
+                (let [^int fidx (.indexOf rs (.-firstChild rs))]
+                  (when (> fidx start)
+                    (when-let [ch (.insertAndLayoutLeadingChild rs
+                                   ^r/BoxConstraints (measure-fn env (dec fidx))
+                                   .parentUsesSize true)]
+                      (set-layout-offset! ch (approx (dec fidx)))
+                      (set-cross-axis-offset! ch 0.0)
+                      (recur)))))
+              ;; forward-fill the visible window at approximate offsets
+              (let [[^int last-i ^double end reached]
+                    (loop [^r/RenderBox child (.-firstChild rs)
+                           ^int i (.indexOf rs (.-firstChild rs))]
+                      (.layout child ^r/BoxConstraints (measure-fn env i) .parentUsesSize true)
+                      (let [^double off (approx i)
+                            ^double ext (.paintExtentOf rs child)]
+                        (set-layout-offset! child off)
+                        (set-cross-axis-offset! child 0.0)
+                        (if (>= off we)
+                          [i (+ off ext) false]
+                          (let [after (.childAfter rs child)
+                                nxt (if (and after (= (.indexOf rs ^r/RenderBox after) (inc i)))
+                                      after
+                                      (.insertAndLayoutChild rs
+                                       ^r/BoxConstraints (measure-fn env (inc i))
+                                       .after child .parentUsesSize true))]
+                            (if (nil? nxt)
+                              [i (+ off ext) true]
+                              (recur ^r/RenderBox nxt (inc i)))))))]
+                ;; collect anything beyond the last placed index
+                (let [^int trailing (loop [cc (.-lastChild rs) ^int ntr 0]
+                                      (if (and cc (> (.indexOf rs ^r/RenderBox cc) last-i))
+                                        (recur (.childBefore rs ^r/RenderBox cc) (inc ntr))
+                                        ntr))]
+                  (.collectGarbage rs 0 trailing))
+                (let [^double first-off (approx start)
+                      ^double total (cond
+                                      reached end
+                                      (nil? item-count) dc/double.infinity
+                                      :else (math/max end (approx (int item-count))))
+                      ^double paint-extent (.calculatePaintOffset rs c
+                                            .from (math/min (.-scrollOffset c) first-off) .to end)
+                      ^double cache-extent (.calculateCacheOffset rs c .from first-off .to end)]
+                  (.-geometry! rs
+                    (r/SliverGeometry
+                     .scrollExtent total .paintExtent paint-extent .cacheExtent cache-extent
+                     .maxPaintExtent total
+                     .hasVisualOverflow (or (> end (+ (.-scrollOffset c) (.-remainingPaintExtent c)))
+                                            (pos? (.-scrollOffset c)))))
+                  (when reached (.setDidUnderflow mgr true))
+                  (.didFinishLayout mgr))))))))))
+
 (defn- flow-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
@@ -1305,16 +1579,25 @@
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
           ^double ws (+ so (.-cacheOrigin c))
-          ^double we (+ ws (.-remainingCacheExtent c))]
-      (pre-gc! rs ws we)
+          ^double we (+ ws (.-remainingCacheExtent c))
+          ;; WS2 phase E: widen the materialisation/GC window by this frame's
+          ;; directional overscan (0 while segment/flying/disabled). Geometry
+          ;; advertised to the viewport stays on the TRUE [ws, we] — the overscan
+          ;; children are held privately (finish-flow-geometry! clamps paint/cache
+          ;; extent to the constraints' true remaining, so they aren't advertised).
+          ^double ws-o (- ws (.-overscanBehind rs))
+          ^double we-o (+ we (.-overscanAhead rs))]
+      (pre-gc! rs ws-o we-o)
       (seed-cache! rs layout env)
       (normalize-cache! rs layout env)
       (let [anchor (anchor-before rs so)
-            ;; Phase C: refinement corrections are emitted only on a resting
-            ;; (no-segment) pass with no active backward motion — mutually
-            ;; exclusive with the WS1.3 segment correction per pass.
+            ;; Phase C emission gate, phase-E suppression signal: refinement
+            ;; corrections are emitted only on a resting (no-segment) pass with no
+            ;; active upward drag/fling (velocity sensor) — mutually exclusive with
+            ;; the WS1.3 segment correction per pass.
             emit? (refine-emit? (some? (.-tweenAnim rs))
-                                (refine-suppressed? (.-refineLastOffset rs) so))]
+                                (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
+                                                    (double (:suppress-v overscan-tunables))))]
         ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
         ;; set-point. During a segment flow-layout! runs to capture the target.
         (when (nil? (.-tweenAnim rs))
@@ -1322,7 +1605,7 @@
         (if-not (align-start! rs layout env ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr))
-          (let [walked (walk! rs layout env we)
+          (let [walked (walk! rs layout env we-o)
                 ^int last-i (int (:last-i walked))
                 ;; §7b: this branch runs mid-segment only as the CAPTURE pass
                 ;; (segment-start!). Attached cells whose committed rect still
@@ -1332,11 +1615,11 @@
                                  (let [[_ kl] (widen-window! rs last-i last-i ws we)]
                                    (int kl))
                                  last-i)]
-            (post-gc! rs keep-last ws)
-            (let [corr (backfill-leading! rs layout env ws emit?)]
-              ;; Geometric checkpoint scoping: keep the [ws, we] band plus one
-              ;; seed above (Phase E widens the band to overscan).
-              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws we))
+            (post-gc! rs keep-last ws-o)
+            (let [corr (backfill-leading! rs layout env ws-o emit?)]
+              ;; Geometric checkpoint scoping (phase-E-widened): keep the overscan
+              ;; band [ws-o, we-o] plus one seed above (the D prune re-scoped).
+              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-o we-o))
               ;; Frontier reconciliation (Phase D): the prunes above never clear
               ;; anchoredTo0 — its claim rides the cache's from-0 prefix — but a
               ;; claim whose cache is no longer rooted at 0 is stale and drops.
@@ -1437,13 +1720,18 @@
           geo-fn (:geometry layout)
           ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
           ^double we (+ ws (.-remainingCacheExtent c))
+          ;; WS2 phase E: widen the index materialisation window by this frame's
+          ;; overscan (0 while segment/flying/disabled). Geometry (1050) stays on
+          ;; the true window — calculate*Offset clamps the overscan children out.
+          ^double ws-o (- ws (.-overscanBehind rs))
+          ^double we-o (+ we (.-overscanAhead rs))
           item-count (:item-count env)
-          ^int first-index0 (let [^int fi (int ((:first-index layout) env ws))]
+          ^int first-index0 (let [^int fi (int ((:first-index layout) env ws-o))]
                               (if (and item-count (pos? ^int item-count))
                                 (math/max 0 (math/min fi (dec ^int item-count)))
                                 (math/max 0 fi)))
-          target-last0 (when (.-isFinite we)
-                         (int ((:last-index layout) env we)))
+          target-last0 (when (.-isFinite we-o)
+                         (int ((:last-index layout) env we-o)))
           ;; Union windowing (animating only): keep attached cells still
           ;; overlapping [ws, we] so a cell leaving/entering the new layout glides.
           [^int first-index target-last]
@@ -1850,19 +2138,22 @@
    keyOf        ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
    ^bool fadeEnter  ;; fade entering cells with the collapse (default enter/exit fade)
    ^bool fadeExit   ;; fade exiting cells with the collapse
-   approxSize]  ;; approximate-item-size seed (double | ui/Size | nil) — cold prior for :avg-main/:avg-cross
+   approxSize   ;; approximate-item-size seed (double | ui/Size | nil) — cold prior for :avg-main/:avg-cross
+   overscanConfig] ;; normalized :overscan spec (render/resolve-overscan) — WS2 phase E
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {}
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false)]
+                                     fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
+                                     overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
     (.-approxSize! ^CollectionRenderSliver render-object approxSize)
+    (.-overscanConfig! ^CollectionRenderSliver render-object overscanConfig)
     (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf
                     fadeEnter fadeExit)))
 
@@ -1870,7 +2161,9 @@
   "Creates the collection sliver from a builder, item count (nil = infinite),
    the PLAIN target layout map and options {:key :find-child-index :auto-keep-alive
    :repaint-boundaries :semantic-indexes :tween-anim :seg-gen :entering :exiting
-   :key-of :fade-entering :fade-exiting :approximate-item-size}.
+   :key-of :fade-entering :fade-exiting :approximate-item-size :overscan}.
+   :overscan is the pre-normalized overscan spec (render/resolve-overscan) driving
+   the velocity-scaled directional materialisation band (WS2 phase E).
    :approximate-item-size is the cold prior (double | ui/Size) seeding the engine's
    :avg-main/:avg-cross aggregates before any cell is measured (WS2.2 §1.1). :fade-entering/:fade-exiting fade the
    collapsing cells with the same window (the default enter/exit opacity), off when
@@ -1896,4 +2189,5 @@
    (:key-of opts)
    (boolean (:fade-entering opts))
    (boolean (:fade-exiting opts))
-   (:approximate-item-size opts)))
+   (:approximate-item-size opts)
+   (or (:overscan opts) (resolve-overscan nil))))

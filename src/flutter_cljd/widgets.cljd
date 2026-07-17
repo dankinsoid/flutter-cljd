@@ -3047,6 +3047,25 @@ Prefetch:
 - `:on-prefetch` `(fn [item-or-index])` — called ahead of the viewport
 - `:prefetch-distance` — items ahead to prefetch (default 5)
 
+Overscan (velocity-scaled directional read-ahead, on by default):
+
+- `:overscan` — how far past the viewport to keep cells REAL (measured/placed,
+  not estimated), widened in the scroll direction and scaled by velocity so
+  cells are laid out before they fling in. Distinct from Flutter's symmetric
+  `:cache-extent`; never advertised as paint/cache extent. Forms:
+  - number — fixed symmetric px
+  - `{:viewport f}` — fraction of the viewport main extent
+  - `{:ahead a :behind b :max m :lookahead-ms ms}` — full velocity-scaled control
+  - `false` / `0` — disable (Flutter `:cache-extent` still applies)
+  - `(fn [ctx] …)` — custom law; `ctx` = `{:velocity :direction :viewport
+    :item-count :cache-extent}` → px | `{:ahead :behind}` | `{:viewport f}`
+  Zero-config default: a small symmetric base + ~120ms lookahead, capped at ~1
+  viewport. A fast fling switches to a cheap approximate-placement regime and
+  lands on real, refined geometry as it decelerates. No-op on the box `collection`.
+- `:approximate-item-size` — a `double` main-extent or `Size` cold prior for the
+  engine's average-cell estimate before any cell is measured (improves cold-start
+  and fast-fling placement)
+
 Keep-alive: `:auto-keep-alive` (default `true`)"
   [& args]
   (scol/sliver-collection* args))

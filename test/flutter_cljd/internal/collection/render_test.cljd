@@ -247,20 +247,18 @@
 
 ;; --- progressive offset refinement (WS2 phase C) ---
 
-(def ^:private nan (/ 0.0 0.0))
-
+;; suppression now reads the phase-E velocity sensor (scrollSign, |v|), not the
+;; retired Phase C per-pass eps.
 (deftest refine-suppression-gate
-  (testing "no previous pass (NaN) reads as at-rest — corrections apply"
-    (is (false? (render/refine-suppressed? nan 500.0))))
-  (testing "active backward (upward) motion above the threshold suppresses"
-    (is (true? (render/refine-suppressed? 500.0 497.0))))
-  (testing "sub-threshold upward drift still counts as resting"
-    (is (false? (render/refine-suppressed? 500.0 499.8))))
-  (testing "forward (downward) motion never suppresses"
-    (is (false? (render/refine-suppressed? 500.0 503.0))))
-  (testing "a truly resting pass (zero delta — e.g. a correction re-run whose
-            emitted delta was compensated into last-off) resumes refinement"
-    (is (false? (render/refine-suppressed? 500.0 500.0)))))
+  (let [sup 120.0]
+    (testing "idle (sign 0) never suppresses regardless of |v|"
+      (is (false? (render/refine-suppressed? 0 5000.0 sup))))
+    (testing "active upward (sign -1) motion above the threshold suppresses"
+      (is (true? (render/refine-suppressed? -1 400.0 sup))))
+    (testing "upward motion below the threshold still refines"
+      (is (false? (render/refine-suppressed? -1 90.0 sup))))
+    (testing "forward/downward (sign +1) motion never suppresses"
+      (is (false? (render/refine-suppressed? 1 4000.0 sup))))))
 
 (deftest refine-emission-exclusive-with-segment
   (testing "resting, still pass emits"
@@ -403,3 +401,114 @@
     (let [a (render/ema-agg {:avg-main 40.0 :avg-cross 90.0} 80.0 90.0)]
       (is (= 50.0 (:avg-main a)))     ; 0.75*40 + 0.25*80
       (is (= 90.0 (:avg-cross a))))))
+
+;; ============================================================
+;; WS2 phase E — velocity sensor + directional overscan + regime gate
+;; ============================================================
+
+(def ^:private nan (/ 0.0 0.0))
+
+(deftest vel-ema-seeds-then-blends
+  (testing "NaN prev (no prior sample) seeds directly from the instantaneous v"
+    (is (= 1200.0 (render/vel-ema nan 1200.0 0.35))))
+  (testing "subsequent samples blend by the EMA weight"
+    ;; 0.65*1000 + 0.35*2000 = 1350
+    (is (= 1350.0 (render/vel-ema 1000.0 2000.0 0.35))))
+  (testing "a decelerating sample pulls the EMA down"
+    (is (< (render/vel-ema 2000.0 0.0 0.35) 2000.0))))
+
+(deftest vel-sign-hysteresis
+  (let [eps 90.0]
+    (testing "clear forward velocity is +1, clear backward -1"
+      (is (= 1 (render/vel-sign 0 500.0 eps)))
+      (is (= -1 (render/vel-sign 0 -500.0 eps))))
+    (testing "within the ±eps band the previous sign is held (anti-thrash)"
+      (is (= 1 (render/vel-sign 1 40.0 eps)))     ; small +v keeps +1
+      (is (= 1 (render/vel-sign 1 -40.0 eps)))    ; brief zero-crossing keeps +1
+      (is (= -1 (render/vel-sign -1 40.0 eps))))
+    (testing "a reversed velocity must CLEAR eps before the sign flips"
+      (is (= 1 (render/vel-sign 1 -85.0 eps)))    ; not yet cleared → still +1
+      (is (= -1 (render/vel-sign 1 -95.0 eps))))))  ; cleared → flips
+
+(deftest fidelity-regime-transitions
+  (let [vs 220.0 vf 3200.0]
+    (testing "steady slow drag stays resting (Phase D behavior, wider band)"
+      (is (= :resting (render/fidelity-regime :resting 100.0 false vs vf)))
+      (is (= :resting (render/fidelity-regime :resting 100.0 true vs vf))))
+    (testing "a medium drag that never reaches v-fast stays resting (real path)"
+      (is (= :resting (render/fidelity-regime :resting 1500.0 false vs vf))))
+    (testing "crossing v-fast enters flying"
+      (is (= :flying (render/fidelity-regime :resting 4000.0 false vs vf))))
+    (testing "hysteresis: once flying, stay flying through the band down to v-slow"
+      (is (= :flying (render/fidelity-regime :flying 1500.0 true vs vf)))
+      (is (= :flying (render/fidelity-regime :flying 250.0 true vs vf))))
+    (testing "flying dropping below v-slow while decelerating engages landing"
+      (is (= :landing (render/fidelity-regime :flying 180.0 true vs vf))))
+    (testing "landing keeps landing while still coasting down"
+      (is (= :landing (render/fidelity-regime :landing 120.0 true vs vf))))
+    (testing "landing relaxes to resting once motion effectively dies"
+      (is (= :resting (render/fidelity-regime :landing 0.5 true vs vf))))
+    (testing "landing that re-accelerates past v-fast flies again"
+      (is (= :flying (render/fidelity-regime :landing 5000.0 false vs vf))))))
+
+;; --- overscan config parsing (all forms) ---
+
+(deftest resolve-overscan-forms
+  (testing "nil (no config) → zero-config dynamic default"
+    (is (= {:mode :dynamic} (render/resolve-overscan nil))))
+  (testing "false / 0 / :none → disabled"
+    (is (:disabled (render/resolve-overscan false)))
+    (is (:disabled (render/resolve-overscan 0)))
+    (is (:disabled (render/resolve-overscan :none))))
+  (testing "a number → fixed symmetric px"
+    (is (= {:mode :fixed :px 300.0} (render/resolve-overscan 300))))
+  (testing "{:viewport f} → viewport fraction"
+    (is (= {:mode :viewport :frac 0.5} (render/resolve-overscan {:viewport 0.5}))))
+  (testing "the full dynamic map picks up each provided knob"
+    (is (= {:mode :dynamic :base-ahead 400.0 :base-behind 100.0 :max 800.0 :lookahead-ms 120.0}
+           (render/resolve-overscan {:ahead 400 :behind 100 :max 800 :lookahead-ms 120}))))
+  (testing "a partial dynamic map leaves the rest to defaults"
+    (is (= {:mode :dynamic :base-ahead 400.0} (render/resolve-overscan {:ahead 400}))))
+  (testing "a fn is retained as an escape hatch"
+    (let [f (fn [_] 100)]
+      (is (= {:mode :fn :fn f} (render/resolve-overscan f))))))
+
+;; --- overscan sizing law (clamp / base / cap / directional asymmetry) ---
+
+(def ^:private vp 800.0)
+(def ^:private lm 120.0)   ; lookahead-ms
+(def ^:private amf 1.0)    ; ahead-max-frac
+(def ^:private bf 0.25)    ; base-frac
+
+(defn- ow [spec absv sign avg-main]
+  (render/overscan-window spec absv sign vp avg-main lm amf bf))
+
+(deftest overscan-window-disabled-and-fixed
+  (testing "disabled / nil ⇒ [0 0]"
+    (is (= [0.0 0.0] (ow {:disabled true} 3000.0 1 60.0)))
+    (is (= [0.0 0.0] (ow nil 3000.0 1 60.0))))
+  (testing "fixed px is symmetric and velocity-independent"
+    (is (= [300.0 300.0] (ow {:mode :fixed :px 300.0} 0.0 0 60.0)))
+    (is (= [300.0 300.0] (ow {:mode :fixed :px 300.0} 5000.0 1 60.0))))
+  (testing "viewport fraction resolves against the viewport main extent"
+    (is (= [400.0 400.0] (ow {:mode :viewport :frac 0.5} 4000.0 -1 60.0)))))
+
+(deftest overscan-window-dynamic-law
+  (let [dyn {:mode :dynamic}]
+    (testing "at rest the band is the small symmetric base (one item = avg-main)"
+      (is (= [60.0 60.0] (ow dyn 0.0 0 60.0))))
+    (testing "no measured avg yet → base falls back to base-frac·viewport"
+      (is (= [200.0 200.0] (ow dyn 0.0 0 0.0))))    ; 0.25*800
+    (testing "forward motion grows AHEAD by |v|·lookahead, behind stays at base"
+      ;; |v|=1000, lookahead 0.12s ⇒ lead 120; base 60 ⇒ ahead 120, behind 60
+      (is (= [60.0 120.0] (ow dyn 1000.0 1 60.0))))
+    (testing "backward motion mirrors the asymmetry onto BEHIND"
+      (is (= [120.0 60.0] (ow dyn 1000.0 -1 60.0))))
+    (testing "lead never drops below the base (clamp lower bound)"
+      (is (= [60.0 60.0] (ow dyn 100.0 1 60.0))))   ; |v|·lookahead=12 < base 60
+    (testing "lead is capped at ahead-max (1 viewport) on a fast fling"
+      ;; |v|=20000 ⇒ raw lead 2400, capped to 800
+      (is (= [60.0 800.0] (ow dyn 20000.0 1 60.0))))
+    (testing "an explicit :max caps below the viewport"
+      (is (= [100.0 500.0]
+             (ow {:mode :dynamic :base-behind 100.0 :max 500.0} 20000.0 1 60.0))))))
