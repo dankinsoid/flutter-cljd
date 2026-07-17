@@ -821,6 +821,160 @@
       (is (= 90.0 (:avg-cross a))))))
 
 ;; ============================================================
+;; Exact landing under a driven scroll — the correction must be ABSORBED, never
+;; re-derived (device crash: RenderViewport 10-cycle cap, then a constant
+;; −76.43 residual asserting every frame during `animateTo 0`)
+;; ============================================================
+
+;; env whose estimates UNDERSHOOT truth: approx sees 20px run pitch, real runs
+;; are 40px — the −76.43 residual class (synth-checkpoint estimate error).
+(def ^:private drift-env (assoc wrap-env :avg-main 20.0 :avg-cross 90.0))
+
+(defn- frozen-backfill-to-0
+  "Simulates the suppressed (DrivenScrollActivity) backward walk: from a window
+   head dead-reckoned at `head-off` for index `head-i`, step run by run via
+   synth-renewal-checkpoint; every seam mismatch is re-anchored AT THE SEAM
+   (emit? false — the offset model is frozen), so the synth estimate's error is
+   carried down instead of emitted. Returns {index -> offset} for [0, head-i]:
+   (get m 0) is the landing residual z."
+  [layout env ^int head-i ^double head-off]
+  (loop [^int cf head-i ^double head head-off m {head-i head-off}]
+    (if (pos? cf)
+      (let [cp (render/synth-renewal-checkpoint layout env (dec cf))
+            ^int k (int (:index cp))
+            sized (wrap-sized k cf)
+            entries (tw/flow-run-entries layout env sized (:state cp))
+            ^double d (render/refine-seam-delta layout env cf (ui/Size 90 40)
+                                                (:state (peek entries)) head)
+            entries (if (zero? d)
+                      entries
+                      (tw/flow-run-entries layout env sized
+                                           ((:anchor layout) env k
+                                            (- ^double (:offset (nth entries 0)) d))))]
+        (recur k (double (:offset (nth entries 0)))
+               (into m (map-indexed (fn [^int j e] [(+ k j) (:offset e)]) entries))))
+      m)))
+
+(deftest landing-reseed-decision-contract
+  ;; The one-shot pending-ws records where the exact-landing correction expects
+  ;; its corrected re-run's window. seed-cache! consumes it: near the expected
+  ;; window it MUST force the from-:init seed (the landing contract); far from it
+  ;; the frame aborted mid-correction (viewport cycle cap) and the window moved —
+  ;; abandon: clear the one-shot state and seed normally.
+  (testing "no landing pending"
+    (is (= :none (render/landing-reseed-decision (/ 0.0 0.0) 500.0 645.0))))
+  (testing "the corrected re-run arrives where the emission expected it"
+    (is (= :init-seed (render/landing-reseed-decision 100.0 100.0 645.0)))
+    (is (= :init-seed (render/landing-reseed-decision 100.0 300.0 645.0))))
+  (testing "window moved beyond a viewport of the expectation — premise gone"
+    (is (= :abandon (render/landing-reseed-decision 100.0 900.0 645.0)))
+    (is (= :abandon (render/landing-reseed-decision 30000.0 100.0 645.0)))))
+
+(deftest landing-absorbs-residual-in-two-passes-under-driven-scroll
+  ;; The repro class: wrap + synth checkpoints + DrivenScrollActivity. Mid-flight
+  ;; the seam refinement is velocity-suppressed but the origin gate is open
+  ;; (17d1c43), so the frozen walk reaches index 0 carrying the whole estimate
+  ;; error as a CONSTANT residual. The landing correction must reach fixpoint in
+  ;; <= 2 passes: emit once, absorb via the from-:init re-flow, converge.
+  (let [suppressed? (render/refine-suppressed? -1 4000.0 120.0 3200.0)
+        stale (frozen-backfill-to-0 wrapl drift-env 6 ((:approx-offset wrapl) drift-env 6))
+        ^double z0 (double (get stale 0))
+        truth (tw/flow-run-entries wrapl drift-env (wrap-sized 0 8) ((:init wrapl) drift-env))
+        ws 40.0]
+    (testing "the driven flight really is the suppressed+origin-open regime"
+      (is (false? (render/refine-emit? false suppressed?)))
+      (is (true? (render/origin-refine-emit? false))))
+    (testing "the frozen walk leaves index 0 at the constant negative residual —
+              the whole leading-extent underestimate, carried down intact"
+      (is (= -60.0 z0))     ; approx(6)=60 vs truth 120
+      ;; the stale frame is truth uniformly displaced by z0 ⇒ the landing
+      ;; correction + from-:init re-base is pixel-stable
+      (doseq [i (range 7)]
+        (is (= z0 (- ^double (get stale i) ^double (:offset (nth truth i)))))))
+    (testing "correction loop reaches fixpoint in <= 2 passes, emitting exactly once"
+      (let [result
+            (loop [^int pass 1 ^double z z0 emitted? false corrs []]
+              (case (render/landing-decision z (render/origin-refine-emit? false) emitted?)
+                :converged {:passes pass :corrs corrs}
+                :emit
+                (let [^double corr (- z)
+                      ;; the emission records the corrected re-run's expected window
+                      pending (+ ws corr)
+                      reseed (render/landing-reseed-decision pending (+ ws corr) 645.0)
+                      _ (is (= :init-seed reseed))
+                      ;; the :init seed makes the re-run walk from :init for real
+                      from0 (tw/flow-run-entries wrapl drift-env (wrap-sized 0 8)
+                                                 ((:init wrapl) drift-env))]
+                  (recur (inc pass) (double (:offset (nth from0 0))) true (conj corrs corr)))
+                {:passes -1 :corrs corrs}))]
+        (is (= 2 (:passes result)))
+        (is (= [60.0] (:corrs result)))))))
+
+(deftest stale-reseed-rederives-the-residual-forever
+  ;; The crash chain this guards against: after :emit the empty-cache re-seed used
+  ;; to dead-reckon at a SURVIVING child's stale offset (deliberately unmoved by
+  ;; the correction) with stale checkpoints — rebuilding the frozen frame
+  ;; bit-for-bit. The same residual is then re-derived from the same estimation
+  ;; error, and the one-shot misclassifies the honest wrap layout as :violated
+  ;; (the per-frame device assert). A correction must never be derivable twice.
+  (let [stale (frozen-backfill-to-0 wrapl drift-env 6 ((:approx-offset wrapl) drift-env 6))
+        ^double z0 (double (get stale 0))
+        ;; dead-reckon re-seed at the surviving index-4 child's stale offset:
+        ;; the frozen walk reproduces the residual EXACTLY
+        stale2 (frozen-backfill-to-0 wrapl drift-env 4 (double (get stale 4)))
+        ^double z1 (double (get stale2 0))]
+    (is (= z0 z1))   ; same estimation error ⇒ same residual, forever
+    (testing "on the stale frame the one-shot reads it as a contract violation —
+              which is why the re-run must NOT be allowed to rebuild that frame"
+      (is (= :violated (render/landing-decision z1 true true))))
+    (testing "the from-:init re-run the reseed decision forces converges instead"
+      (let [from0 (tw/flow-run-entries wrapl drift-env (wrap-sized 0 2) ((:init wrapl) drift-env))]
+        (is (= :converged (render/landing-decision
+                           (double (:offset (nth from0 0))) true true)))))))
+
+(deftest seam-chain-telescopes-into-one-correction-per-frame
+  ;; The 10-cycle-cap half of the crash: with refinement UNSUPPRESSED, each stale
+  ;; seam above the window used to emit its own correction and END the pass — one
+  ;; viewport layout cycle per seam, so a band of >10 stale seams exceeded the
+  ;; RenderViewport cycle budget in a single frame ("10 times, no consensus").
+  ;; The backfill must instead ADOPT each re-flow, accumulate the deltas, and
+  ;; emit ONE summed correction: the sum telescopes to the total frame error and
+  ;; every seam re-check in the corrected frame is 0 — fixpoint in 2 cycles
+  ;; regardless of seam count.
+  (let [truth (tw/flow-run-entries wrapl drift-env (wrap-sized 0 8) ((:init wrapl) drift-env))
+        {frame :frame ds :ds}
+        (loop [^int cf 6 frame {6 ((:approx-offset wrapl) drift-env 6)} ds []]
+          (if (pos? cf)
+            (let [cp (render/synth-renewal-checkpoint wrapl drift-env (dec cf))
+                  ^int k (int (:index cp))
+                  entries (tw/flow-run-entries wrapl drift-env (wrap-sized k cf) (:state cp))
+                  ^double d (render/refine-seam-delta wrapl drift-env cf (ui/Size 90 40)
+                                                     (:state (peek entries))
+                                                     (double (get frame cf)))
+                  ;; adopt: the reconciled seam shifts everything at/below it by d
+                  ;; (shift-attached-from!), the prefix takes the re-flowed offsets
+                  frame' (into (into {} (map (fn [[i ^double off]] [i (+ off d)])) frame)
+                               (map-indexed (fn [^int j e] [(+ k j) (:offset e)]) entries))]
+              (recur k frame' (conj ds d)))
+            {:frame frame :ds ds}))]
+    (testing "each seam contributes the per-run estimate bias"
+      (is (= [20.0 20.0 20.0] ds)))
+    (testing "the accumulated correction telescopes to the total frame error"
+      (is (= 60.0 (reduce + ds)))
+      (is (= 60.0 (- ^double (:offset (nth truth 6))
+                     ^double ((:approx-offset wrapl) drift-env 6)))))
+    (testing "after adoption the frame IS the from-:init truth — the corrected
+              re-run re-derives nothing (fixpoint at the second cycle)"
+      (doseq [i (range 7)]
+        (is (= (:offset (nth truth i)) (get frame i))))
+      (doseq [^int k [0 2 4]]
+        (let [entries (tw/flow-run-entries wrapl drift-env (wrap-sized k (+ k 2))
+                                           ((:anchor wrapl) drift-env k (double (get frame k))))]
+          (is (= 0.0 (render/refine-seam-delta wrapl drift-env (+ k 2) (ui/Size 90 40)
+                                               (:state (peek entries))
+                                               (double (get frame (+ k 2)))))))))))
+
+;; ============================================================
 ;; WS2 phase E — velocity sensor + directional overscan + regime gate
 ;; ============================================================
 

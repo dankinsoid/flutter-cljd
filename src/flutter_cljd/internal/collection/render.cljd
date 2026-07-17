@@ -130,6 +130,14 @@
                           ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
                           ;; tripwire (assert-materialization-bounded!) — a pass that lays O(gap) children
                           ;; means some path walked a gap instead of seeding geometrically.
+   ^:mutable ^double pendingLandingWs ;; NaN | the window start (scrollOffset+cacheOrigin) the exact-landing
+                          ;; emission expects its corrected re-run at. seed-cache! consumes it
+                          ;; (landing-reseed-decision): near the expectation it FORCES the from-:init seed —
+                          ;; the landing contract — because the usual empty-cache dead-reckon at a surviving
+                          ;; child (whose stale offset the correction deliberately did not move) rebuilds the
+                          ;; STALE frame and re-derives the same residual every pass (the non-convergent
+                          ;; correction loop / per-frame :violated assert). Far from it the frame aborted
+                          ;; mid-correction (viewport cycle cap) — abandon: disarm landingEmitted, seed normally.
    ^:mutable dyingSlots] ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
                           ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
@@ -212,7 +220,8 @@
         ;; are stale (list's are cross-independent, but dropping all is cheap).
         (.-checkpoints! this {})
         (.-anchoredTo0! this false)
-        (.-landingEmitted! this false))
+        (.-landingEmitted! this false)
+        (.-pendingLandingWs! this dc/double.nan))
       ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
       ;; frame's directional overscan window BEFORE dispatching. A playing segment
       ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
@@ -450,7 +459,9 @@
      :converged — index 0 sits at 0: flip anchoredTo0, clear the one-shot.
      :defer     — gated (suppressed / mid-segment): leave the offset model frozen.
      :emit      — drop the cache, emit −z, arm the one-shot; the corrected
-                  re-run re-flows from :init and must land 0 at 0.
+                  re-run re-flows from :init and must land 0 at 0 (seed-cache!
+                  enforces the from-:init walk via landing-reseed-decision —
+                  a dead-reckoned re-seed would re-derive the same residual).
      :violated  — the fresh :init re-flow STILL left index 0 off zero: the
                   layout broke the \":init walk places index 0 at offset 0\"
                   contract. Assert in debug; in release accept z as a constant-
@@ -494,6 +505,30 @@
     (<= (- honest head) underflow-eps) :ok
     (not emit?) :defer
     :else :emit))
+
+(defn landing-reseed-decision
+  "Seed decision for the pass right after an exact-landing emission. `pending-ws`
+   is the window start (scrollOffset+cacheOrigin) the emission recorded for its
+   corrected re-run (NaN = no landing pending); `ws` the current pass's window
+   start; `slack` the tolerated drift (one viewport). The landing contract —
+   \"the corrected re-run re-flows from :init, placing index 0 at 0\" — is what
+   makes the correction ABSORBING: seed-cache!'s usual empty-cache dead-reckon at
+   a surviving attached child (whose stale offset the correction deliberately did
+   not move) would rebuild the stale coordinate frame, re-derive the SAME residual
+   from the SAME estimation error, and misclassify the honest layout as :violated
+   (the device per-frame assert under a DrivenScrollActivity). Returns:
+     :init-seed — the window is where the corrected re-run expects it: force the
+                  from-:init walk (cacheFirst 0, baseState :init).
+     :abandon   — the frame aborted between emission and re-run (viewport cycle
+                  cap) and the window has moved elsewhere: the from-:init premise
+                  is gone — disarm the one-shot state and seed normally.
+     :none      — no landing pending.
+   Pure."
+  [^double pending-ws ^double ws ^double slack]
+  (cond
+    (.-isNaN pending-ws) :none
+    (<= (.abs (- ws pending-ws)) slack) :init-seed
+    :else :abandon))
 
 (def ^:private ^double agg-ema-alpha
   "EMA weight of the current pass's live-window mean in :avg-main/:avg-cross."
@@ -936,7 +971,8 @@
     (when (or layout-changed count-changed)
       (.-checkpoints! rs {})
       (.-anchoredTo0! rs false)
-      (.-landingEmitted! rs false))
+      (.-landingEmitted! rs false)
+      (.-pendingLandingWs! rs dc/double.nan))
     ;; a layout :id change invalidates the survivor's stale offset (it is in the OLD
     ;; layout's space) — flag the next seed-cache! to re-anchor at the NEW layout's
     ;; :approx-offset instead. A count change keeps the same layout space, so its
@@ -1292,9 +1328,31 @@
       (let [idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
             ;; consumed once: the survivor's stale offset is cross-layout (see
             ;; reanchor-offset) only on the first seed after a layout :id change.
-            cross-layout? (.-crossLayoutReanchor rs)]
+            cross-layout? (.-crossLayoutReanchor rs)
+            ;; consumed once: an exact-landing emission last pass requires THIS
+            ;; pass to re-flow from :init (landing-reseed-decision) — the
+            ;; dead-reckon below would rebuild the stale frame and re-derive
+            ;; the same landing residual forever.
+            reseed (landing-reseed-decision (.-pendingLandingWs rs) ws
+                                            (.-remainingPaintExtent c))]
         (.-crossLayoutReanchor! rs false)
+        (when-not (= :none reseed)
+          (.-pendingLandingWs! rs dc/double.nan))
+        (when (= :abandon reseed)
+          ;; frame aborted between emission and re-run, window moved: the
+          ;; "fresh from-:init re-flow" premise behind the :violated one-shot
+          ;; is gone — disarm it so an honest later landing can emit again.
+          (.-landingEmitted! rs false))
         (cond
+          ;; PENDING LANDING: the previous pass emitted the exact-landing
+          ;; correction and dropped cache+checkpoints; the corrected re-run
+          ;; re-flows from :init so index 0 lands at 0 and the residual is
+          ;; absorbed (landing-decision :converged) instead of re-derived.
+          (= :init-seed reseed)
+          (do (.-cacheFirst! rs 0)
+              (.-baseState! rs (init-fn env))
+              (.-anchoredTo0! rs false))
+
           ;; COLD DEEP START: nothing attached and the window sits far down.
           ;; Inverse-seed instead of walking O(n) from 0; a degenerate estimate
           ;; falls back to the from-0 walk (nothing better exists yet).
@@ -1774,9 +1832,18 @@
                                     nil)
                      :defer nil
                      :emit (do (.-cache! rs [])
+                               ;; stale-frame checkpoints would re-seed the OLD
+                               ;; coordinates on the corrected re-run — the
+                               ;; residual would be re-derived, not absorbed
+                               (.-checkpoints! rs {})
                                (.-baseState! rs (init-fn env))
                                (.-anchoredTo0! rs false)
                                (.-landingEmitted! rs true)
+                               ;; where the corrected re-run's window will sit;
+                               ;; seed-cache! consumes it and forces the
+                               ;; from-:init walk (landing-reseed-decision)
+                               (.-pendingLandingWs! rs
+                                 (+ ws (.-overscanBehind rs) (- z)))
                                (- z))
                      :violated
                      (do (when fd/kDebugMode
@@ -2714,7 +2781,7 @@
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     false dc/double.nan 0 (or dyingSlots []))]
+                                     false dc/double.nan 0 dc/double.nan (or dyingSlots []))]
       (set-tween-anim! rs tweenAnim)
       rs))
 
