@@ -11,6 +11,21 @@
 
 (def ^:private venv {:axis :vertical :cross-extent 300.0 :item-count 100})
 
+(defn- ^r/SliverConstraints sliver-constraints [^double cross ^double main]
+  (r/SliverConstraints
+   .axisDirection r/AxisDirection.down
+   .growthDirection r/GrowthDirection.forward
+   .userScrollDirection r/ScrollDirection.idle
+   .scrollOffset 0.0
+   .precedingScrollExtent 0.0
+   .overlap 0.0
+   .remainingPaintExtent main
+   .crossAxisExtent cross
+   .crossAxisDirection r/AxisDirection.right
+   .viewportMainAxisExtent main
+   .remainingCacheExtent main
+   .cacheOrigin 0.0))
+
 (defn- place-all
   "Runs a flow layout's place chain over sizes; returns geometries with the
    state after each placement attached as :state."
@@ -104,22 +119,94 @@
     (testing "anchor levels all columns at the offset"
       (is (= [7.0 7.0 7.0] ((:anchor l) env 3 7.0))))))
 
-;; --- grid (indexed) ---
+;; --- approximate-layout protocol hooks (WS2.2 phase A) ---
 
-(defn- ^r/SliverConstraints sliver-constraints [^double cross ^double main]
-  (r/SliverConstraints
-   .axisDirection r/AxisDirection.down
-   .growthDirection r/GrowthDirection.forward
-   .userScrollDirection r/ScrollDirection.idle
-   .scrollOffset 0.0
-   .precedingScrollExtent 0.0
-   .overlap 0.0
-   .remainingPaintExtent main
-   .crossAxisExtent cross
-   .crossAxisDirection r/AxisDirection.right
-   .viewportMainAxisExtent main
-   .remainingCacheExtent main
-   .cacheOrigin 0.0))
+(defn- monotone-non-decreasing?
+  "True iff (approx-offset env i) never decreases as i climbs 0..n."
+  [layout env ^int n]
+  (loop [i 1 prev ((:approx-offset layout) env 0)]
+    (if (> i n)
+      true
+      (let [cur ((:approx-offset layout) env i)]
+        (if (< (double cur) (double prev))
+          false
+          (recur (inc i) cur))))))
+
+(deftest list-approx-hooks
+  (let [l (lay/list-layout {:spacing 10})
+        env (assoc venv :avg-main 50.0)]
+    (testing "every index is a renewal point (flow state is a scalar offset)"
+      (is (true? ((:renewal-point? l) env 0 {:offset 0.0 :cross 0.0})))
+      (is (true? ((:renewal-point? l) env 7 {:offset 420.0 :cross 0.0}))))
+    (testing "approx-offset advances by (avg-main + spacing) per index"
+      (is (close? 0 ((:approx-offset l) env 0)))
+      (is (close? 60 ((:approx-offset l) env 1)))
+      (is (close? 180 ((:approx-offset l) env 3))))
+    (testing "monotone non-decreasing across a range"
+      (is (monotone-non-decreasing? l env 500))
+      ;; degenerate: no measured/seeded avg → pitch = spacing, still monotone
+      (is (monotone-non-decreasing? l (dissoc env :avg-main) 500)))))
+
+(deftest wrap-approx-hooks
+  (let [l (lay/wrap-layout {:spacing 10 :run-spacing 6})
+        ;; cross 300, avg-cross 90 + spacing 10 = 100 pitch → 3 items/run
+        env (assoc venv :avg-main 50.0 :avg-cross 90.0)]
+    (testing "renewal-point? fires only at a run start (:cross == 0)"
+      (is (true? ((:renewal-point? l) env 4 {:offset 56.0 :cross 0.0})))
+      (is (false? ((:renewal-point? l) env 5 {:offset 56.0 :cross 100.0}))))
+    (testing "approx-offset is per-run: run pitch = avg-main + run-spacing"
+      (is (close? 0 ((:approx-offset l) env 0)))
+      (is (close? 0 ((:approx-offset l) env 2)))
+      (is (close? 56 ((:approx-offset l) env 3)))
+      (is (close? 112 ((:approx-offset l) env 6))))
+    (testing "monotone non-decreasing across a range, and with a nil avg-cross"
+      (is (monotone-non-decreasing? l env 500))
+      (is (monotone-non-decreasing? l (dissoc env :avg-cross) 500)))))
+
+(deftest masonry-approx-hooks
+  (let [l (lay/masonry-layout {:cross-axis-count 3 :main-axis-spacing 6})
+        env (assoc venv :cross-extent 320.0 :avg-main 40.0)]
+    (testing "no renewal-point? hook — engine falls back to a periodic stride"
+      (is (nil? (:renewal-point? l))))
+    (testing "approx-offset advances one row every n indices"
+      (is (close? 0 ((:approx-offset l) env 0)))
+      (is (close? 0 ((:approx-offset l) env 2)))
+      (is (close? 46 ((:approx-offset l) env 3)))
+      (is (close? 46 ((:approx-offset l) env 5)))
+      (is (close? 92 ((:approx-offset l) env 6))))
+    (testing "monotone non-decreasing across a range"
+      (is (monotone-non-decreasing? l env 500)))))
+
+(deftest approx-offset-monotone-mixed
+  (testing "monotone under a spread of aggregate values (mixed measured sizes)"
+    (doseq [am [0.0 12.0 50.0 137.0]
+            ac [0.0 30.0 90.0]]
+      (let [env (assoc venv :cross-extent 300.0 :avg-main am :avg-cross ac)]
+        (is (monotone-non-decreasing? (lay/list-layout {:spacing 8}) env 300))
+        (is (monotone-non-decreasing? (lay/wrap-layout {:spacing 8 :run-spacing 4}) env 300))
+        (is (monotone-non-decreasing? (lay/masonry-layout {:cross-axis-count 4}) env 300))))))
+
+(deftest make-env-aggregates
+  (let [c (sliver-constraints 300.0 600.0)]
+    (testing "no seed and no measurement → nil aggregates"
+      (let [env (lay/make-env c 10)]
+        (is (nil? (:avg-main env)))
+        (is (nil? (:avg-cross env)))))
+    (testing "a bare double seeds only the main aggregate"
+      (let [env (lay/make-env c 10 {:approx-size 40.0})]
+        (is (close? 40 (:avg-main env)))
+        (is (nil? (:avg-cross env)))))
+    (testing "a Size seeds both, split under the (vertical) scroll axis"
+      (let [env (lay/make-env c 10 {:approx-size (ui/Size 20 44)})]
+        (is (close? 44 (:avg-main env)))   ;; height is main
+        (is (close? 20 (:avg-cross env))))) ;; width is cross
+    (testing "measured reality overrides the seed once the window has cells"
+      (let [env (lay/make-env c 10 {:approx-size 40.0
+                                    :measured {:avg-main 55.0 :avg-cross 33.0}})]
+        (is (close? 55 (:avg-main env)))
+        (is (close? 33 (:avg-cross env)))))))
+
+;; --- grid (indexed) ---
 
 (deftest grid-layout-indexed
   (let [l (lay/resolve-layout :grid {:columns 3 :rows {:size 50}})

@@ -77,7 +77,8 @@
    prefetchCallback  ;; (fn [item-or-index])
    ^int prefetchDistance
    ^bool autoKeepAlive
-   extraOpts]        ;; reorder passthrough opts
+   extraOpts         ;; reorder passthrough opts
+   approxItemSize]   ;; approximate-item-size seed (double | Size | nil) — engine cold prior
   :extends (w/StatefulWidget .key k)
 
   (createState [^SliverCollection this]
@@ -239,6 +240,7 @@
          (.-layoutImpl widget)
          (cond-> (assoc opts
                         :key-of key-of
+                        :approximate-item-size (.-approxItemSize widget)
                         :seg-gen (.-gen clock)
                         :entering inserts
                         :exiting exiting
@@ -388,4 +390,5 @@
      (int (or (:prefetch-distance args) 5))
      (boolean (:auto-keep-alive args true))
      (select-keys args [:item-extent :on-reorder-start :on-reorder-end
-                        :proxy-decorator]))))
+                        :proxy-decorator])
+     (:approximate-item-size args))))

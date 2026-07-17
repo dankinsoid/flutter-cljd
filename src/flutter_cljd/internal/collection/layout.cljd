@@ -40,12 +40,43 @@
      :flow-end  (fn [env state] double) — the minimum main-axis offset at
                 which any subsequent child could be placed; tells the engine
                 when the window is filled
-     :anchor    (fn [env index offset] state) — reconstruct a plausible state
-                as if children 0..index-1 ended at `offset`; lets the engine
-                dead-reckon after a cache loss instead of measuring from 0.
-                Optional but strongly recommended.
+     :anchor    (fn [env index offset] state) — reconstruct the flow state as if
+                children 0..index-1 ended at `offset`. TWO MODES, by whether
+                `index` is a renewal point (see :renewal-point?):
+
+                  - EXACT at a renewal point. `index` begins an independent run,
+                    so the true state-before-`index` is a function of `offset`
+                    alone (wrap: an empty run at y=offset; list: the offset
+                    itself). A forward walk seeded here reproduces true geometry —
+                    this is what makes backward re-flow exact (engine seeds
+                    :anchor at a cached run boundary, walks forward).
+
+                  - DEAD-RECKONING elsewhere. At a non-renewal index the real
+                    state depends on items < index that :anchor cannot see, so it
+                    fabricates a PLAUSIBLE state (wrap: a spurious run break;
+                    masonry: level columns). Good enough to resume a walk after
+                    cache loss; NOT exact. Anchoring mid-run at one-child-per-slot
+                    is precisely the old single-left-column bug.
+
+                Optional but strongly recommended; the engine dead-reckons from
+                the first attached child after a cache loss instead of measuring
+                from index 0.
      :estimate  (fn [env last-index end item-count] double) — optional total
                 scroll extent estimate; default is linear extrapolation
+     :renewal-point? (fn [env index frame] bool) — OPTIONAL. Called at each placed
+                index; `frame` is that index's just-placed geometry {:offset :cross}.
+                Returns true iff the flow state BEFORE `index` is EXACTLY
+                reconstructible from (index, offset) via :anchor — i.e. `index`
+                begins a fresh, independent run. The engine retains such indices as
+                exact backward-re-flow checkpoints. Absent → the engine keeps a
+                periodic full-:state checkpoint at an index stride instead.
+     :approx-offset (fn [env index] double) — OPTIONAL. O(1) main-axis offset
+                estimate for an ARBITRARY index, with NO walk. MUST be MONOTONE
+                NON-DECREASING in `index` (the engine binary-searches it to invert
+                offset→index for cold-start / far-jump seeding). Reads the engine's
+                measured aggregates off env (:avg-main / :avg-cross) plus the
+                layout's baked opts. Absent → the engine falls back to a
+                layout-agnostic linear density.
 
    Geometry depends only on the sequence of measured sizes, so the engine
    validates its cache by re-measuring attached children — layouts never
@@ -69,13 +100,40 @@
 
 ;; --- env & size helpers ---
 
+(defn- approx-size->main-cross
+  "Splits an `approximate-item-size` seed (a bare main-extent double, a ui/Size,
+   or nil) into [main cross] under the scroll axis. A bare double seeds only the
+   main aggregate (cross stays nil)."
+  [axis approx-size]
+  (cond
+    (nil? approx-size) [nil nil]
+    (instance? ui/Size approx-size)
+    (if (= :vertical axis)
+      [(double (.-height ^ui/Size approx-size)) (double (.-width ^ui/Size approx-size))]
+      [(double (.-width ^ui/Size approx-size)) (double (.-height ^ui/Size approx-size))])
+    :else [(double approx-size) nil]))
+
 (defn make-env
-  "Builds the env map passed to every layout function."
-  [^r/SliverConstraints c item-count]
-  {:constraints c
-   :axis (if (= r/Axis.vertical (.-axis c)) :vertical :horizontal)
-   :cross-extent (.-crossAxisExtent c)
-   :item-count item-count})
+  "Builds the env map passed to every layout function.
+
+   `agg` (optional) carries the engine's approximate-layout aggregates:
+     {:approx-size <double|ui/Size|nil>   ;; the approximate-item-size cold prior
+      :measured    {:avg-main d :avg-cross d}}  ;; EMA over the live window, or nil
+   The resolved :avg-main / :avg-cross on env are the seed (from :approx-size)
+   until the live window has cells, then measured reality overrides it — the O(1)
+   inputs an :approx-offset implementation reads. Both may be nil before any seed
+   or measurement (an :approx-offset must tolerate that)."
+  ([^r/SliverConstraints c item-count] (make-env c item-count nil))
+  ([^r/SliverConstraints c item-count agg]
+   (let [axis (if (= r/Axis.vertical (.-axis c)) :vertical :horizontal)
+         [seed-main seed-cross] (approx-size->main-cross axis (:approx-size agg))
+         measured (:measured agg)]
+     {:constraints c
+      :axis axis
+      :cross-extent (.-crossAxisExtent c)
+      :item-count item-count
+      :avg-main (or (:avg-main measured) seed-main)
+      :avg-cross (or (:avg-cross measured) seed-cross)})))
 
 (defn ^double size-main
   "Main-axis extent of a measured Size under env's scroll axis."
@@ -153,7 +211,12 @@
                 [{:offset offset :cross 0.0}
                  (+ offset (size-main env size) spacing)])
        :flow-end (fn [_env ^double state] state)
-       :anchor (fn [_env _i ^double offset] offset)})))
+       :anchor (fn [_env _i ^double offset] offset)
+       ;; every index begins its own run — flow state is a scalar offset the
+       ;; :anchor reconstructs exactly, so every index is a renewal point.
+       :renewal-point? (fn [_env _i _frame] true)
+       :approx-offset (fn [env ^int i]
+                        (* i (+ (double (or (:avg-main env) 0.0)) spacing)))})))
 
 (defn wrap-layout
   "Rows (or columns, for horizontal scroll) of self-sized children, packed
@@ -182,7 +245,18 @@
                     [{:offset ny :cross 0.0}
                      {:x cw :y ny :h ch}]))))
      :flow-end (fn [_env state] (:y state))
-     :anchor (fn [_env _i ^double offset] {:x nil :y offset :h 0.0})}))
+     :anchor (fn [_env _i ^double offset] {:x nil :y offset :h 0.0})
+     ;; :cross == 0 marks the first item of a run — the state before it is an
+     ;; empty run at that offset, exactly what :anchor reconstructs.
+     :renewal-point? (fn [_env _i frame] (= 0.0 (double (:cross frame))))
+     :approx-offset (fn [env ^int i]
+                      (let [^double ac (double (or (:avg-cross env) 0.0))
+                            ^double pitch (+ ac sp)
+                            ^int per-run (if (pos? pitch)
+                                           (math/max 1 (.floor ^double (/ ^double (:cross-extent env) pitch)))
+                                           1)
+                            ^int run-idx (.floor ^double (/ i per-run))]
+                        (* run-idx (+ (double (or (:avg-main env) 0.0)) rsp))))}))
 
 (defn masonry-layout
   "Staggered columns: each child lands in the currently shortest column.
@@ -214,7 +288,12 @@
                  (assoc heights col (+ off (size-main env size) rsp))]))
      :flow-end (fn [_env heights]
                  (reduce (fn [^double a ^double b] (if (< b a) b a)) heights))
-     :anchor (fn [_env _i ^double offset] (vec (repeat n offset)))}))
+     :anchor (fn [_env _i ^double offset] (vec (repeat n offset)))
+     ;; No :renewal-point? — a column pack has no cheap exact boundary, so the
+     ;; engine falls back to periodic full-:state checkpoints (docs §2.1).
+     :approx-offset (fn [env ^int i]
+                      (* (.floor ^double (/ i n))
+                         (+ (double (or (:avg-main env) 0.0)) rsp)))}))
 
 ;; --- Built-in indexed layout (grid) ---
 

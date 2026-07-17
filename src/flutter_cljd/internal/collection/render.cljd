@@ -80,10 +80,14 @@
                           ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
    ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse (off when a custom :insert builder owns it)
    ^:mutable ^bool fadeExit  ;; fade exiting cells 1→0 with the collapse (off when a custom :remove builder owns it)
-   ^:mutable prevLayout]  ;; the layout the cells were resting under just before a layout-change segment (nil
+   ^:mutable prevLayout   ;; the layout the cells were resting under just before a layout-change segment (nil
                           ;; otherwise); segment-start! builds an `old-src` frame-source over it so a cell
                           ;; arriving into the viewport gets its OLD frame (size + relative position) and morphs
                           ;; instead of popping in at target (docs §7c). Consumed and cleared per segment.
+   ^:mutable approxSize   ;; approximate-item-size seed (double | ui/Size | nil) — the cold prior for
+                          ;; :avg-main/:avg-cross before any cell is measured (WS2.2 §1.1)
+   ^:mutable measuredAgg] ;; nil | {:avg-main d :avg-cross d} — EMA over the live window; overrides the
+                          ;; seed once cells exist. Populated by the consuming phase (flying regime); nil here.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -174,13 +178,19 @@
         :else
         (indexed-layout! this (.-segTween this) c))
       (.-passTick! this (inc (.-passTick this)))
-      (commit-pass! this (lay/make-env c (.-itemCount this)))))
+      (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this)))))
 
   (dispose [^CollectionRenderSliver this]
     (when-let [l (.-tweenListener this)]
       (when-let [^a/Animation anim (.-tweenAnim this)]
         (.removeListener anim l)))
     (.dispose ^super this)))
+
+(defn- env-agg
+  "The approximate-layout aggregates make-env carries: the approximate-item-size
+   seed plus the engine's measured EMA (nil until a consuming phase populates it)."
+  [^CollectionRenderSliver rs]
+  {:approx-size (.-approxSize rs) :measured (.-measuredAgg rs)})
 
 ;; --- keyed rect commit (v2 persistent {key -> content-space rect}) ---
 
@@ -378,7 +388,7 @@
   [^CollectionRenderSliver rs]
   (when-let [fc (.-firstChild rs)]
     (let [^r/SliverConstraints c (.-constraints rs)
-          env (lay/make-env c (.-itemCount rs))]
+          env (lay/make-env c (.-itemCount rs) (env-agg rs))]
       (loop [child fc frames [] base (.indexOf rs ^r/RenderBox fc)]
         (if child
           (let [^r/RenderBox ch child
@@ -406,7 +416,7 @@
   [^CollectionRenderSliver rs to-layout]
   (when-let [fc (.-firstChild rs)]
     (let [^r/SliverConstraints c (.-constraints rs)
-          env (lay/make-env c (.-itemCount rs))
+          env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare to-layout)] (assoc env :ctx (prep env)) env)
           measure-fn (:measure to-layout)
           ^int base (.indexOf rs ^r/RenderBox fc)
@@ -441,7 +451,7 @@
    total — no end-of-segment snap. Guards all-attached-dying (empty survivors →
    empty frames, gap frames fall back to extent)."
   [^CollectionRenderSliver rs to-layout ^r/SliverConstraints c]
-  (let [env (lay/make-env c (.-itemCount rs))
+  (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
         env (if-let [prep (:prepare to-layout)] (assoc env :ctx (prep env)) env)
         exiting (.-exiting rs)
         exiting-key? (fn [^int i] (contains? exiting (key-for rs i)))
@@ -802,7 +812,7 @@
     ;; §8a: flow children are never engine-clipped — clear any stale clip map
     ;; left by a prior indexed segment so it doesn't paint-clip this flow pass.
     (.-clips! rs {})
-    (let [env (lay/make-env c (.-itemCount rs))
+    (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
           ^double ws (+ so (.-cacheOrigin c))
@@ -915,7 +925,7 @@
     (.setDidUnderflow mgr false)
     ;; §8a: fresh clip map each pass; a resting/non-collapsing frame leaves it {}.
     (.-clips! rs {})
-    (let [env (lay/make-env c (.-itemCount rs))
+    (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           geo-fn (:geometry layout)
           ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
@@ -1098,7 +1108,7 @@
    just materialized plus the kept leave-slides (§7b) — at t≈0 exactly the
    visible set (a leaving cell's lerp starts at its committed rect)."
   [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
-  (let [env (lay/make-env c (.-itemCount rs))
+  (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
         env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
         geo-fn (:geometry layout)
         item-count (:item-count env)
@@ -1213,7 +1223,7 @@
                                                     (conj! acc c))
                                              (persistent! acc)))]
                          (fn [^int i] (nth live-before i))))
-        env (lay/make-env c (.-itemCount rs))
+        env (lay/make-env c (.-itemCount rs) (env-agg rs))
         ctx ((:prepare to-src) env)
         ;; §7c: `from` = committed ∪ edge slide for cells entering the viewport.
         ;; UNIVERSAL (flow + indexed): an entering cell has no committed rect, so
@@ -1332,18 +1342,20 @@
    exiting      ;; set of keys wiping shut this segment
    keyOf        ;; (fn [^int i] -> key) | nil ⇒ animation key = the index
    ^bool fadeEnter  ;; fade entering cells with the collapse (default enter/exit fade)
-   ^bool fadeExit]  ;; fade exiting cells with the collapse
+   ^bool fadeExit   ;; fade exiting cells with the collapse
+   approxSize]  ;; approximate-item-size seed (double | ui/Size | nil) — cold prior for :avg-main/:avg-cross
   :extends (w/SliverMultiBoxAdaptorWidget .delegate del .key k)
 
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil)]
+                                     fadeEnter fadeExit nil approxSize nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
+    (.-approxSize! ^CollectionRenderSliver render-object approxSize)
     (update-render! render-object layoutImpl itemCount tweenAnim segGen entering exiting keyOf
                     fadeEnter fadeExit)))
 
@@ -1351,7 +1363,9 @@
   "Creates the collection sliver from a builder, item count (nil = infinite),
    the PLAIN target layout map and options {:key :find-child-index :auto-keep-alive
    :repaint-boundaries :semantic-indexes :tween-anim :seg-gen :entering :exiting
-   :key-of :fade-entering :fade-exiting}. :fade-entering/:fade-exiting fade the
+   :key-of :fade-entering :fade-exiting :approximate-item-size}.
+   :approximate-item-size is the cold prior (double | ui/Size) seeding the engine's
+   :avg-main/:avg-cross aggregates before any cell is measured (WS2.2 §1.1). :fade-entering/:fade-exiting fade the
    collapsing cells with the same window (the default enter/exit opacity), off when
    a custom builder owns that direction. The engine builds the segment tween itself:
    :tween-anim is the segment Animation, :seg-gen an int bumped once per segment
@@ -1374,4 +1388,5 @@
    (:exiting opts #{})
    (:key-of opts)
    (boolean (:fade-entering opts))
-   (boolean (:fade-exiting opts))))
+   (boolean (:fade-exiting opts))
+   (:approximate-item-size opts)))
