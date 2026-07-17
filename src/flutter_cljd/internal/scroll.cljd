@@ -1,4 +1,5 @@
 (ns flutter-cljd.internal.scroll
+  (:refer-clojure :exclude [list*])
   (:require
    ["package:flutter/material.dart" :as m]
    ["package:flutter/widgets.dart" :as w]
@@ -35,9 +36,9 @@
       (ut/key-values-args-and-children
        (if source (cons source raw-args) raw-args)))))
 
-;; --- list-view ---
+;; --- list ---
 
-(defn ^m/Widget list-view* [raw-args]
+(defn ^m/Widget list* [raw-args]
   (let [[args children] (parse-scroll-args raw-args)
         key (t/widget-key (:key args))
         direction (t/axis (or (:axis args) :vertical))
@@ -116,7 +117,7 @@
        .addSemanticIndexes add-semantic-indexes
        .children children))))
 
-;; --- grid-view ---
+;; --- grid ---
 
 (defn- parse-grid-args
   "Like `parse-scroll-args` but keeps the raw data source so it can be handed
@@ -131,7 +132,7 @@
     (if (fn? l)
       (do
         (when (fn? (last (butlast rst)))
-          (throw (Exception. "grid-view: separator builders are not supported")))
+          (throw (Exception. "grid: separator builders are not supported")))
         (let [args (ut/key-values-map (butlast rst))]
           [(if (map? args) args {}) source l nil]))
       (let [[args children] (ut/key-values-args-and-children
@@ -173,7 +174,7 @@
              forwarded
              [builder]))))
 
-(defn ^m/Widget grid-view* [raw-args]
+(defn ^m/Widget grid* [raw-args]
   (let [[args source builder children] (parse-grid-args raw-args)]
     ;; Builder reads the ambient Directionality: an omitted :flow defaults to
     ;; RTL where appropriate (only the default [:right :down] vertical-scroll
@@ -184,7 +185,7 @@
       (let [text-dir (when (= m/TextDirection.rtl (m/Directionality.maybeOf ctx)) :rtl)
         parsed (grid-opts/parse args text-dir)
         normalized (grid-opts/scroll-normalize parsed (:anchor args))
-        ;; grid-view owns its whole viewport (single sliver), so an explicit
+        ;; grid owns its whole viewport (single sliver), so an explicit
         ;; stack-axis :align means "distribute the leftover" — lift :fit to
         ;; :fill unless the caller pinned it. Bare slivers keep the :content
         ;; default: there the claim affects sibling slivers.
@@ -207,7 +208,7 @@
                      source (count source)
                      children (count children)
                      (:item-count args) (int (:item-count args))
-                     :else (throw (Exception. "grid-view needs a finite item count — pass a data source, static children, or :item-count")))
+                     :else (throw (Exception. "grid needs a finite item count — pass a data source, static children, or :item-count")))
         sliver (grid-collection-sliver args normalized item-count source builder children)
         sliver (if-let [padding (:padding args)]
                  (w/SliverPadding .padding (t/insets padding) .sliver sliver)
@@ -224,10 +225,10 @@
      .cacheExtent (some-> (:cache-extent args) double)
      .slivers [sliver]))))))
 
-;; --- collection-view ---
+;; --- collection ---
 
-(defn- parse-collection-view-args
-  "Splits collection-view args into [opts source builder]. First positional is
+(defn- parse-collection-args
+  "Splits collection args into [opts source builder]. First positional is
    an optional data source (collection or int count), last is the required
    builder fn, keyword/value pairs sit between (a leading opts map is merged).
    The source stays raw so sliver-collection can diff it (:key-fn, :animate)."
@@ -238,7 +239,7 @@
                        [nil raw-args])
         l (last rst)]
     (when-not (fn? l)
-      (throw (Exception. "collection-view requires a builder function as the last argument")))
+      (throw (Exception. "collection requires a builder function as the last argument")))
     (let [args (ut/key-values-map (butlast rst))]
       [(if (map? args) args {}) source l])))
 
@@ -248,8 +249,8 @@
   #{:key :axis :reverse :controller :primary :physics :shrink-wrap :clip
     :cache-extent :padding})
 
-(defn ^m/Widget collection-view* [raw-args]
-  (let [[args source builder] (parse-collection-view-args raw-args)
+(defn ^m/Widget collection* [raw-args]
+  (let [[args source builder] (parse-collection-args raw-args)
         sliver-opts (apply dissoc args collection-scroll-keys)
         sliver-args (concat (when source [source])
                             (mapcat identity sliver-opts)
@@ -270,9 +271,9 @@
      .cacheExtent (some-> (:cache-extent args) double)
      .slivers [sliver])))
 
-;; --- custom-scroll-view ---
+;; --- custom-scroll ---
 
-(defn ^m/Widget custom-scroll-view* [args slivers]
+(defn ^m/Widget custom-scroll* [args slivers]
   (m/CustomScrollView
    .key (t/widget-key (:key args))
    .scrollDirection (t/axis (or (:axis args) :vertical))
@@ -288,9 +289,9 @@
    .semanticChildCount (some-> (:semantic-child-count args) int)
    .slivers slivers))
 
-;; --- single-child-scroll-view ---
+;; --- single-child-scroll ---
 
-(defn ^w/Widget single-child-scroll-view* [args child]
+(defn ^w/Widget single-child-scroll* [args child]
   (w/SingleChildScrollView
    .key (t/widget-key (:key args))
    .scrollDirection (t/axis (or (:axis args) :vertical))
@@ -372,7 +373,7 @@
        (let [text-dir (when (= w/TextDirection.rtl (w/Directionality.maybeOf ctx)) :rtl)
              normalized (grid-opts/scroll-normalize (grid-opts/parse args text-dir) (:anchor args))]
          (when (or (:reverse normalized) (:remap normalized))
-           (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view, or reverse your custom-scroll-view and use a forward :flow")))
+           (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid, or reverse your custom-scroll and use a forward :flow")))
          (grid-collection-sliver args normalized item-count source builder children))))))
 
 (defn ^w/Widget sliver-to-box-adapter* [args child]

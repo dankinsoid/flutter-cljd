@@ -14,7 +14,7 @@
               .title (m/Text "flutter-cljd Demo")
               .centerTitle true)
     .body
-    (->> (f/grid-view
+    (->> (f/grid
            :columns {:count 2 :gap 16}
            :rows {:size {:aspect 1.2} :gap 16}
            categories/categories

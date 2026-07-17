@@ -100,7 +100,7 @@
 
 (deftest anchor-end-shape
   ;; 7 items, 3 columns, pad 2 → line 0 holds 1 item; reversed data order
-  ;; is the caller's job (grid-view), the layout only pads and mirrors.
+  ;; is the caller's job (grid), the layout only pads and mirrors.
   (let [opts (assoc base :anchor :end)]
     (testing "first line is partial, the last exactly full"
       (let [[layout env] (env-for opts 7 {:cross 300 :main 500})]

@@ -1,5 +1,6 @@
 (ns flutter-cljd.widgets
   "The Flutter widgets framework. [Docs](https://api.flutter.dev/flutter/widgets/widgets-library.html)"
+  (:refer-clojure :exclude [list])
   (:require
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.inherited-keys :as inh]
@@ -2580,7 +2581,7 @@ Options:
 
 ;; ---- Scroll widgets ----
 
-(defn ^w/Widget list-view
+(defn ^w/Widget list
   "Scrollable list of widgets.
 
 Trailing `fn` → lazy builder `(fn [ctx item-or-index] ...)`.
@@ -2591,17 +2592,17 @@ Examples:
 
 ```clojure
 ;; static children
-(list-view (text \"A\") (text \"B\") (text \"C\"))
+(list (text \"A\") (text \"B\") (text \"C\"))
 ;; builder from collection — fn receives element
-(list-view items (fn [ctx item] (text (:name item))))
+(list items (fn [ctx item] (text (:name item))))
 ;; builder from count — fn receives index
-(list-view 100 (fn [ctx i] (text (str i))))
+(list 100 (fn [ctx i] (text (str i))))
 ;; separated — second fn builds separators
-(list-view items
+(list items
            (fn [ctx item] (text (:name item)))
            (fn [ctx i] (divider)))
 ;; infinite builder (no data source)
-(list-view (fn [ctx i] (text (str i))))
+(list (fn [ctx i] (text (str i))))
 ```
 
 Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
@@ -2611,10 +2612,10 @@ Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
 Extra: `:item-extent`,
 `:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
   [& args]
-  (scrl/list-view* args))
+  (scrl/list* args))
 
-(defn ^w/Widget grid-view
-  "Scrollable flexible grid — a `custom-scroll-view` + `sliver-collection`
+(defn ^w/Widget grid
+  "Scrollable flexible grid — a `custom-scroll` + `sliver-collection`
 under the hood, so `:animate`/`:key-fn`/`:on-prefetch` work here too.
 
 Everything is screen-absolute: `:columns` are vertical tracks, `:rows` are
@@ -2628,20 +2629,20 @@ Examples:
 
 ```clojure
 ;; 3 columns, square cells, 8px gaps
-(grid-view items :columns {:count 3 :gap 8} :rows {:size {:aspect 1} :gap 8}
+(grid items :columns {:count 3 :gap 8} :rows {:size {:aspect 1} :gap 8}
            (fn [ctx item] (tile item)))
 ;; adaptive: as many ≥120px columns as fit, stretched evenly
-(grid-view items :columns {:size {:min 120 :flex 1} :gap 12} :rows {:size 80}
+(grid items :columns {:size {:min 120 :flex 1} :gap 12} :rows {:size 80}
            (fn [ctx item] (tile item)))
 ;; fixed cells spread apart, partial last row centered
-(grid-view items :columns {:count 4 :size 64 :align :space-between}
+(grid items :columns {:count 4 :size 64 :align :space-between}
            :rows {:size 64 :gap 8} :line-align :center tile)
 ;; chat: normal order, viewport anchored to the bottom
-(grid-view messages :columns 1 :anchor :end (fn [ctx m] (bubble m)))
+(grid messages :columns 1 :anchor :end (fn [ctx m] (bubble m)))
 ;; bottom-up fill
-(grid-view items :columns 2 :flow [:right :up] tile)
+(grid items :columns 2 :flow [:right :up] tile)
 ;; horizontal: fill columns downward, scroll right
-(grid-view items :rows {:count 3} :columns {:size 100 :gap 8}
+(grid items :rows {:count 3} :columns {:size 100 :gap 8}
            :flow [:down :right] tile)
 ```
 
@@ -2663,7 +2664,7 @@ Axis options (`:columns` / `:rows` — a number is shorthand for `{:count n}`):
   lines (so there is no leftover and `:align`/flex are inert); `:fill` — claim
   the whole viewport so `:align` and flex lines/gaps have room; overflowing
   content just scrolls either way. Default is `:content`, but an explicit
-  `:align` on this axis lifts it to `:fill` (in `grid-view` the sliver is
+  `:align` on this axis lifts it to `:fill` (in `grid` the sliver is
   alone, so claiming the viewport costs nothing); `:shrink-wrap` forces
   `:content` back.
 
@@ -2674,7 +2675,7 @@ Grid options:
   axis = the stack direction's axis. When omitted, the horizontal side follows
   the ambient `Directionality`: `[:right :down]` under LTR, `[:left :down]`
   under RTL. An explicit `:flow` is screen-absolute — it renders the same
-  regardless of `Directionality` (grid-view compensates the horizontal
+  regardless of `Directionality` (grid compensates the horizontal
   viewport flip Flutter applies under RTL; a bare `sliver-grid` can't — its
   stack direction is in scroll order, set by the enclosing scroll view).
 - `:line-align` — justify a partial line's items within the track block (same
@@ -2693,12 +2694,12 @@ needs and scrolls once it overflows; forces the stack `:fit` to `:content`),
 `:padding`, `:clip`, `:cache-extent`. (`:axis`/`:reverse` are gone — `:flow`
 covers both.)"
   [& args]
-  (scrl/grid-view* args))
+  (scrl/grid* args))
 
-(defn ^w/Widget collection-view
-  "Scrollable host for a collection layout — a `custom-scroll-view` wrapping one
+(defn ^w/Widget collection
+  "Scrollable host for a collection layout — a `custom-scroll` wrapping one
 `sliver-collection`, with the scroll options split out. The generalization of
-`list-view`: `:layout` is free (`:list`/`:wrap`/`:masonry`/`:grid`, a layout map
+`list`: `:layout` is free (`:list`/`:wrap`/`:masonry`/`:grid`, a layout map
 from `flutter-cljd.layouts`, or a `SliverGridDelegate`) and every collection
 feature — `:key-fn`/`:animate`/`:reorderable`/`:on-prefetch` — works here.
 
@@ -2715,17 +2716,17 @@ Examples:
 
 ```clojure
 ;; wrap layout via keyword shortcut — options in the arg stream
-(collection-view tags :layout :wrap :spacing 8 :run-spacing 4
+(collection tags :layout :wrap :spacing 8 :run-spacing 4
   (fn [ctx tag] (chip tag)))
 ;; same, but layout options packed in a layouts map
-(collection-view tags :layout (l/wrap :spacing 8 :run-spacing 4)
+(collection tags :layout (l/wrap :spacing 8 :run-spacing 4)
   (fn [ctx tag] (chip tag)))
 ;; masonry with insert/remove animations
-(collection-view photos :layout (l/masonry :cross-axis-count 2)
+(collection photos :layout (l/masonry :cross-axis-count 2)
   :key-fn :id :animate true
   (fn [ctx photo] (photo-card photo)))
 ;; a plain list (default layout) with padding and reorder
-(collection-view items :padding 16 :reorderable true
+(collection items :padding 16 :reorderable true
   :on-reorder (fn [from to] (swap! ...))
   (fn [ctx item] (row-tile item)))
 ```
@@ -2740,13 +2741,13 @@ Everything else — `:layout` and its options, `:item-count`, `:key-fn`,
 contract and the full option reference).
 
 `:layout :grid` behaves as in a bare `sliver-collection` (forward `:flow`
-stacking only); for grids prefer `grid-view`, which owns the scroll view and so
+stacking only); for grids prefer `grid`, which owns the scroll view and so
 handles reversed flows, `:anchor :end`, and RTL compensation."
   [& args]
-  (scrl/collection-view* args))
+  (scrl/collection* args))
 
-(defn ^w/Widget grid
-  "Bounded, non-scrolling flexible grid — the box counterpart of `grid-view`,
+(defn ^w/Widget grid-box
+  "Bounded, non-scrolling flexible grid — the box counterpart of `grid`,
 same option language (`:columns`/`:rows`/`:flow`/`:line-align`/`:item-align`),
 no scroll options. Lays all children out at once (no virtualization). For
 calendars, keypads, toolbars, bento layouts.
@@ -2758,13 +2759,13 @@ Examples:
 
 ```clojure
 ;; 7-column month grid, 44px rows, 4px gaps
-(grid :columns {:count 7 :gap 4} :rows {:size 44 :gap 4}
+(grid-box :columns {:count 7 :gap 4} :rows {:size 44 :gap 4}
       (for [d days] (day-cell d)))
 ;; fixed 64px cells, block centered, content-height
-(grid :columns {:count 4 :size 64 :align :center} :rows {:size 64}
+(grid-box :columns {:count 4 :size 64 :align :center} :rows {:size 64}
       (map icon-tile icons))
 ;; keypad pinned to the bottom of the available height
-(grid :columns 3 :rows {:size 56 :gap 8 :align :bottom :fit :fill}
+(grid-box :columns 3 :rows {:size 56 :gap 8 :align :bottom :fit :fill}
       (map key-cap keys))
 ```
 
@@ -2772,7 +2773,7 @@ Unlike the scrollable grid, `:fit` works on BOTH axes here (`:fill` — span the
 incoming constraint / `:content` — hug the tracks; defaults: fill axis `:fill`,
 stack axis `:content`), an unbounded incoming constraint always shrink-wraps,
 and all 8 `:flow` directions are available (no virtualization constraints).
-See `grid-view` for the axis-spec/sizer/align reference."
+See `grid` for the axis-spec/sizer/align reference."
   [& args]
   (let [[opts children] (ut/key-values-args-and-children args)
         children (if (and (= 1 (count children)) (sequential? (first children)))
@@ -2780,11 +2781,11 @@ See `grid-view` for the axis-spec/sizer/align reference."
                    children)]
     (grid-box/box-grid opts children)))
 
-(defn ^w/Widget collection
+(defn ^w/Widget collection-box
   "Bounded, non-scrolling widget driven by a collection layout — the box
 counterpart of `sliver-collection`. Same pluggable layouts, no virtualization:
 every child is measured and placed in one pass and the box sizes itself to
-the content (like `grid` next to `grid-view`).
+the content (like `grid-box` next to `grid`).
 
 First argument picks the layout: `:list` | `:wrap` | `:masonry` | `:grid` |
 `SliverGridDelegate` (interop) | a layout map — e.g. from
@@ -2796,11 +2797,11 @@ Examples:
 
 ```clojure
 ;; tag cloud — the box counterpart of a Wrap
-(collection :wrap :spacing 8 :run-spacing 4 (for [t tags] (chip t)))
+(collection-box :wrap :spacing 8 :run-spacing 4 (for [t tags] (chip t)))
 ;; bounded masonry, no scroll
-(collection (l/masonry :cross-axis-count 3) (map photo-card photos))
+(collection-box (l/masonry :cross-axis-count 3) (map photo-card photos))
 ;; horizontal flow
-(collection :wrap :axis :horizontal :spacing 6 (map chip tags))
+(collection-box :wrap :axis :horizontal :spacing 6 (map chip tags))
 ```
 
 Options:
@@ -2821,39 +2822,39 @@ Options:
 The cross axis must be bounded (a layout packs against it); the main axis may
 be unbounded — the box shrink-wraps to its content either way, and content
 overflowing a bounded main axis just overflows (no clipping, no scrolling —
-that's `sliver-collection`'s job). For grids prefer `grid`/`grid-view`: this
-host runs `:grid` with forward flows and stack-axis `:fit` only, while `grid`
+that's `sliver-collection`'s job). For grids prefer `grid-box`/`grid`: this
+host runs `:grid` with forward flows and stack-axis `:fit` only, while `grid-box`
 resolves `:fit`/`:align` on both axes and supports all 8 flows."
   [layout & args]
   (let [[opts children] (ut/key-values-args-and-children args)]
     (cbox/collection-box (clay/resolve-layout layout opts) opts children)))
 
-(defn ^w/Widget custom-scroll-view
+(defn ^w/Widget custom-scroll
   "Scroll view composed of slivers.
 
 Examples:
 
 ```clojure
-(custom-scroll-view
+(custom-scroll
   (sliver-app-bar :title (text \"Title\") :floating true)
   (sliver-list (text \"A\") (text \"B\")))
-(custom-scroll-view :physics :bouncing sliver1 sliver2)
+(custom-scroll :physics :bouncing sliver1 sliver2)
 ```
 
 Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:shrink-wrap`, `:clip`, `:cache-extent`, `:center`, `:anchor`, `:semantic-child-count`."
   [& args]
   (let [[args slivers] (ut/key-values-args-and-children args)]
-    (scrl/custom-scroll-view* args slivers)))
+    (scrl/custom-scroll* args slivers)))
 
-(defn ^w/Widget single-child-scroll-view
+(defn ^w/Widget single-child-scroll
   "Makes a single child scrollable.
 
 Examples:
 
 ```clojure
-(single-child-scroll-view (column (text \"A\") (text \"B\")))
-(single-child-scroll-view :axis :horizontal child)
+(single-child-scroll (column (text \"A\") (text \"B\")))
+(single-child-scroll :axis :horizontal child)
 ```
 
 Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
@@ -2861,10 +2862,10 @@ Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:drag-start-behavior` (`:start`/`:down`)."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
-    (scrl/single-child-scroll-view* args child)))
+    (scrl/single-child-scroll* args child)))
 
 (defn ^w/Widget scrollable
-  "Low-level scrollable widget. Prefer `list-view`, `grid-view`, or `single-child-scroll-view`
+  "Low-level scrollable widget. Prefer `list`, `grid`, or `single-child-scroll`
 unless you need direct viewport control.
 
 `:view-builder` is `(fn [context offset] widget)` — builds the viewport given a scroll offset.
@@ -2880,8 +2881,8 @@ Options: `:axis-direction` (`:down`/`:up`/`:left`/`:right`), `:controller`, `:ph
 Examples:
 
 ```clojure
-(scrollbar (list-view (text \"A\") (text \"B\")))
-(scrollbar :thickness 6 :radius 3 (list-view ...))
+(scrollbar (list (text \"A\") (text \"B\")))
+(scrollbar :thickness 6 :radius 3 (list ...))
 ```
 
 Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
@@ -2893,7 +2894,7 @@ Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
 ;; ---- Slivers ----
 
 (defn ^w/Widget sliver-list
-  "Sliver that displays children in a list. Use inside `custom-scroll-view`.
+  "Sliver that displays children in a list. Use inside `custom-scroll`.
 
 Examples:
 
@@ -2907,12 +2908,12 @@ Examples:
 
 (defn ^w/Widget sliver-grid
   "Sliver that displays children in a flexible grid. Use inside
-`custom-scroll-view`. Same option language as `grid-view` (see there for the
+`custom-scroll`. Same option language as `grid` (see there for the
 full reference), minus the scroll options.
 
 A bare sliver cannot reverse its scroll view, so upward/leftward `:flow`
-stacking and `:anchor :end` are `grid-view`-only — here either use a forward
-`:flow` or reverse the enclosing `custom-scroll-view` yourself. For the same
+stacking and `:anchor :end` are `grid`-only — here either use a forward
+`:flow` or reverse the enclosing `custom-scroll` yourself. For the same
 reason the stack direction here is in SCROLL order, not screen order: in a
 horizontal scroll view under RTL the viewport itself runs right-to-left.
 
@@ -2927,13 +2928,13 @@ Examples:
   (scrl/sliver-grid* args))
 
 (defn ^w/Widget sliver-to-box-adapter
-  "Wraps a regular (box) widget so it can be used inside `custom-scroll-view`."
+  "Wraps a regular (box) widget so it can be used inside `custom-scroll`."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/sliver-to-box-adapter* args child)))
 
 (defn ^w/Widget sliver-padding
-  "Adds padding around a sliver. Use inside `custom-scroll-view`.
+  "Adds padding around a sliver. Use inside `custom-scroll`.
 
 Examples:
 
@@ -2945,7 +2946,7 @@ Examples:
   (scrl/sliver-padding* {:padding padding} sliver))
 
 (defn ^w/Widget sliver-fill-remaining
-  "Sliver that fills the remaining space in the viewport. Use inside `custom-scroll-view`.
+  "Sliver that fills the remaining space in the viewport. Use inside `custom-scroll`.
 
 Options: `:has-scroll-body` (default `true`), `:fill-overscroll`."
   [& args]
@@ -2953,7 +2954,7 @@ Options: `:has-scroll-body` (default `true`), `:fill-overscroll`."
     (scrl/sliver-fill-remaining* args child)))
 
 (defn ^w/Widget sliver-app-bar
-  "Material sliver app bar for use inside `custom-scroll-view`.
+  "Material sliver app bar for use inside `custom-scroll`.
 
 Examples:
 
@@ -2971,7 +2972,7 @@ Options: `:title`, `:leading`, `:actions`, `:flexible-space`, `:floating`, `:pin
 
 (defn ^w/Widget sliver-collection
   "Data-driven sliver with pluggable lazy layouts — a UICollectionView-style
-building block for `custom-scroll-view`. Supports custom layouts, diffable
+building block for `custom-scroll`. Supports custom layouts, diffable
 insert/remove animations, position-based move animations, drag-to-reorder,
 prefetching, and auto keep-alive.
 
@@ -3008,7 +3009,7 @@ Layout (default `:list`):
   result.
 - `:list` options: `:item-extent` (fixed main-axis size), `:spacing`
 - `:grid` options: the flexible-grid language — `:columns`, `:rows`, `:flow`,
-  `:line-align` (see `grid-view`; forward `:flow` stacking only — a bare
+  `:line-align` (see `grid`; forward `:flow` stacking only — a bare
   sliver cannot reverse its scroll view)
 - `:wrap` options: `:spacing`, `:run-spacing`
 - `:masonry` options: `:cross-axis-count`, `:cross-axis-spacing`,
@@ -3067,7 +3068,7 @@ Overscan (velocity-scaled directional read-ahead, on by default):
   a sustained fast fling (offsets estimated from the average cell size, landing on
   real refined geometry as it decelerates) — off by default because it trades
   transient placement fidelity for cheaper far-fling frames. No-op on the box
-  `collection`.
+  host `collection-box`.
 - `:approximate-item-size` — a `double` main-extent or `Size` cold prior for the
   engine's average-cell estimate before any cell is measured (improves cold-start
   and fast-fling placement)

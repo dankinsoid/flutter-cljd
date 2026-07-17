@@ -351,10 +351,10 @@
    Accepts a layout map (used as-is), :list/:grid/:wrap/:masonry keywords,
    or a SliverGridDelegate instance (interop).
 
-   `:grid` is the flexible grid (see `flutter-cljd.widgets/grid-view` for the
+   `:grid` is the flexible grid (see `flutter-cljd.widgets/grid` for the
    option language). Inside a bare sliver the stack must run forward — the
    sliver cannot reverse its scroll view, so `[:.. :up]`/`[:.. :left]` flows
-   belong to `grid-view` (or reverse the scroll view and use a forward flow)."
+   belong to `grid` (or reverse the scroll view and use a forward flow)."
   [layout opts]
   (cond
     (map? layout) layout
@@ -365,7 +365,7 @@
     (= :grid layout)
     (let [normalized (grid-opts/scroll-normalize (grid-opts/parse opts) (:anchor opts))]
       (when (or (:reverse normalized) (:remap normalized))
-        (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid-view instead of a bare :grid sliver")))
+        (throw (Exception. "grid: an upward/leftward :flow or :anchor :end needs control of the scroll view — use grid instead of a bare :grid sliver")))
       (grid-sliver/flex-grid-layout normalized))
 
     (= :wrap layout) (wrap-layout opts)

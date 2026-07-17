@@ -52,7 +52,7 @@ Besides wrappers the library contains some extensions to Flutter
 (->> (column :spacing 8
        (text "Header")
        (expanded
-         (list-view
+         (list
            (for [i (range 10)]
              (text (str "Item " i)))))
        (text "Footer"))

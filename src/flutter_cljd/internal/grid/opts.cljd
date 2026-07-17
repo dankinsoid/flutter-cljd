@@ -87,7 +87,7 @@
   ([opts] (parse opts nil))
   ([opts text-direction]
   (when-let [k (first (filter legacy-keys (keys opts)))]
-    (throw (Exception. (str "grid: " k " is gone — the grid speaks :columns/:rows/:flow now, see flutter-cljd.widgets/grid-view"))))
+    (throw (Exception. (str "grid: " k " is gone — the grid speaks :columns/:rows/:flow now, see flutter-cljd.widgets/grid"))))
   (let [columns (axis-spec (:columns opts) ":columns")
         rows (axis-spec (:rows opts) ":rows")
         flow (or (:flow opts) [(if (= :rtl text-direction) :left :right) :down])

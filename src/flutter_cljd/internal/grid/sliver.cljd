@@ -8,7 +8,7 @@
 
    The geometry always stacks forward (offsets grow with index) — an upward/
    leftward stack or `:anchor :end` is realized by the scroll view's `reverse`
-   plus index remapping, both handled in grid-view (see grid.opts/scroll-
+   plus index remapping, both handled in grid (see grid.opts/scroll-
    normalize). The fill axis solves against the sliver's crossAxisExtent; the
    stack axis solves against content (`:fit :content`, default) or the viewport
    space remaining after preceding slivers (`:fit :fill`), which is what feeds

@@ -41,10 +41,10 @@
   (lay/masonry-layout (ut/key-values-map opts)))
 
 (defn grid
-  "Indexed flexible grid — the `grid-view` option language (`:columns`/`:rows`/
+  "Indexed flexible grid — the `grid` option language (`:columns`/`:rows`/
    `:flow`/`:line-align`), forward-stacking flows only: the layout cannot
    reverse its host, so `[:.. :up]`/`[:.. :left]` and `:anchor :end` belong to
-   `grid-view`. Also accepts a `SliverGridDelegate` instance (interop).
+   `grid`. Also accepts a `SliverGridDelegate` instance (interop).
 
    For grids in a box prefer the `grid` widget — it resolves `:fit`/`:align`
    on both axes and supports all 8 flows."

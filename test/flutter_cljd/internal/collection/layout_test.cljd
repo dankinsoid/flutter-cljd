@@ -272,7 +272,7 @@
     (is (= :wrap (first (:id (lay/resolve-layout :wrap {})))))
     (is (= :masonry (first (:id (lay/resolve-layout :masonry {})))))
     (is (some? (:geometry (lay/resolve-layout :grid {:columns 2})))))
-  (testing "reversing flows need the scroll view — grid-view's job"
+  (testing "reversing flows need the scroll view — grid's job"
     (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :flow [:right :up]})))
     (is (thrown? Exception (lay/resolve-layout :grid {:columns 2 :anchor :end})))))
 

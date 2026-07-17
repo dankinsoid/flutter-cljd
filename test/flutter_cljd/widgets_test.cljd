@@ -770,14 +770,14 @@
       (is (true? (-> [:shift :a] t/shortcut-activator .-shift))))))
 
 (defn- cv-sliver
-  "The sliver-collection inside a collection-view, unwrapping :padding."
+  "The sliver-collection inside a collection, unwrapping :padding."
   [^m/CustomScrollView cv]
   (let [s (first (.-slivers cv))]
     (if (instance? w/SliverPadding s) (.-child s) s)))
 
-(deftest test-collection-view
+(deftest test-collection
   (testing "scroll opts go to the CustomScrollView, not the sliver"
-    (let [cv (f/collection-view 3 :axis :horizontal :reverse true
+    (let [cv (f/collection 3 :axis :horizontal :reverse true
                                 :shrink-wrap true :physics :bouncing
                                 :cache-extent 250
                                 (fn [ctx i] (m/Text (str i))))]
@@ -792,7 +792,7 @@
       (is (= (.-itemCount (cv-sliver cv)) 3))))
 
   (testing ":padding wraps the sliver in a SliverPadding"
-    (let [cv (f/collection-view 3 :padding 16 (fn [ctx i] (m/Text (str i))))
+    (let [cv (f/collection 3 :padding 16 (fn [ctx i] (m/Text (str i))))
           padded (first (.-slivers cv))]
       (is (instance? w/SliverPadding padded))
       (is (= (.-padding padded) (t/insets 16)))
@@ -800,28 +800,28 @@
 
   (testing ":key routes to the scroll view, not the sliver"
     (let [k (w/ValueKey "cv")
-          cv (f/collection-view 1 :key k (fn [ctx i] (m/Text (str i))))]
+          cv (f/collection 1 :key k (fn [ctx i] (m/Text (str i))))]
       (is (= (.-key cv) k))
       (is (nil? (.-key (cv-sliver cv))))))
 
   (testing "layout passthrough — default is :list"
-    (let [cv (f/collection-view 3 (fn [ctx i] (m/Text (str i))))]
+    (let [cv (f/collection 3 (fn [ctx i] (m/Text (str i))))]
       (is (= :list (first (:id (.-layoutImpl (cv-sliver cv))))))))
 
   (testing "layout passthrough — :wrap and its options"
-    (let [cv (f/collection-view 3 :layout :wrap :spacing 8 :run-spacing 4
+    (let [cv (f/collection 3 :layout :wrap :spacing 8 :run-spacing 4
                                 (fn [ctx i] (m/Text (str i))))]
       (is (= [:wrap 8 4] (:id (.-layoutImpl (cv-sliver cv)))))))
 
   (testing "layout passthrough — :masonry cross-axis-count"
-    (let [cv (f/collection-view 3 :layout :masonry :cross-axis-count 2
+    (let [cv (f/collection 3 :layout :masonry :cross-axis-count 2
                                 (fn [ctx i] (m/Text (str i))))]
       (is (= :masonry (first (:id (.-layoutImpl (cv-sliver cv))))))
       (is (= 2 (second (:id (.-layoutImpl (cv-sliver cv))))))))
 
   (testing "collection source — data diffs on items, item-count derived"
     (let [items [{:id 1} {:id 2} {:id 3}]
-          cv (f/collection-view items :key-fn :id
+          cv (f/collection items :key-fn :id
                                 (fn [ctx item] (m/Text (str (:id item)))))
           sliver (cv-sliver cv)]
       (is (= (.-data sliver) items))
@@ -829,28 +829,28 @@
       (is (some? (.-keyFn sliver)))))
 
   (testing "int source — no data, item-count is the count"
-    (let [cv (f/collection-view 42 (fn [ctx i] (m/Text (str i))))
+    (let [cv (f/collection 42 (fn [ctx i] (m/Text (str i))))
           sliver (cv-sliver cv)]
       (is (nil? (.-data sliver)))
       (is (= (.-itemCount sliver) 42))))
 
   (testing "no source — infinite builder"
-    (let [cv (f/collection-view (fn [ctx i] (m/Text (str i))))
+    (let [cv (f/collection (fn [ctx i] (m/Text (str i))))
           sliver (cv-sliver cv)]
       (is (nil? (.-data sliver)))
       (is (nil? (.-itemCount sliver)))))
 
   (testing ":item-count without a data source"
-    (let [cv (f/collection-view :item-count 10 (fn [ctx i] (m/Text (str i))))]
+    (let [cv (f/collection :item-count 10 (fn [ctx i] (m/Text (str i))))]
       (is (= (.-itemCount (cv-sliver cv)) 10))))
 
   (testing "reorder opts forward to the sliver"
     (let [on-reorder (fn [from to] nil)
-          cv (f/collection-view 3 :reorderable true :on-reorder on-reorder
+          cv (f/collection 3 :reorderable true :on-reorder on-reorder
                                 (fn [ctx i] (m/Text (str i))))
           sliver (cv-sliver cv)]
       (is (true? (.-reorderable sliver)))
       (is (= (.-reorderCallback sliver) on-reorder))))
 
   (testing "missing builder throws"
-    (is (thrown? Exception (f/collection-view 3)))))
+    (is (thrown? Exception (f/collection 3)))))
