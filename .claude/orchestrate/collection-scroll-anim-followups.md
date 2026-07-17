@@ -171,6 +171,15 @@ aren't).
 ---
 
 ## Workstream 3 — Compute & diff gating — **[opt]**
+**DONE (2026-07-17), reshaped by the complexity audit** (see audit result in session history;
+verdict: no per-frame O(N) — scroll path is O(window); the real O(N) was in update paths):
+3.1 turned out already true for the sliver (before→after confined to segment-start); 3.2 landed
+as 21ceb7e (window-scoped diff/shadow: sparse dying-slots, 6→3 diff passes, identity-memoized
+key→index, non-animated short-circuit). Audit extras: 7105dd5 (geometric front-trim of the flow
+cache — memory O(band), anchoredTo0 re-stated as "offsets exact", O(W) mismatch truncation).
+Post-WS2 device bugs fixed along the way: 97d3877 (flying opt-in + macOS discrete-scroll
+velocity), eb21b82 (cross-layout re-anchor), ab39a00 (canonical in-window placement + debug
+guard), d0ac020 (top-underflow correction).
 
 ### 3.1 Double (before→after) layout only when a segment will actually run — **(user pt 2)**
 Guard the two-pass layout compute behind "an animation is pending", so the static case pays for
