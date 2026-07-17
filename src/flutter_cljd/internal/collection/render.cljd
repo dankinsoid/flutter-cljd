@@ -1143,75 +1143,133 @@
     (double approx-off)
     stale-off))
 
-(defn- seed-cache!
-  "When the geometry cache is empty, re-anchors it: on a cold deep start (nothing
-   attached, window far down) invert the monotone :approx-offset to pick the start
-   index; otherwise at the first attached child's last-frame offset (dead reckoning
-   via :anchor) or at index 0."
-  [^CollectionRenderSliver rs layout env]
-  (when (empty? (.-cache rs))
-    (let [init-fn (:init layout)
-          anchor-fn (:anchor layout)
-          approx-fn (:approx-offset layout)
-          ^r/SliverConstraints c (:constraints env)
-          ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
-          fc (.-firstChild rs)
-          idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
-          ;; consumed once: the survivor's stale offset is cross-layout (see
-          ;; reanchor-offset) only on the first seed after a layout :id change.
-          cross-layout? (.-crossLayoutReanchor rs)]
-      (.-crossLayoutReanchor! rs false)
-      (cond
-        ;; COLD DEEP START / far jump: nothing attached and the window sits far
-        ;; down. Invert the monotone :approx-offset to seed the start index instead
-        ;; of walking O(n) from 0 (align-start! attaches, walk! places from
-        ;; baseState). anchoredTo0 := false — offsets are estimates until refined.
-        (and (nil? fc) approx-fn (> ws 0.5))
-        (let [^int raw (invert-approx-offset (fn [^int i] (approx-fn env i))
-                                             ws (.-itemCount rs))
-              ^int n (int (or (.-itemCount rs) 0))
-              ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))
-              ^double off-start (double (approx-fn env start))]
-          ;; Trust the inverse-seed only when the estimate's density actually
-          ;; reaches the window — a degenerate (unseeded) density saturates at the
-          ;; last index at offset ≪ ws, which we reject and walk from 0 instead.
-          (if (and (pos? start) (>= off-start (* 0.5 ws)))
-            (do (.-cacheFirst! rs start)
-                (.-baseState! rs (if anchor-fn
-                                   (anchor-fn env start off-start)
-                                   (init-fn env)))
-                (.-anchoredTo0! rs false))
-            (do (.-cacheFirst! rs 0)
-                (.-baseState! rs (init-fn env))
-                (.-anchoredTo0! rs true))))
+(defn window-far-from-band?
+  "Geometric seeding decision — the cache is an accelerator, never the algorithm:
+   per-pass work must stay O(window+overscan) regardless of cache contents. True
+   when the known band [cache[0].offset, last :max-end) lies MORE THAN ONE window
+   extent away from the window [ws, we): re-attaching at the band and walking the
+   gap would materialize O(gap) children in one frame (the first-far-jump freeze),
+   so the caller must drop the stale band and inverse-seed near the window — the
+   same O(window) path as a cold deep start. An intersecting or nearby band
+   (gap <= one window extent) keeps the walk: that is normal scrolling, bounded
+   by O(window), and preserves the exact frontier. Pure."
+  [cache ^double ws ^double we]
+  (boolean
+   (when (seq cache)
+     (let [^double head (double (:offset (nth cache 0)))
+           ^double tail (double (:max-end (peek cache)))
+           ^double w (- we ws)]
+       (or (> (- ws tail) w)        ;; band far above the window (jumped down)
+           (> (- head we) w))))))   ;; band far below the window (jumped up)
 
-        (or (nil? fc) (zero? ^int idx))
-        (do (.-cacheFirst! rs 0)
+(defn- inverse-seed!
+  "O(1) deep-window seed: inverts the monotone :approx-offset at `ws` to pick the
+   start index and re-anchors the (emptied) cache there; align-start! attaches and
+   walk! places forward from baseState, so the pass costs O(window), not O(gap).
+   Checkpoints drop in lockstep — a stale checkpoint far below the new frontier
+   would make the next reflow-from-checkpoint! insert O(gap) leading children in
+   ONE step; with none stored, upward backfill re-seeds via the renewal-point path
+   (synth-renewal-checkpoint), whole runs, band-bounded. anchoredTo0 := false —
+   offsets are estimates until refined. Returns false WITHOUT touching state when
+   the estimate's density never reaches the window (a degenerate, unseeded density
+   saturates at the last index at offset ≪ ws) — the caller keeps its previous
+   frontier instead."
+  [^CollectionRenderSliver rs layout env ^double ws]
+  (let [approx-fn (:approx-offset layout)
+        anchor-fn (:anchor layout)
+        ^int raw (invert-approx-offset (fn [^int i] (approx-fn env i))
+                                       ws (.-itemCount rs))
+        ^int n (int (or (.-itemCount rs) 0))
+        ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))
+        ^double off-start (double (approx-fn env start))]
+    (if (and (pos? start) (>= off-start (* 0.5 ws)))
+      (do (.-cache! rs [])
+          (.-checkpoints! rs {})
+          (.-cacheFirst! rs start)
+          (.-baseState! rs (if anchor-fn
+                             (anchor-fn env start off-start)
+                             ((:init layout) env)))
+          (.-anchoredTo0! rs false)
+          (.-crossLayoutReanchor! rs false)
+          true)
+      false)))
+
+(defn- seed-cache!
+  "Re-anchors the geometry cache when it cannot serve this pass's window. Two
+   triggers:
+   - FAR WINDOW (geometry, not emptiness): nothing attached (pre-gc! detached
+     the whole stale band) and the window sits more than one window extent from
+     the known band (window-far-from-band?). trim-front! always keeps >= 1 cache
+     entry, so gating the inverse seed on emptiness left it unreachable after any
+     initial layout — a far jump then walked the gap from the stale band, O(gap)
+     in one frame. Geometry now selects the inverse seed regardless of cache
+     contents.
+   - EMPTY cache (cold start / invalidation): on a cold deep start take the same
+     inverse seed; otherwise anchor at the first attached child's last-frame
+     offset (dead reckoning via :anchor) or at index 0."
+  [^CollectionRenderSliver rs layout env]
+  (let [init-fn (:init layout)
+        anchor-fn (:anchor layout)
+        approx-fn (:approx-offset layout)
+        ^r/SliverConstraints c (:constraints env)
+        ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+        ^double we (+ ws (.-remainingCacheExtent c))
+        fc (.-firstChild rs)
+        ;; deep window with nothing attached and an invertible estimate — the
+        ;; precondition for the O(1) inverse seed on either trigger
+        deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))]
+    (cond
+      ;; FAR JUMP over a live band: seed by geometry. A degenerate estimate
+      ;; (inverse-seed! false) keeps the band — walking the gap is then the
+      ;; best available move, and the estimate seeds itself on that pass.
+      (and deep? (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we))
+      (do (inverse-seed! rs layout env ws) nil)
+
+      (seq (.-cache rs)) nil   ;; band serves the window — nothing to re-seed
+
+      :else
+      (let [idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
+            ;; consumed once: the survivor's stale offset is cross-layout (see
+            ;; reanchor-offset) only on the first seed after a layout :id change.
+            cross-layout? (.-crossLayoutReanchor rs)]
+        (.-crossLayoutReanchor! rs false)
+        (cond
+          ;; COLD DEEP START: nothing attached and the window sits far down.
+          ;; Inverse-seed instead of walking O(n) from 0; a degenerate estimate
+          ;; falls back to the from-0 walk (nothing better exists yet).
+          deep?
+          (when-not (inverse-seed! rs layout env ws)
+            (.-cacheFirst! rs 0)
             (.-baseState! rs (init-fn env))
             (.-anchoredTo0! rs true))
 
-        (some? anchor-fn)
-        (let [^double stale (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
-              approx-off (when (and cross-layout? approx-fn (pos? ^int idx))
-                           (double (approx-fn env idx)))
-              ^double off (reanchor-offset (boolean cross-layout?) (int idx) stale approx-off)]
-          ;; a cross-layout re-anchor moved the survivor to the new-layout estimate;
-          ;; record the shift so flow-layout! emits it as a scrollOffsetCorrection
-          ;; and the visible child holds still (no jump) as the indicator updates.
-          (when (not= off stale)
-            (.-reanchorShift! rs (- off stale)))
-          (.-cacheFirst! rs idx)
-          (.-baseState! rs (anchor-fn env idx off))
-          ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
-          ;; surviving anchoredTo0 here would be a stale truth claim (Phase D).
-          (.-anchoredTo0! rs false))
+          (or (nil? fc) (zero? ^int idx))
+          (do (.-cacheFirst! rs 0)
+              (.-baseState! rs (init-fn env))
+              (.-anchoredTo0! rs true))
 
-        ;; no :anchor — can't dead-reckon; drop children and re-flow from 0
-        :else
-        (do (.collectGarbage rs (count-attached rs) 0)
-            (.-cacheFirst! rs 0)
-            (.-baseState! rs (init-fn env))
-            (.-anchoredTo0! rs true))))))
+          (some? anchor-fn)
+          (let [^double stale (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
+                approx-off (when (and cross-layout? approx-fn (pos? ^int idx))
+                             (double (approx-fn env idx)))
+                ^double off (reanchor-offset (boolean cross-layout?) (int idx) stale approx-off)]
+            ;; a cross-layout re-anchor moved the survivor to the new-layout estimate;
+            ;; record the shift so flow-layout! emits it as a scrollOffsetCorrection
+            ;; and the visible child holds still (no jump) as the indicator updates.
+            (when (not= off stale)
+              (.-reanchorShift! rs (- off stale)))
+            (.-cacheFirst! rs idx)
+            (.-baseState! rs (anchor-fn env idx off))
+            ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
+            ;; surviving anchoredTo0 here would be a stale truth claim (Phase D).
+            (.-anchoredTo0! rs false))
+
+          ;; no :anchor — can't dead-reckon; drop children and re-flow from 0
+          :else
+          (do (.collectGarbage rs (count-attached rs) 0)
+              (.-cacheFirst! rs 0)
+              (.-baseState! rs (init-fn env))
+              (.-anchoredTo0! rs true)))))))
 
 (defn- normalize-cache!
   "Keyed reconciliation may remap attached child indices arbitrarily between

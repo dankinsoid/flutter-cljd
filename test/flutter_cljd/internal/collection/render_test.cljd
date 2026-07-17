@@ -260,6 +260,38 @@
     (testing "an empty prefix leaves the cache untouched"
       (is (= cache (render/stitch-prefix [] cache))))))
 
+;; --- geometric seeding decision (first-far-jump freeze) ---
+;; Seeding must key off GEOMETRY, not cache emptiness: trim-front! always keeps
+;; >= 1 cache entry, so an emptiness-gated inverse seed is unreachable after any
+;; initial layout — a far jumpTo then re-attached at the stale band and walk!
+;; materialized O(gap) items (~1000-1500) synchronously in one frame.
+
+(deftest seeding-decision-keys-off-geometry
+  (let [band (fn [^double head ^double tail]
+               [{:offset head :end (+ head 100.0) :max-end (+ head 100.0)}
+                {:offset (- tail 100.0) :end tail :max-end tail}])]
+    (testing "the WS2 far-jump window (band left near the top, window ~50vp down)
+              is far — the inverse seed must fire despite the non-empty cache"
+      (is (true? (render/window-far-from-band? (band 0.0 1800.0) 40000.0 41800.0))))
+    (testing "a far jump UP (band far below the window) is far too"
+      (is (true? (render/window-far-from-band? (band 40000.0 41800.0) 0.0 1800.0))))
+    (testing "a window intersecting the band keeps the walk (normal scroll)"
+      (is (false? (render/window-far-from-band? (band 0.0 1800.0) 900.0 2700.0))))
+    (testing "a gap within one window extent keeps the walk — walking it is
+              O(window) by definition, and keeps the exact frontier"
+      ;; band ends at 1800, window [3400, 5200): gap 1600 <= window extent 1800
+      (is (false? (render/window-far-from-band? (band 0.0 1800.0) 3400.0 5200.0))))
+    (testing "a gap beyond one window extent is far"
+      ;; gap 2000 > window extent 1800
+      (is (true? (render/window-far-from-band? (band 0.0 1800.0) 3800.0 5600.0))))
+    (testing "an empty cache is never 'far' — the cold-start seed path owns it"
+      (is (false? (render/window-far-from-band? [] 40000.0 41800.0))))
+    (testing "the single entry trim-front! guarantees to keep is judged by
+              geometry exactly like a full band (the freeze-class regression)"
+      (is (true? (render/window-far-from-band?
+                  [{:offset 1700.0 :end 1800.0 :max-end 1800.0}]
+                  40000.0 41800.0))))))
+
 ;; --- cold-start inverse-seed binary search ---
 
 (deftest invert-approx-offset-lands-within-one-item
