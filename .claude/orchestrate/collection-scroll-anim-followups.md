@@ -37,6 +37,11 @@ offset stays smooth only because offset-from is captured live.
   ≈0.1) persisting 600 passes for a dead key. Fix: ALL branches lay at `:full-*` (fallback
   visible) — lerp full extents for constraints, visible for the clip. Phase D's geometric
   prune narrows but does not close this.
+  **FIXED (d7c7b7b):** all branches of `keyed-tween-layout` now supply the collapse-axis
+  full at both endpoints; the frame's `:full-*-extent` is their nil-aware lerp (visible when
+  `:full-*` absent), decoupled from the lerped visible window that drives `clip-window`.
+  Covers stay mid-wipe, `to=nil` verbatim, entering-with-nil-target, and both collapse axes;
+  at rest the lerp is a no-op (static behavior unchanged). Box host composes without change.
 
 ### 1.2 One-frame freeze at retrigger — **[bug/question] (#3)**
 `start-segment!` calls `.forward .from 0.0` (sliver_collection.cljd:356): the retrigger frame
