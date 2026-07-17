@@ -1600,8 +1600,10 @@
    `d` away from where the estimated cache placed it (refine-seam-delta):
    - `emit?` (resting, unsuppressed): trust the re-flowed truth — drop the
      stale-coordinate entries below the seam, shift their attached children by
-     `d`, and return `d` as this pass's refinement correction; the corrected
-     re-run re-walks the window forward from the exact prefix state, pixel-stable.
+     `d`, and return `d` as this step's refinement correction; backfill-leading!
+     folds it into the pass's summed correction and keeps walking in the shifted
+     frame, and the single corrected re-run re-walks the window forward from the
+     exact prefix state, pixel-stable.
    - otherwise (suppressed / mid-segment — the offset model is frozen): re-anchor
      the prefix AT THE SEAM via :anchor(lo, first-offset − d). Structure stays
      exact (lo is a renewal point); the absolute displacement stays latent above,
@@ -1805,9 +1807,13 @@
    one-child estimator only where no checkpoint AND no run structure exist (list /
    masonry). Returns this pass's refinement correction (double) or nil.
 
-   Phase C refinement: a step that discovers a seam mismatch reconciles it and
-   returns the delta as the pass's pixel-stable scrollOffsetCorrection (see
-   reflow-from-checkpoint!). Exact landing: whenever the cache reaches index 0
+   Phase C refinement, telescoped per pass: every step that discovers a seam
+   mismatch reconciles it in place (reflow-from-checkpoint! shifts the content
+   at/below the seam), and the walk CONTINUES in the shifted frame accumulating
+   the deltas into ONE summed pixel-stable scrollOffsetCorrection — one viewport
+   re-run per frame regardless of how many stale seams the band holds (the
+   per-seam pass-ending emission hit the viewport's 10-cycle cap on a deep stale
+   band). Exact landing: whenever the cache reaches index 0
    away from offset 0, the residual is the final correction — the cache is
    dropped and the corrected re-run re-flows from :init, placing index 0 exactly
    at offset 0 with pixels unmoved; scroll stops exactly on the first element and
@@ -1823,7 +1829,7 @@
   [^CollectionRenderSliver rs layout env ^double ws ^bool emit? ^bool origin-emit?]
   (let [init-fn (:init layout)
         approx-fn (:approx-offset layout)
-        land (fn []
+        land (fn [^double wsx]
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
                  (let [^double z (double (:offset (nth (.-cache rs) 0)))]
                    (case (landing-decision z origin-emit? (.-landingEmitted rs))
@@ -1839,11 +1845,12 @@
                                (.-baseState! rs (init-fn env))
                                (.-anchoredTo0! rs false)
                                (.-landingEmitted! rs true)
-                               ;; where the corrected re-run's window will sit;
-                               ;; seed-cache! consumes it and forces the
-                               ;; from-:init walk (landing-reseed-decision)
+                               ;; where the corrected re-run's window will sit
+                               ;; (wsx = ws + this pass's accumulated seam
+                               ;; corrections); seed-cache! consumes it and
+                               ;; forces the from-:init walk
                                (.-pendingLandingWs! rs
-                                 (+ ws (.-overscanBehind rs) (- z)))
+                                 (+ wsx (.-overscanBehind rs) (- z)))
                                (- z))
                      :violated
                      (do (when fd/kDebugMode
@@ -1884,24 +1891,38 @@
                     (.-checkpoints! rs {})
                     (.-anchoredTo0! rs false)
                     deficit))))))]
-    (loop []
+    ;; The walk ACCUMULATES seam corrections instead of ending the pass per
+    ;; emission: each reconciled seam already shifted the content at/below it
+    ;; (shift-attached-from!), so the deltas compose additively into ONE summed
+    ;; scrollOffsetCorrection and the loop continues in the shifted frame
+    ;; (wsx = ws + acc tracks where the corrected window will sit). One
+    ;; emission per pass ⇒ one viewport re-run per frame, however many stale
+    ;; seams the band holds — a chain of N seams used to cost N layout cycles
+    ;; and hit the RenderViewport 10-cycle cap in a single frame.
+    (loop [^double acc 0.0 ^double wsx ws]
       (let [cache (.-cache rs)
-            ^int cf (.-cacheFirst rs)]
-        (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
+            ^int cf (.-cacheFirst rs)
+            total (fn [tail]
+                    (let [^double t (+ acc (double (or tail 0.0)))]
+                      (when (> (.abs t) 1e-3) t)))]
+        (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) wsx))
           (let [cp (or (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
                        (synth-renewal-checkpoint layout env (dec cf)))
                 stepped (if cp
                           (reflow-from-checkpoint! rs layout env cp emit?)
                           (estimate-leading-step! rs layout env))]
             (cond
-              (identical? true stepped) (recur)
-              (or (nil? stepped) (false? stepped)) (land)
-              ;; seam correction emitted — end the pass; the viewport re-runs
-              ;; layout with the corrected offset and backfill continues there.
-              :else stepped))
-          ;; leading budget exhausted (head <= ws) or cf==0: manufacture the missing
-          ;; leading extent when the frontier undershoots the origin, else land.
-          (or (underflow) (land)))))))
+              (identical? true stepped) (recur acc wsx)
+              (or (nil? stepped) (false? stepped)) (total (land wsx))
+              ;; seam correction reconciled — fold it in and keep walking in
+              ;; the shifted frame; the single corrected re-run re-walks the
+              ;; window from the exact prefix state.
+              :else (let [^double d (double stepped)]
+                      (recur (+ acc d) (+ wsx d)))))
+          ;; leading budget exhausted (head <= wsx) or cf==0: manufacture the
+          ;; missing leading extent when the frontier undershoots the origin,
+          ;; else land.
+          (total (or (underflow) (land wsx))))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
