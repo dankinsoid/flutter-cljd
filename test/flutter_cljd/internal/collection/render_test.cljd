@@ -4,6 +4,9 @@
    and anchor-cell walks need a live render tree, so they are exercised only
    through their extracted pure kernels: prune-committed and widen-window-indices."
   (:require [clojure.test :refer [deftest is testing]]
+            ["dart:ui" :as ui]
+            [flutter-cljd.internal.collection.layout :as lay]
+            [flutter-cljd.internal.collection.tween :as tw]
             [flutter-cljd.internal.collection.render :as render]))
 
 ;; --- committed-rect (capture completeness for the wipe) ---
@@ -199,3 +202,130 @@
       (is (nil? (render/next-prev-layout list-lay grid-lay false false))))
     (testing "resting steady state stays nil"
       (is (nil? (render/next-prev-layout nil list-lay false false))))))
+
+;; --- progressive offset refinement (WS2 phase C) ---
+
+(def ^:private nan (/ 0.0 0.0))
+
+(deftest refine-suppression-gate
+  (testing "no previous pass (NaN) reads as at-rest — corrections apply"
+    (is (false? (render/refine-suppressed? nan 500.0))))
+  (testing "active backward (upward) motion above the threshold suppresses"
+    (is (true? (render/refine-suppressed? 500.0 497.0))))
+  (testing "sub-threshold upward drift still counts as resting"
+    (is (false? (render/refine-suppressed? 500.0 499.8))))
+  (testing "forward (downward) motion never suppresses"
+    (is (false? (render/refine-suppressed? 500.0 503.0))))
+  (testing "a truly resting pass (zero delta — e.g. a correction re-run whose
+            emitted delta was compensated into last-off) resumes refinement"
+    (is (false? (render/refine-suppressed? 500.0 500.0)))))
+
+(deftest refine-emission-exclusive-with-segment
+  (testing "resting, still pass emits"
+    (is (true? (render/refine-emit? false false))))
+  (testing "a playing segment never emits refinement, even at rest —
+            the WS1.3 segment correction owns the pass (mutual exclusivity)"
+    (is (false? (render/refine-emit? true false))))
+  (testing "suppressed resting pass defers"
+    (is (false? (render/refine-emit? false true))))
+  (testing "suppressed segment pass defers on both counts"
+    (is (false? (render/refine-emit? true true)))))
+
+;; wrap fixture: cross-extent 200, items 90x40 ⇒ 2 per run, run pitch 40.
+;; Truth: index i at offset 40*(i div 2), cross 90*(i mod 2).
+(def ^:private wrap-env {:axis :vertical :cross-extent 200.0 :item-count 12})
+(def ^:private wrapl (lay/wrap-layout {:spacing 0 :run-spacing 0}))
+
+(defn- wrap-sized
+  "[i size main-extent] triples for indices [from, to)."
+  [^int from ^int to]
+  (mapv (fn [^int i] [i (ui/Size 90 40) 40.0]) (range from to)))
+
+(deftest refine-seam-delta-accounting
+  ;; checkpoint at k=4 (run start, truth offset 80); re-flow [4,5]; head cf=6
+  ;; truly belongs at 120 but the estimated cache placed it at 290 (error +170).
+  (let [seed ((:anchor wrapl) wrap-env 4 80.0)
+        entries (tw/flow-run-entries wrapl wrap-env (wrap-sized 4 6) seed)
+        end-state (:state (peek entries))]
+    (testing "the re-flowed prefix places the run correctly"
+      (is (= 80.0 (:offset (nth entries 0))))
+      (is (= 90.0 (:cross (nth entries 1)))))
+    (testing "seam delta = true head offset − estimated head offset"
+      (is (= -170.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                              end-state 290.0))))
+    (testing "emit-once: after the correction reconciles the head, delta is 0"
+      ;; head shifted by the emitted −170 ⇒ old-head 120 ⇒ converged
+      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                           end-state 120.0))))
+    (testing "sub-pixel disagreement is treated as converged (no correction churn)"
+      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                           end-state 120.0005))))))
+
+(deftest refinement-telescopes-to-true-residual
+  ;; A window estimated 170px below truth converges in two refinement steps:
+  ;; the seam correction (−170) plus the exact-landing residual telescope to the
+  ;; full estimate error, and index 0 lands exactly at offset 0.
+  (let [;; step 1: seam at cf=6 (as above) emits −170; the window's coordinate
+        ;; system is now checkpoint truth.
+        d1 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                     (:state (peek (tw/flow-run-entries
+                                                    wrapl wrap-env (wrap-sized 4 6)
+                                                    ((:anchor wrapl) wrap-env 4 80.0))))
+                                     290.0)
+        ;; step 2: backfill reaches index 0 via the from-0 checkpoint (truth):
+        ;; the re-flow places index 0 at exactly 0 — no further residual.
+        from0 (tw/flow-run-entries wrapl wrap-env (wrap-sized 0 4) ((:init wrapl) wrap-env))
+        ^double z (:offset (nth from0 0))]
+    (is (= -170.0 d1))
+    (is (= 0.0 z))
+    (testing "total emitted correction equals the window's initial estimate error"
+      (is (= -170.0 (+ d1 (- z)))))
+    (testing "the from-0 re-flow seam-matches the corrected window (no re-emission)"
+      ;; head cf=4 after landing: truth 80 vs corrected cache 80 ⇒ 0
+      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 4 (ui/Size 90 40)
+                                           (:state (peek from0)) 80.0))))))
+
+(deftest exact-landing-lands-index-0-at-offset-0
+  ;; Synthetic estimate error: dead-reckoned backfill left index 0's run at 37.0.
+  ;; The landing correction is −residual, and the corrected re-flow from :init
+  ;; places index 0 exactly at 0 — scroll stops exactly on the first element.
+  (let [estimated (tw/flow-run-entries wrapl wrap-env (wrap-sized 0 2)
+                                       ((:anchor wrapl) wrap-env 0 37.0))
+        ^double z (:offset (nth estimated 0))
+        corr (- z)
+        landed (tw/flow-run-entries wrapl wrap-env (wrap-sized 0 2)
+                                    ((:init wrapl) wrap-env))]
+    (is (= 37.0 z))
+    (is (= 0.0 (+ z corr)))
+    (testing "re-flow from :init is exact at the top"
+      (is (= 0.0 (:offset (nth landed 0))))
+      (is (= 0.0 (:cross (nth landed 0))))
+      (is (= 90.0 (:cross (nth landed 1)))))))
+
+(deftest suppressed-seam-reanchor-stays-consistent
+  ;; While suppressed / mid-segment the engine re-anchors the prefix AT THE SEAM
+  ;; (:anchor at first-offset − d): structure identical, absolute position meets
+  ;; the estimated head exactly, so the pass stays correction-free and the cache
+  ;; coherent; the displacement is reconciled by a later resting pass.
+  (let [sized (wrap-sized 4 6)
+        truth (tw/flow-run-entries wrapl wrap-env sized ((:anchor wrapl) wrap-env 4 80.0))
+        ^double d (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                            (:state (peek truth)) 290.0)
+        seed' ((:anchor wrapl) wrap-env 4 (- ^double (:offset (nth truth 0)) d))
+        anchored (tw/flow-run-entries wrapl wrap-env sized seed')]
+    (testing "the re-anchored prefix meets the estimated head exactly (seam delta 0)"
+      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+                                           (:state (peek anchored)) 290.0))))
+    (testing "run structure survives — only the absolute offset moved"
+      (dotimes [j (count truth)]
+        (is (= (:cross (nth truth j)) (:cross (nth anchored j))))
+        (is (= (- ^double (:offset (nth anchored j)) ^double (:offset (nth truth j)))
+               (- d)))))))
+
+(deftest ema-agg-seeds-then-blends
+  (testing "nil prev seeds directly from the first live-window sample"
+    (is (= {:avg-main 40.0 :avg-cross 90.0} (render/ema-agg nil 40.0 90.0))))
+  (testing "subsequent samples blend by the EMA weight"
+    (let [a (render/ema-agg {:avg-main 40.0 :avg-cross 90.0} 80.0 90.0)]
+      (is (= 50.0 (:avg-main a)))     ; 0.75*40 + 0.25*80
+      (is (= 90.0 (:avg-cross a))))))

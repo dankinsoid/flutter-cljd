@@ -92,10 +92,14 @@
                           ;; state BEFORE that index, retained past GC as a backward-re-flow seed (WS2.2 §2.1).
                           ;; Recorded at renewal points (or a periodic stride when the layout has no
                           ;; :renewal-point?, e.g. masonry); pruned to the visible+cache band + one seed above.
-   ^:mutable ^bool anchoredTo0] ;; true once a pass placed index 0 at offset 0 with an unbroken cache down to
+   ^:mutable ^bool anchoredTo0 ;; true once a pass placed index 0 at offset 0 with an unbroken cache down to
                           ;; the live window ⇒ reported offsets are truth. false on cold deep start / far jump /
                           ;; invalidation above the frontier ⇒ offsets are checkpoint-relative estimates (§2.4).
-                          ;; Phase C consumes it for the scroll indicator + refinement gate.
+                          ;; Consumed by finish-flow-geometry! (indicator honesty) + the exact-landing branch.
+   ^:mutable ^double refineLastOffset] ;; scrollOffset observed by the previous layout pass, compensated by any
+                          ;; correction that pass emitted (so a same-frame correction re-run reads as no motion).
+                          ;; NaN before the first pass. Drives the refinement suppression gate: a negative
+                          ;; pass-over-pass delta = active backward drag / ballistic-up (WS2.3 tier 3).
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -189,6 +193,13 @@
         ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
         :else
         (indexed-layout! this (.-segTween this) c))
+      ;; Refinement motion sensor: remember this pass's offset compensated by any
+      ;; correction it emitted, so the correction's same-frame re-run (and the
+      ;; corrected next frame) read as no user motion — only real drag/ballistic
+      ;; deltas reach the suppression gate.
+      (let [^r/SliverGeometry g (.-geometry this)]
+        (.-refineLastOffset! this (+ (.-scrollOffset c)
+                                     (double (or (.-scrollOffsetCorrection g) 0.0)))))
       (.-passTick! this (inc (.-passTick this)))
       (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this)))))
 
@@ -307,6 +318,59 @@
             (recur (inc mid) hi)
             (recur lo mid)))
         (math/max 0 (dec lo))))))
+
+;; --- progressive offset refinement (WS2 phase C) — pure kernels ---
+
+(def ^:private ^double refine-suppress-eps
+  "Per-pass upward scrollOffset motion (px) above which refinement corrections
+   are deferred: a same-frame offset jump must not race an active backward drag
+   or ballistic-up (WS2.3 tier 3 / the TanStack rule). Tunable; Phase E's
+   velocity sensor supersedes this per-pass signal."
+  0.5)
+
+(defn refine-suppressed?
+  "True when the correction-compensated pass-over-pass scrollOffset delta shows
+   active backward (upward) motion, so refinement corrections defer to the next
+   low-velocity pass. `last-off` NaN (no previous pass) reads as at-rest. Pure."
+  [^double last-off ^double so]
+  (and (not (.-isNaN last-off))
+       (< (- so last-off) (- refine-suppress-eps))))
+
+(defn refine-emit?
+  "The WS1.3 exclusivity + suppression gate in one place: refinement corrections
+   are emitted only on a RESTING flow pass — a playing segment freezes the offset
+   model at capture and emits only the segment set-point correction, so the two
+   are mutually exclusive per pass — and only while not suppressed by active
+   backward motion. Pure."
+  [^bool segment? ^bool suppressed?]
+  (and (not segment?) (not suppressed?)))
+
+(defn refine-seam-delta
+  "How far a checkpoint-seeded re-flow says the cache head REALLY sits from
+   where the estimated cache placed it: places head index `cf` (its measured
+   `head-size`) through the layout's :place seeded with the re-flowed prefix's
+   end state, and returns `true-offset − old-head` — this seam's refinement
+   correction. 0.0 when below the pixel threshold (converged / emit-once). Pure."
+  [layout env ^int cf ^ui/Size head-size end-state ^double old-head]
+  (let [[gm _] ((:place layout) env cf head-size end-state)
+        ^double d (- (double (:offset gm)) old-head)]
+    (if (> (.abs d) 1e-3) d 0.0)))
+
+(def ^:private ^double agg-ema-alpha
+  "EMA weight of the current pass's live-window mean in :avg-main/:avg-cross."
+  0.25)
+
+(defn ema-agg
+  "Folds one pass's live-window mean extents into the measured aggregates
+   (design §1.1). nil prev seeds directly from the sample — measured reality
+   overrides the approximate-item-size prior as soon as cells exist. Pure."
+  [prev ^double mean-main ^double mean-cross]
+  (if (nil? prev)
+    {:avg-main mean-main :avg-cross mean-cross}
+    {:avg-main (+ (* (- 1.0 agg-ema-alpha) (double (:avg-main prev)))
+                  (* agg-ema-alpha mean-main))
+     :avg-cross (+ (* (- 1.0 agg-ema-alpha) (double (:avg-cross prev)))
+                   (* agg-ema-alpha mean-cross))}))
 
 ;; --- keyed rect commit (v2 persistent {key -> content-space rect}) ---
 
@@ -881,15 +945,59 @@
         ^int leading (math/max 0 (math/min leading (- total trailing 1)))]
     (.collectGarbage rs leading trailing)))
 
+(defn- update-measured-agg!
+  "Refreshes the :avg-main/:avg-cross measured aggregates from the attached
+   window (design §1.1) so :approx-offset / extent extrapolation track measured
+   reality instead of the cold approximate-item-size prior."
+  [^CollectionRenderSliver rs env]
+  (loop [child (.-firstChild rs) ^double sm 0.0 ^double sc 0.0 ^int n 0]
+    (if child
+      (let [^r/RenderBox ch child]
+        (if (.-hasSize ch)
+          (recur (.childAfter rs ch)
+                 (+ sm (lay/size-main env (.-size ch)))
+                 (+ sc (lay/size-cross env (.-size ch)))
+                 (inc n))
+          (recur (.childAfter rs ch) sm sc n)))
+      (when (pos? n)
+        (.-measuredAgg! rs (ema-agg (.-measuredAgg rs) (/ sm n) (/ sc n)))))))
+
+(defn- shift-attached-from!
+  "Adds `d` to the layoutOffset of every attached child with index >= `from-idx`
+   — the estimated content below a reconciled seam rides the same shift as the
+   scrollOffset correction, keeping the intermediate state coherent until the
+   corrected re-run re-walks it from the exact prefix state."
+  [^CollectionRenderSliver rs ^int from-idx ^double d]
+  (loop [child (.-firstChild rs)]
+    (when child
+      (let [^r/RenderBox ch child]
+        (when (>= (.indexOf rs ch) from-idx)
+          (when-let [off (.childScrollOffset rs ch)]
+            (set-layout-offset! ch (+ (double off) d))))
+        (recur (.childAfter rs ch))))))
+
 (defn- reflow-from-checkpoint!
   "One backward re-flow step (WS2.2 §2.2). Seeds at checkpoint `cp` (index k <=
    cf-1), materialises [k .. cf-1] as leading children and places them FORWARD via
    the checkpoint's exact flow state — real :cross and real per-run :offset, not
    the one-child-per-slot estimate — then stitches the produced entries onto the
    cache and lowers cacheFirst to the reached top. Re-records renewal-point
-   checkpoints for the re-flowed runs. Returns true iff it re-flowed a run, false
-   (no leading child available) to let the caller stop."
-  [^CollectionRenderSliver rs layout env cp]
+   checkpoints for the re-flowed runs.
+
+   Phase C seam reconciliation: when the re-flow says the cache head really sits
+   `d` away from where the estimated cache placed it (refine-seam-delta):
+   - `emit?` (resting, unsuppressed): trust the re-flowed truth — drop the
+     stale-coordinate entries below the seam, shift their attached children by
+     `d`, and return `d` as this pass's refinement correction; the corrected
+     re-run re-walks the window forward from the exact prefix state, pixel-stable.
+   - otherwise (suppressed / mid-segment — the offset model is frozen): re-anchor
+     the prefix AT THE SEAM via :anchor(lo, first-offset − d). Structure stays
+     exact (lo is a renewal point); the absolute displacement stays latent above,
+     reconciled by a later resting pass or the exact landing at 0.
+
+   Returns nil (no leading child available — caller stops), true (stepped,
+   caller continues), or a double (correction emitted — caller returns it)."
+  [^CollectionRenderSliver rs layout env cp ^bool emit?]
   (let [measure-fn (:measure layout)
         ^int cf (.-cacheFirst rs)
         ^int k (int (:index cp))
@@ -904,7 +1012,7 @@
                        (persistent! acc))
                      (persistent! acc)))]
     (if (empty? inserted)
-      false
+      nil
       ;; lowest contiguous index we actually materialised (usually k)
       (let [^int lo (loop [^int i (dec cf)]
                       (if (and (>= i k) (contains? inserted i)) (recur (dec i)) (inc i)))
@@ -919,7 +1027,25 @@
                           (let [^r/RenderBox c (get inserted i)]
                             [i (.-size c) (.paintExtentOf rs c)]))
                         (range lo cf))
-            entries (tw/flow-run-entries layout env sized use-seed)]
+            entries (tw/flow-run-entries layout env sized use-seed)
+            ;; seam: where does the re-flow say the head (index cf) really sits?
+            head-child (some->> ^r/RenderBox (get inserted (dec cf)) (.childAfter rs))
+            ^double old-head (double (:offset (nth (.-cache rs) 0)))
+            ^double d (if (and head-child
+                               (= cf (.indexOf rs ^r/RenderBox head-child))
+                               (.-hasSize ^r/RenderBox head-child))
+                        (refine-seam-delta layout env cf (.-size ^r/RenderBox head-child)
+                                           (:state (peek entries)) old-head)
+                        0.0)
+            [entries use-seed ^double d]
+            (cond
+              (or (zero? d) emit?) [entries use-seed d]
+              (:anchor layout)
+              (let [seed' ((:anchor layout) env lo (- (double (:offset (nth entries 0))) d))]
+                [(tw/flow-run-entries layout env sized seed') seed' 0.0])
+              ;; no :anchor to re-anchor with while frozen — keep the stale seam
+              ;; (Phase B behavior) rather than emit outside the gate.
+              :else [entries use-seed 0.0])]
         (dotimes [j (count entries)]
           (let [^int i (+ lo j)
                 e (nth entries j)
@@ -930,10 +1056,16 @@
             (set-layout-offset! c off)
             (set-cross-axis-offset! c cross)
             (record-checkpoint! rs layout env i off cross state-before)))
-        (.-cache! rs (stitch-prefix entries (.-cache rs)))
-        (.-cacheFirst! rs lo)
-        (.-baseState! rs use-seed)
-        true))))
+        (if (zero? d)
+          (do (.-cache! rs (stitch-prefix entries (.-cache rs)))
+              (.-cacheFirst! rs lo)
+              (.-baseState! rs use-seed)
+              true)
+          (do (shift-attached-from! rs cf d)
+              (.-cache! rs (vec entries))
+              (.-cacheFirst! rs lo)
+              (.-baseState! rs use-seed)
+              d))))))
 
 (defn- estimate-leading-step!
   "Fallback backward step when NO checkpoint covers the region above the cache
@@ -971,30 +1103,48 @@
    REAL runs (WS2.2 §2.2): each step seeds at the nearest checkpoint at-or-above the
    target and re-flows forward (real :cross / per-run :offset — kills #5's single
    left column), falling back to the one-child estimator only where no checkpoint
-   exists. When the backfill reaches index 0 away from offset 0, drops the cache and
-   returns a scroll correction; the next pass re-flows exactly from the top."
-  [^CollectionRenderSliver rs layout env ^double ws]
+   exists. Returns this pass's refinement correction (double) or nil.
+
+   Phase C refinement: a step that discovers a seam mismatch reconciles it and
+   returns the delta as the pass's pixel-stable scrollOffsetCorrection (see
+   reflow-from-checkpoint!). Exact landing: whenever the cache reaches index 0
+   away from offset 0, the residual is the final correction — the cache is
+   dropped and the corrected re-run re-flows from :init, placing index 0 exactly
+   at offset 0 with pixels unmoved; scroll stops exactly on the first element and
+   anchoredTo0 flips true. The landing check runs every pass (not only after a
+   step) so a residual deferred by suppression / a segment is picked up by the
+   next resting pass; while `emit?` is false the offset model stays frozen."
+  [^CollectionRenderSliver rs layout env ^double ws ^bool emit?]
   (let [init-fn (:init layout)
-        finish (fn [^bool did]
-                 (when (and did (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
-                   (let [^double z (double (:offset (nth (.-cache rs) 0)))]
-                     (if (> (.abs z) 1e-3)
-                       (do (.-cache! rs [])
-                           (.-baseState! rs (init-fn env))
-                           (.-anchoredTo0! rs false)
-                           (- z))
-                       (do (.-anchoredTo0! rs true)
-                           nil)))))]
-    (loop [did false]
+        ;; INVARIANT: a flow layout walked from :init must place index 0 at
+        ;; offset 0 (all built-ins do) — otherwise this per-pass check would
+        ;; re-emit the same residual forever.
+        land (fn []
+               (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
+                 (let [^double z (double (:offset (nth (.-cache rs) 0)))]
+                   (if (> (.abs z) 1e-3)
+                     (when emit?
+                       (.-cache! rs [])
+                       (.-baseState! rs (init-fn env))
+                       (.-anchoredTo0! rs false)
+                       (- z))
+                     (do (.-anchoredTo0! rs true)
+                         nil)))))]
+    (loop []
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
         (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
           (let [cp (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
                 stepped (if cp
-                          (reflow-from-checkpoint! rs layout env cp)
+                          (reflow-from-checkpoint! rs layout env cp emit?)
                           (estimate-leading-step! rs layout env))]
-            (if stepped (recur true) (finish did)))
-          (finish did))))))
+            (cond
+              (identical? true stepped) (recur)
+              (or (nil? stepped) (false? stepped)) (land)
+              ;; seam correction emitted — end the pass; the viewport re-runs
+              ;; layout with the corrected offset and backfill continues there.
+              :else stepped))
+          (land))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
@@ -1033,6 +1183,18 @@
                           (if-let [est (:estimate layout)]
                             (double (est env last-i end (int item-count)))
                             (* end (/ (double item-count) (double (inc last-i)))))))
+        ;; §2.4 indicator honesty: while anchoredTo0 the reported extent is truth
+        ;; (walked/estimated from exact offsets). While un-anchored it is honest-
+        ;; but-approximate — let the measured-density :approx-offset raise it
+        ;; toward truth, never below the walked end (content is laid there).
+        ^double total
+        (if (and (not reached)
+                 (not (.-anchoredTo0 rs))
+                 item-count)
+          (if-let [approx-fn (:approx-offset layout)]
+            (math/max total (double (approx-fn env (int item-count))))
+            total)
+          total)
         ^double first-off (if-let [fc (.-firstChild rs)]
                             (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)
                             (let [cache (.-cache rs)]
@@ -1066,7 +1228,12 @@
       (pre-gc! rs ws we)
       (seed-cache! rs layout env)
       (normalize-cache! rs layout env)
-      (let [anchor (anchor-before rs so)]
+      (let [anchor (anchor-before rs so)
+            ;; Phase C: refinement corrections are emitted only on a resting
+            ;; (no-segment) pass with no active backward motion — mutually
+            ;; exclusive with the WS1.3 segment correction per pass.
+            emit? (refine-emit? (some? (.-tweenAnim rs))
+                                (refine-suppressed? (.-refineLastOffset rs) so))]
         ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
         ;; set-point. During a segment flow-layout! runs to capture the target.
         (when (nil? (.-tweenAnim rs))
@@ -1085,10 +1252,14 @@
                                    (int kl))
                                  last-i)]
             (post-gc! rs keep-last ws)
-            (let [corr (backfill-leading! rs layout env ws)]
+            (let [corr (backfill-leading! rs layout env ws emit?)]
               ;; Interim Phase-B memory bound: keep checkpoints in the visible+cache
               ;; band [ws, we] plus one seed above (Phase D/E widen to overscan).
               (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws we))
+              ;; measured aggregates track the live window on resting passes so
+              ;; :approx-offset / extent extrapolation follow reality (§1.1).
+              (when (nil? (.-tweenAnim rs))
+                (update-measured-agg! rs env))
               (if corr
                 (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                     (.didFinishLayout mgr))
@@ -1600,7 +1771,7 @@
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {} 0
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil approxSize nil {} false)]
+                                     fadeEnter fadeExit nil approxSize nil {} false dc/double.nan)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
