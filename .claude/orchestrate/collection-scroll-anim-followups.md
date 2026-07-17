@@ -46,6 +46,12 @@ frame. No velocity/time handoff.
   fallback (b2) pre-advance controller by one frame's dt (~5 lines × 2 hosts) if the hitch is
   visible at 60Hz on device; (c) velocity handoff rejected — needs per-item simulations,
   breaks the single-shared-tween invariant.
+- **SUPERSEDED (2026-07-17, commit 78e1690):** shipped a variant of (c) the research missed —
+  velocity handoff on the shared controller's scalar t (critically-damped SpringSimulation via
+  `animateWith`, seeded with the controller's current velocity). Position continuity comes from
+  the WS1.1 re-anchoring; momentum continuity from the spring; critical damping keeps t
+  monotone in [0,1] so collapse/fade fractions never overshoot. Single-shared-tween invariant
+  intact — per-item simulations were never needed. `:curve` no longer applies to move.
 
 ### 1.3 Scroll behaviour during & after a segment — **[bug] (#4, + user pt 5)**
 During a segment `seg-scroll-correction` (render.cljd:807-818) emits an **absolute**
@@ -87,6 +93,11 @@ Materialize/measure a margin of cells past the visible edges so entering cells a
 neighbours are real, not estimated. How wide is hard — may scale with scroll velocity.
 - Research: RecyclerView `prefetch`/extra-layout-space, iOS `UICollectionView` prefetching,
   react-virtuoso / TanStack Virtual overscan, Flutter `cacheExtent`.
+- **Designed (2026-07-17, see `ws2-1-overscan-design.md`):** directional velocity-scaled
+  widening of the materialisation window, composing with (not duplicating) Flutter cacheExtent;
+  velocity derived render-object-locally from correction-compensated scrollOffset deltas;
+  animateTo = same regime gate as fling (per-frame always, fidelity/overscan vary), no
+  programmatic-scroll detection; single `:overscan` option. Open questions flagged in the doc.
 - **Decision (2026-07-15):** scope the `committed` cache to the overscan window — prune
   geometrically ("left the window"), not by age; the 600-pass prune goes away. Kills the
   stale-`from` class of bugs (re-insert of a long-gone key after WS1.1 would animate from a
