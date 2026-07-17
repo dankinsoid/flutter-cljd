@@ -398,6 +398,38 @@
     (testing "second pass does not emit again — the contract fails loudly instead"
       (is (= :violated (render/landing-decision z2 true true))))))
 
+;; --- cross-layout re-anchor (wrap↔list morph while scrolled deep) ---
+
+(deftest reanchor-offset-cross-layout-uses-new-estimate
+  ;; Repro: press Wrap, Jump ~50vp, then List. The survivor top rests at index
+  ;; ~1700. Wrap packs 3 items per run, so its offset is COMPRESSED (~1/3); list
+  ;; stacks 1 per row, so index 1700 truly sits ~3× lower. If the post-morph
+  ;; re-anchor keeps the stale WRAP offset, only ~1/3 of the px needed to fit 1700
+  ;; list rows exists above the survivor → backfill exhausts its budget and pins a
+  ;; deep index at offset 0: "top element is #1700, nothing above it, clamps at 0".
+  (let [item-h 100.0
+        per-run 3
+        idx 1700
+        wrap-off (* (double (quot idx per-run)) item-h)   ; ~56600  (stale, compressed)
+        list-off (* (double idx) item-h)]                 ; 170000  (new-layout estimate)
+    (testing "the fixture reproduces the compression that strands the leading region"
+      (is (< wrap-off (* (double idx) item-h))))   ; not enough budget to reach index 0
+    (testing "a cross-layout re-anchor adopts the NEW layout's estimate, not the stale offset"
+      (is (= list-off (render/reanchor-offset true idx wrap-off list-off))))
+    (testing "the re-anchored leading extent fits every index down to 0 (reachable)"
+      ;; backfill walks up ~item-h per index; reaching 0 needs idx*item-h of budget
+      (is (>= (render/reanchor-offset true idx wrap-off list-off) (* (double idx) item-h))))
+    (testing "a same-layout cache loss (keyed reconcile) keeps the stale offset — no jump"
+      (is (= wrap-off (render/reanchor-offset false idx wrap-off list-off))))
+    (testing "a survivor at the very top ignores the estimate (already exact at 0)"
+      (is (= 0.0 (render/reanchor-offset true 0 0.0 500.0))))
+    (testing "a degenerate (non-positive) estimate falls back to the stale offset"
+      (is (= wrap-off (render/reanchor-offset true idx wrap-off 0.0)))
+      (is (= wrap-off (render/reanchor-offset true idx wrap-off nil))))
+    (testing "the reverse morph (list→wrap) re-anchors LOWER — leading extent shrinks too"
+      ;; list-off is the stale here; wrap-off the shorter new estimate
+      (is (= wrap-off (render/reanchor-offset true idx list-off wrap-off))))))
+
 (deftest ema-agg-seeds-then-blends
   (testing "nil prev seeds directly from the first live-window sample"
     (is (= {:avg-main 40.0 :avg-cross 90.0} (render/ema-agg nil 40.0 90.0))))

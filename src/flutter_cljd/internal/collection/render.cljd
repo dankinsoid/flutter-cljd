@@ -116,8 +116,16 @@
                           ;; Drives the flow dispatch (flying ⇒ approximate placement) and overscan gating.
    ^:mutable ^double overscanBehind ;; this frame's resolved leading/trailing overscan margins (px), computed once
    ^:mutable ^double overscanAhead ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
-   ^:mutable ^int flyingRun] ;; consecutive frames the EMA has held ≥ v-fast (0 = not fast) — the flying
+   ^:mutable ^int flyingRun ;; consecutive frames the EMA has held ≥ v-fast (0 = not fast) — the flying
                           ;; entry gate; a lone fast frame (desktop scroll notch/jump/glitch) never trips it.
+   ^:mutable ^bool crossLayoutReanchor ;; a layout :id change dropped the cache; the surviving top child's
+                          ;; last offset lives in the OLD layout's coordinate space. The next seed-cache!
+                          ;; must re-anchor it at the NEW layout's :approx-offset (not the stale, differently
+                          ;; scaled offset) so the leading extent above the window matches the new layout and
+                          ;; backfill can still walk to index 0. Set by update-render!, consumed by seed-cache!.
+   ^:mutable ^double reanchorShift] ;; NaN | the (approx − stale) offset delta a cross-layout re-anchor
+                          ;; introduced this pass; flow-layout! emits it as a scrollOffsetCorrection so the
+                          ;; visible child holds still while the indicator jumps to the new-layout estimate.
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -841,6 +849,12 @@
       (.-checkpoints! rs {})
       (.-anchoredTo0! rs false)
       (.-landingEmitted! rs false))
+    ;; a layout :id change invalidates the survivor's stale offset (it is in the OLD
+    ;; layout's space) — flag the next seed-cache! to re-anchor at the NEW layout's
+    ;; :approx-offset instead. A count change keeps the same layout space, so its
+    ;; offsets stay valid — no cross-layout re-anchor there.
+    (when layout-changed
+      (.-crossLayoutReanchor! rs true))
     (.-prevLayout! rs (next-prev-layout (.-prevLayout rs) old
                                         (boolean layout-changed) (some? tween-anim)))
     ;; always swap the fns — same :id means same behavior, fresher closures
@@ -1024,6 +1038,27 @@
           ^int trailing (math/max 0 (math/min trailing (- total leading)))]
       (.collectGarbage rs leading trailing))))
 
+(defn reanchor-offset
+  "Offset to re-anchor a lost-cache survivor at index `idx`. `stale-off` is its
+   last layoutOffset — coordinate-valid only WITHIN the layout it was placed
+   under. After a layout :id change (`cross-layout?`) that offset lives in the OLD
+   layout's space; the NEW layout's leading geometry above `idx` can be much
+   taller (list vs. a packed wrap) or shorter, so keeping the stale offset strands
+   the leading region — there aren't enough px between 0 and stale-off to fit
+   `idx` new-layout runs, so backfill can never walk up to index 0 and the deep
+   survivor pins at offset 0 (the \"no elements above #1700, clamps at 0\" defect).
+   Re-anchor instead at the new layout's O(1) estimate `approx-off` so the leading
+   extent matches the new layout and index 0 stays reachable; the caller emits the
+   (approx-off − stale-off) shift as a scrollOffsetCorrection to hold the visible
+   child still while the indicator jumps to the honest-approximate estimate.
+   Same-layout losses (keyed reconcile) keep the stale offset — no visible jump.
+   Falls back to stale-off at the top (idx 0) or when no positive estimate exists.
+   Pure."
+  [^bool cross-layout? ^int idx ^double stale-off approx-off]
+  (if (and cross-layout? (pos? idx) approx-off (pos? (double approx-off)))
+    (double approx-off)
+    stale-off))
+
 (defn- seed-cache!
   "When the geometry cache is empty, re-anchors it: on a cold deep start (nothing
    attached, window far down) invert the monotone :approx-offset to pick the start
@@ -1037,7 +1072,11 @@
           ^r/SliverConstraints c (:constraints env)
           ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
           fc (.-firstChild rs)
-          idx (if fc (.indexOf rs ^r/RenderBox fc) 0)]
+          idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
+          ;; consumed once: the survivor's stale offset is cross-layout (see
+          ;; reanchor-offset) only on the first seed after a layout :id change.
+          cross-layout? (.-crossLayoutReanchor rs)]
+      (.-crossLayoutReanchor! rs false)
       (cond
         ;; COLD DEEP START / far jump: nothing attached and the window sits far
         ;; down. Invert the monotone :approx-offset to seed the start index instead
@@ -1068,9 +1107,17 @@
             (.-anchoredTo0! rs true))
 
         (some? anchor-fn)
-        (let [off (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)]
+        (let [^double stale (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
+              approx-off (when (and cross-layout? approx-fn (pos? ^int idx))
+                           (double (approx-fn env idx)))
+              ^double off (reanchor-offset (boolean cross-layout?) (int idx) stale approx-off)]
+          ;; a cross-layout re-anchor moved the survivor to the new-layout estimate;
+          ;; record the shift so flow-layout! emits it as a scrollOffsetCorrection
+          ;; and the visible child holds still (no jump) as the indicator updates.
+          (when (not= off stale)
+            (.-reanchorShift! rs (- off stale)))
           (.-cacheFirst! rs idx)
-          (.-baseState! rs (anchor-fn env idx (double off)))
+          (.-baseState! rs (anchor-fn env idx off))
           ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
           ;; surviving anchoredTo0 here would be a stale truth claim (Phase D).
           (.-anchoredTo0! rs false))
@@ -1635,6 +1682,8 @@
     ;; §8a: flow children are never engine-clipped — clear any stale clip map
     ;; left by a prior indexed segment so it doesn't paint-clip this flow pass.
     (.-clips! rs {})
+    ;; fresh each pass: seed-cache! sets it only when it re-anchors cross-layout.
+    (.-reanchorShift! rs dc/double.nan)
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
@@ -1690,13 +1739,25 @@
               ;; :approx-offset / extent extrapolation follow reality (§1.1).
               (when (nil? (.-tweenAnim rs))
                 (update-measured-agg! rs env))
-              (if corr
-                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
-                    (.didFinishLayout mgr))
-                (if-let [delta (anchor-delta rs anchor)]
-                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
+              ;; A cross-layout re-anchor (seed-cache!) takes precedence: this pass's
+              ;; anchor was captured AFTER the re-anchor so anchor-delta reads ~0; the
+              ;; recorded shift is the real correction that keeps the visible child put
+              ;; while the offset jumps to the new-layout estimate. During a segment
+              ;; capture pass segment-start! overwrites this geometry, so the segment's
+              ;; own set-point (not this) moves the viewport — no double count.
+              (let [^double rsh (.-reanchorShift rs)]
+                (cond
+                  (not (.-isNaN rsh))
+                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection rsh))
                       (.didFinishLayout mgr))
-                  (finish-flow-geometry! rs layout env c walked))))))))))
+                  corr
+                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
+                      (.didFinishLayout mgr))
+                  :else
+                  (if-let [delta (anchor-delta rs anchor)]
+                    (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
+                        (.didFinishLayout mgr))
+                    (finish-flow-geometry! rs layout env c walked)))))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -2208,7 +2269,8 @@
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {}
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
-                                     overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0)]
+                                     overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
+                                     false dc/double.nan)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
