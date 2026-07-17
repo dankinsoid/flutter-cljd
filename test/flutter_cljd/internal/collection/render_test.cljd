@@ -430,6 +430,88 @@
       ;; list-off is the stale here; wrap-off the shorter new estimate
       (is (= wrap-off (render/reanchor-offset true idx list-off wrap-off))))))
 
+;; --- top-underflow correction (re-anchor estimate runs short by k items) ---
+
+(deftest underflow-decision-fires-only-at-origin
+  ;; The re-anchor made the leading estimate almost right, but a residual undershoot
+  ;; strands a few indices below the origin. The correction must fire ONLY there —
+  ;; the origin test (head at/below 0), not the deficit magnitude, is the gate, so a
+  ;; normal mid-scroll stall (frontier at a large window start) can never false-fire.
+  (let [head 0.0
+        honest 700.0]   ; index 7 belongs 7*100px below the origin
+    (testing "a positive frontier stranded at the origin manufactures the deficit"
+      (is (= :emit (render/underflow-decision 7 head honest true))))
+    (testing "suppressed / mid-segment defers — the offset model stays frozen"
+      (is (= :defer (render/underflow-decision 7 head honest false))))
+    (testing "an index-0 frontier is not underflow — the landing check owns it"
+      (is (= :ok (render/underflow-decision 0 head honest true))))
+    (testing "a mid-scroll stall never fires even with a large local deficit —
+              the origin gate, not the magnitude, protects it"
+      (is (= :ok (render/underflow-decision 1590 158900.0 159600.0 true))))
+    (testing "an already-honest frontier at the origin (deficit within eps) is quiet"
+      (is (= :ok (render/underflow-decision 7 0.0 0.3 true))))
+    (testing "a frontier fully at the scroll top (negative head) still fires"
+      (is (= :emit (render/underflow-decision 7 -250.0 450.0 true))))))
+
+(deftest underflow-restores-honest-range-after-short-reanchor
+  ;; Repro shape: Wrap → Jump ~50vp → List re-anchors the survivor at the new-layout
+  ;; estimate, but that estimate undershoots the true leading extent by k items, so
+  ;; backfill exhausts its offset budget and stalls with index k at offset ≈0 —
+  ;; items 0..k-1 fall below the origin and clamp ("top element is #k, nothing above
+  ;; it"). At the scroll top the frontier (cf=k, head≈0) undershoots honest(k) =
+  ;; approx-offset(k); the engine manufactures the deficit to restore the range.
+  (let [item-h 100.0
+        k 7
+        env {:avg-main item-h}
+        approx (:approx-offset (lay/list-layout {}))
+        head 0.0                                 ; frontier stranded at the origin
+        honest (double (approx env k))]          ; 700 — where index k honestly sits
+    (testing "the honest estimate places index k exactly k items below the origin"
+      (is (= 700.0 honest)))
+    (testing "the stranded frontier manufactures exactly the missing k-item extent"
+      (is (= :emit (render/underflow-decision k head honest true)))
+      (is (= 700.0 (- honest head))))            ; the window shifts up by 7 items
+    (testing "after the shift the frontier sits at its honest offset — deficit
+              consumed, so the corrected re-run does not re-emit (single-shot)"
+      (let [head' (+ head (- honest head))]
+        (is (= :ok (render/underflow-decision k head' honest true)))))))
+
+(deftest underflow-converges-with-landing-bounded
+  ;; Oscillation guard: one correction makes the whole coordinate honest, so the
+  ;; frontier hands off cleanly index by index down to 0 where the LANDING correction
+  ;; (a different branch, cf==0) pins offset 0 — the two never ping-pong. Even under
+  ;; the pathological assumption that every index re-strands at the origin, the sum
+  ;; of manufactured corrections stays bounded and the frontier strictly decreases.
+  (let [item-h 100.0
+        env {:avg-main item-h}
+        approx (:approx-offset (lay/list-layout {}))
+        honest (fn [^int cf] (double (approx env cf)))]
+    (testing "single-shot: the first correction makes the frontier honest, so the
+              same frontier no longer underflows next pass"
+      (is (= :emit (render/underflow-decision 7 0.0 (honest 7) true)))
+      (is (= :ok (render/underflow-decision 7 (honest 7) (honest 7) true))))
+    (testing "as the user scrolls up every lower index rests at its honest offset
+              (deficit 0) — clean hand-off, no correction churn"
+      (doseq [cf [6 5 4 3 2 1]]
+        (is (= :ok (render/underflow-decision cf (honest cf) (honest cf) true)))))
+    (testing "index 0 hands off to the landing correction — the sequence terminates"
+      (is (= :ok (render/underflow-decision 0 0.0 0.0 true)))
+      (is (= :emit (render/landing-decision 40.0 true false))))   ; landing owns cf==0
+    (testing "pathological re-strand-every-item worst case still converges: strictly
+              decreasing frontier, corrections bounded by the deepest estimate"
+      (let [{:keys [^double total ^int final-cf seen]}
+            (loop [^int cf 7 ^double total 0.0 seen []]
+              (if (pos? cf)
+                (let [^double h (honest cf)
+                      ^double d (case (render/underflow-decision cf 0.0 h true)
+                                  :emit h
+                                  0.0)]
+                  (recur (dec cf) (+ total d) (conj seen d)))
+                {:total total :final-cf cf :seen seen}))]
+        (is (= 0 final-cf))                       ; reaches index 0 (terminates)
+        (is (every? pos? seen))                   ; every stall makes progress
+        (is (<= total (* 7.0 (honest 7))))))))    ; Σ approx(cf) ≤ 7·approx(7)
+
 ;; --- canonical leading dead-reckon (wrap→jump→list no-spacing bug) ---
 
 (deftest leading-step-canonical-list-keeps-spacing

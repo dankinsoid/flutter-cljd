@@ -440,6 +440,38 @@
     emitted-before? :violated
     :else :emit))
 
+(def ^:private ^double underflow-eps
+  "Sub-pixel slack below which a leading deficit isn't worth manufacturing."
+  0.5)
+
+(defn underflow-decision
+  "Decision kernel for the top-underflow branch of backfill. The leading backfill
+   stalled at frontier index `cf` whose current offset is `head` (cache[0].offset),
+   while the layout's honest estimate places index cf at `honest` (= approx-offset(cf),
+   the extent of indices [0,cf)). Top-underflow = an index > 0 stranded at or above
+   the coordinate origin: `cf`>0 AND `head` sits at ~0 or below while `honest` says it
+   belongs a positive `deficit = honest − head` further down. The re-anchor estimate
+   undershot the true leading extent, so backfill exhausted its offset budget before
+   reaching index 0 and the deep frontier pins at offset 0 (items above unreachable).
+   The origin test — not the deficit magnitude — is the gate: a normal mid-scroll
+   stall leaves `head` ≈ the large window start (never ≤ 0), so it can't false-fire.
+   `emit?` is the refinement gate (resting, unsuppressed). Returns:
+     :ok    — not underflow (cf==0, frontier above origin, or honest deficit within
+              eps): the caller falls through to the landing check.
+     :defer — underflow but gated (suppressed / mid-segment): the offset model stays
+              frozen; a later resting pass picks the deficit up.
+     :emit  — manufacture `deficit`: shift the window up by it and emit it as a
+              pixel-stable scrollOffsetCorrection, restoring the honest scroll range
+              so backfill reaches index 0 on the corrected re-runs.
+   Pure."
+  [^int cf ^double head ^double honest ^bool emit?]
+  (cond
+    (not (pos? cf)) :ok
+    (> head underflow-eps) :ok
+    (<= (- honest head) underflow-eps) :ok
+    (not emit?) :defer
+    :else :emit))
+
 (def ^:private ^double agg-ema-alpha
   "EMA weight of the current pass's live-window mean in :avg-main/:avg-cross."
   0.25)
@@ -1507,6 +1539,7 @@
    next resting pass; while `emit?` is false the offset model stays frozen."
   [^CollectionRenderSliver rs layout env ^double ws ^bool emit?]
   (let [init-fn (:init layout)
+        approx-fn (:approx-offset layout)
         land (fn []
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
                  (let [^double z (double (:offset (nth (.-cache rs) 0)))]
@@ -1530,7 +1563,35 @@
                          ;; origin so the offset stops creeping by z every pass.
                          (.-anchoredTo0! rs true)
                          (.-landingEmitted! rs false)
-                         nil)))))]
+                         nil)))))
+        ;; Top-underflow: the leading backfill stalled at a positive frontier `cf`
+        ;; sitting at/above the coordinate origin because the re-anchor estimate
+        ;; undershot the true leading extent — indices 0..cf-1 fell below offset 0
+        ;; and became unreachable ("clamps with #cf as the top, nothing above").
+        ;; Manufacture the missing extent = honest(cf) − head as a pixel-stable
+        ;; scrollOffsetCorrection (like the reanchor shift): hold the visible
+        ;; children put while the coordinate space grows and the indicator jumps to
+        ;; the honest estimate, restoring the scroll range so index 0 is reachable.
+        ;; Drop the cache + stale checkpoints so the corrected re-run re-seeds the
+        ;; frontier at its honest offset (seed-cache!'s dead-reckon) and re-flows.
+        underflow
+        (fn []
+          (let [cache (.-cache rs)
+                ^int cf (.-cacheFirst rs)]
+            (when (and (pos? cf) (seq cache))
+              (let [^double head (double (:offset (nth cache 0)))
+                    ^double avg (double (or (:avg-main env) 0.0))
+                    ^double honest (cond
+                                     approx-fn (double (approx-fn env cf))
+                                     (pos? avg) (* cf avg)
+                                     :else head)]
+                (when (= :emit (underflow-decision cf head honest emit?))
+                  (let [^double deficit (- honest head)]
+                    (shift-attached-from! rs cf deficit)
+                    (.-cache! rs [])
+                    (.-checkpoints! rs {})
+                    (.-anchoredTo0! rs false)
+                    deficit))))))]
     (loop []
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
@@ -1545,7 +1606,9 @@
               ;; seam correction emitted — end the pass; the viewport re-runs
               ;; layout with the corrected offset and backfill continues there.
               :else stepped))
-          (land))))))
+          ;; leading budget exhausted (head <= ws) or cf==0: manufacture the missing
+          ;; leading extent when the frontier undershoots the origin, else land.
+          (or (underflow) (land)))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
