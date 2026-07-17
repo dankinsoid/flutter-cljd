@@ -292,6 +292,36 @@
                   [{:offset 1700.0 :end 1800.0 :max-end 1800.0}]
                   40000.0 41800.0))))))
 
+;; --- materialization guard (O(window+overscan) per-pass tripwire) ---
+
+(deftest materialization-budget-bounds-pass-work
+  ;; A single flow pass must lay out O(window+overscan) children, never O(gap).
+  ;; The debug assert compares the pass's laid-child count against this budget:
+  ;; k * (band/avg-main) * items-per-run + floor, with generous k so estimate
+  ;; error never trips it on legit scroll/jump/morph flows.
+  (let [band 1800.0            ; viewport + Flutter cache extent + overscan
+        avg-main 114.0 avg-cross 88.0 cross 390.0   ; the WS2 wrap demo's numbers
+        in-band (* (/ band avg-main) (/ cross avg-cross))]   ; ≈ 70 children
+    (testing "unknown density (nothing measured yet) never trips — infinite budget"
+      (is (false? (.-isFinite ^double (render/materialization-budget band 0.0 0.0 cross))))
+      (is (false? (.-isFinite ^double (render/materialization-budget band -1.0 90.0 cross)))))
+    (testing "a fully dense band pass keeps at least 2x headroom under the budget"
+      (is (> ^double (render/materialization-budget band avg-main avg-cross cross)
+             (* 2.0 in-band))))
+    (testing "the pre-fix far-jump walk MUST trip the guard: WS2 repro (wrap,
+              2200 items, first Jump ~50vp) walked the stale band → target gap,
+              measuring every item in it during one frame"
+      (let [gap-walk (* (/ (- 40000.0 1800.0) avg-main) (/ cross avg-cross))]  ; ≈ 1485
+        (is (> gap-walk
+               ^double (render/materialization-budget band avg-main avg-cross cross)))))
+    (testing "the post-fix inverse seed (O(window) materialization) stays inside"
+      (is (< in-band
+             ^double (render/materialization-budget band avg-main avg-cross cross))))
+    (testing "children spanning the full cross axis (a list) count 1 per run —
+              per-run never drops below 1"
+      (is (= (render/materialization-budget band avg-main cross cross)
+             (render/materialization-budget band avg-main (* 2.0 cross) cross))))))
+
 ;; --- cold-start inverse-seed binary search ---
 
 (deftest invert-approx-offset-lands-within-one-item

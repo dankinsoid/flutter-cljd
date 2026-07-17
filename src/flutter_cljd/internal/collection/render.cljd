@@ -126,6 +126,10 @@
    ^:mutable ^double reanchorShift ;; NaN | the (approx − stale) offset delta a cross-layout re-anchor
                           ;; introduced this pass; flow-layout! emits it as a scrollOffsetCorrection so the
                           ;; visible child holds still while the indicator jumps to the new-layout estimate.
+   ^:mutable ^int passMaterialized ;; children laid out by the CURRENT flow pass (walk / backfill / leading
+                          ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
+                          ;; tripwire (assert-materialization-bounded!) — a pass that lays O(gap) children
+                          ;; means some path walked a gap instead of seeding geometrically.
    ^:mutable dyingSlots] ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
                           ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
@@ -1331,7 +1335,8 @@
                         ^r/BoxConstraints (measure-fn env (dec fidx))
                         .parentUsesSize true)]
               ;; placeholder offsets; the walk overwrites them from the cache
-              (do (set-layout-offset! c 0.0)
+              (do (.-passMaterialized! rs (inc (.-passMaterialized rs)))
+                  (set-layout-offset! c 0.0)
                   (set-cross-axis-offset! c 0.0)
                   (recur))
               true)
@@ -1364,6 +1369,7 @@
            state (state-before rs layout env i)]
       (let [^r/BoxConstraints cs (measure-fn env i)]
         (.layout child cs .parentUsesSize true)
+        (.-passMaterialized! rs (inc (.-passMaterialized rs)))
         (let [^double ext (.paintExtentOf rs child)
               ^int rel (- i (.-cacheFirst rs))
               cache (.-cache rs)
@@ -1502,6 +1508,7 @@
                        (recur (dec i) (assoc! acc i c))
                        (persistent! acc))
                      (persistent! acc)))]
+    (.-passMaterialized! rs (+ (.-passMaterialized rs) (count inserted)))
     (if (empty? inserted)
       nil
       ;; lowest contiguous index we actually materialised (usually k)
@@ -1613,7 +1620,8 @@
     (if-let [c (.insertAndLayoutLeadingChild rs
                 ^r/BoxConstraints (measure-fn env i)
                 .parentUsesSize true)]
-      (let [^double ext (.paintExtentOf rs ^r/RenderBox c)
+      (let [_ (.-passMaterialized! rs (inc (.-passMaterialized rs)))
+            ^double ext (.paintExtentOf rs ^r/RenderBox c)
             ^double head (double (:offset (nth cache 0)))
             ^double head-max-end (double (:max-end (nth cache 0)))
             e (leading-step-entry layout env i head (.-size ^r/RenderBox c) ext head-max-end)
@@ -1836,6 +1844,54 @@
                      vs " " ve ") — in-window geometry must come from the canonical "
                      ":place walk (WS2 invariant). First offender: " (first v)))))))
 
+(def ^:private ^double materialize-budget-factor
+  "Headroom multiplier of the materialization tripwire over a perfectly dense
+   band. Generous (a dense pass uses ~1x) so estimate error — avg-main measured
+   over items much larger than the ones actually entering the band — never trips
+   it on legit scroll/jump/morph flows; an O(gap) walk overshoots it by orders."
+  4.0)
+
+(def ^:private ^int materialize-budget-floor
+  "Constant slack of the materialization tripwire — tiny windows / double-laid
+   leading placeholders must not flake it."
+  32)
+
+(defn materialization-budget
+  "Ceiling on how many children ONE flow pass may lay out under the
+   O(window+overscan) design bound (the cache is an accelerator; per-pass work
+   never depends on cache contents or jump distance):
+     floor + factor * (band-extent / avg-main) * items-per-run
+   where items-per-run = max(1, cross-extent / avg-cross) (a wrap packs several
+   items per main-axis run; a list's children span the cross axis → 1). Infinite
+   while the density is unknown (nothing measured yet — a cold first pass may
+   legitimately walk an unknown band). Pure."
+  [^double band-extent ^double avg-main ^double avg-cross ^double cross-extent]
+  (if-not (and (pos? avg-main) (.-isFinite avg-main))
+    dc/double.infinity
+    (let [^double per-run (if (and (pos? avg-cross) (.-isFinite avg-cross) (pos? cross-extent))
+                            (math/max 1.0 (/ cross-extent avg-cross))
+                            1.0)]
+      (+ materialize-budget-floor
+         (* materialize-budget-factor per-run (/ band-extent avg-main))))))
+
+(defn- assert-materialization-bounded!
+  "kDebugMode tripwire for the O(window+overscan) per-pass bound: a resting flow
+   pass that laid out more than materialization-budget children walked a gap
+   instead of seeding geometrically (the far-jump freeze class). Zero release
+   overhead — dead-code-eliminated when kDebugMode is false."
+  [^CollectionRenderSliver rs layout env ^double band-extent]
+  (when fd/kDebugMode
+    (let [^double budget (materialization-budget band-extent
+                                                 (double (or (:avg-main env) 0.0))
+                                                 (double (or (:avg-cross env) 0.0))
+                                                 (double (:cross-extent env)))
+          ^int n (.-passMaterialized rs)]
+      (assert (<= n budget)
+              (str "collection: flow layout " (:id layout) " laid out " n
+                   " children in ONE pass — budget " budget " for the "
+                   band-extent "px band. Per-pass work must be O(window+overscan);"
+                   " some path walked a gap instead of seeding geometrically.")))))
+
 (defn- finish-flow-geometry!
   [^CollectionRenderSliver rs layout env ^r/SliverConstraints c walked]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)
@@ -1999,6 +2055,8 @@
     (.-clips! rs {})
     ;; fresh each pass: seed-cache! sets it only when it re-anchors cross-layout.
     (.-reanchorShift! rs dc/double.nan)
+    ;; per-pass laid-child counter for the O(window+overscan) tripwire
+    (.-passMaterialized! rs 0)
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
@@ -2064,7 +2122,10 @@
               ;; measured aggregates track the live window on resting passes so
               ;; :approx-offset / extent extrapolation follow reality (§1.1).
               (when (nil? (.-tweenAnim rs))
-                (update-measured-agg! rs env))
+                (update-measured-agg! rs env)
+                ;; O(window+overscan) tripwire (debug, resting passes — a segment
+                ;; capture legitimately widens the window via widen-window!).
+                (assert-materialization-bounded! rs layout env (- we-o ws-o)))
               ;; A cross-layout re-anchor (seed-cache!) takes precedence: this pass's
               ;; anchor was captured AFTER the re-anchor so anchor-delta reads ~0; the
               ;; recorded shift is the real correction that keeps the visible child put
@@ -2596,7 +2657,7 @@
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     false dc/double.nan (or dyingSlots []))]
+                                     false dc/double.nan 0 (or dyingSlots []))]
       (set-tween-anim! rs tweenAnim)
       rs))
 
