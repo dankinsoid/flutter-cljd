@@ -932,10 +932,148 @@
                 (apply ui/collection :list :spacing 6 :animate true chips)))))
          (ui/expanded)))))
 
+;; ====== WS1 — INTERRUPTION-SMOOTHNESS VERIFICATION RIG ======
+;; @ai-generated(guided)
+;; Manual test rig for the WS1 collection-animation fixes (a38bbbd wipe-continue,
+;; 3460e17 incremental scroll correction, 78e1690 spring retarget). One keyed,
+;; animated collection; each button drives one checklist scenario in one/two taps.
+
+;; A one-shot timer used to fire the second op of a retrigger combo mid-flight.
+(defn- ^da/Timer ws1-later [^int ms f]
+  (da/Timer (dc/Duration .milliseconds ms) f))
+
+(def ^:private ws1-initial
+  (vec (map (fn [i] {:id i}) (range 20))))
+
+(defn- ws1-insert! [$items $next-id ^int pos]
+  (let [id @$next-id]
+    (swap! $next-id inc)
+    (swap! $items (fn [v] (vec (concat (take pos v) [{:id id}] (drop pos v)))))))
+
+(defn- ws1-remove-at! [$items ^int idx]
+  (swap! $items (fn [v] (if (< idx (count v))
+                          (vec (concat (subvec v 0 idx) (subvec v (inc idx))))
+                          v))))
+
+(defn- ws1-remove-id! [$items ^int id]
+  (swap! $items (fn [v] (vec (remove #(= (:id %) id) v)))))
+
+(defn- ws1-insert-id! [$items ^int id ^int pos]
+  (swap! $items (fn [v] (vec (concat (take pos v) [{:id id}] (drop pos v))))))
+
+;; Distinct identity: color stripe (by id) + big number; varied height so a
+;; collapse/expand or move is obvious. In wrap mode cells are fixed-width so the
+;; collapse axis is cross, exercising cross-window continuity.
+(defn- ^w/Widget ws1-tile [item ^bool wrap?]
+  (let [id (:id item)
+        h (+ 48.0 (* 24 (mod id 4)))
+        tile (->> (ui/row
+                   :cross-axis-alignment :stretch
+                   (ui/sized {:w 8} (ui/colored (nth colors (mod id (count colors)))))
+                   (ui/expanded
+                    (->> (ui/text (str id) {:size 20 :weight :bold})
+                         (ui/center)
+                         (ui/colored (c/CupertinoColors.systemGrey6)))))
+                  (ui/clip-corners :all 8))]
+    (if wrap?
+      (ui/sized {:w 76 :h h} tile)
+      (ui/sized {:h h} tile))))
+
+(def ^:private ws1-probe-id 5)
+
+(defn- ^w/Widget ws1-section [label row]
+  (ui/column
+   :cross-axis-alignment :stretch
+   :spacing 2
+   (->> (ui/text label {:size 11 :color :grey}) (ui/padding {:l 4}))
+   row))
+
+(defn ^w/Widget ws1-preview
+  "WS1 interruption-smoothness rig. Buttons → scenarios:
+   - Combos (1.1): op A then op B ~50% into A's animation; A's cell must continue
+     its wipe from the current window (no snap).
+   - Stale probe: Del #5 → scroll → Add #5; the re-insert must enter-wipe, not
+     fly in from a stale offset.
+   - Segment (1.3): Slow toggle (3.2s) lets you drag mid-segment; drag composes
+     with the correction, Shuffle leaves scroll put.
+   - Spring (1.2): Rapid fires 4 staggered ops ~300ms apart to eyeball momentum."
+  []
+  (f/widget
+   :watch [items (atom ws1-initial) :as $items
+           next-id (atom (count ws1-initial)) :as $next-id
+           slow? (atom false) :as $slow
+           layout (atom :list) :as $layout]
+   (let [dur (if slow? 3200 1600)
+         half (quot dur 2)]
+     (ui/column
+      :cross-axis-alignment :stretch
+      (->> (ui/column
+            :cross-axis-alignment :stretch
+            :spacing 6
+            (ws1-section
+             (str "layout / speed · " (name layout) " · " dur "ms · " (count items) " items")
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn (str "List" (if (= layout :list) " •" "")) #(reset! $layout :list))
+              (btn (str "Wrap" (if (= layout :wrap) " •" "")) #(reset! $layout :wrap))
+              (btn (str "Slow: " (if slow? "ON" "OFF")) #(swap! $slow not))))
+            (ws1-section
+             "retrigger combos (1.1) — B fires ~50% into A"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "ins-in-ins"
+                   (fn []
+                     (ws1-insert! $items $next-id 2)
+                     (ws1-later half #(ws1-insert! $items $next-id 4))))
+              (btn "rm-in-ins"
+                   (fn []
+                     (ws1-insert! $items $next-id 2)
+                     (ws1-later half #(ws1-remove-at! $items 4))))
+              (btn "ins-in-rm"
+                   (fn []
+                     (ws1-remove-at! $items 2)
+                     (ws1-later half #(ws1-insert! $items $next-id 3))))))
+            (ws1-section
+             (str "stale probe — Del #" ws1-probe-id ", scroll around, then Add #" ws1-probe-id)
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn (str "Del #" ws1-probe-id) #(ws1-remove-id! $items ws1-probe-id))
+              (btn (str "Add #" ws1-probe-id) #(ws1-insert-id! $items ws1-probe-id 2))))
+            (ws1-section
+             "segment (1.3) / spring (1.2) / reset"
+             (ui/row
+              :main-axis-alignment :space-evenly
+              (btn "Shuffle" (fn [] (swap! $items shuffle)))
+              (btn "Rapid x4"
+                   (fn []
+                     (ws1-insert! $items $next-id 2)
+                     (ws1-later 300 #(ws1-remove-at! $items 3))
+                     (ws1-later 600 #(ws1-insert! $items $next-id 2))
+                     (ws1-later 900 #(ws1-remove-at! $items 3))))
+              (btn "Reset"
+                   (fn []
+                     (reset! $items ws1-initial)
+                     (reset! $next-id (count ws1-initial)))))))
+           (ui/padding {:h 8 :v 8})
+           (ui/colored (c/CupertinoColors.systemGrey6)))
+      (->> (ui/custom-scroll-view
+            (ui/sliver-padding 8
+             (apply ui/sliver-collection
+                    items
+                    :key-fn :id
+                    :animate {:duration dur :move {:duration dur}}
+                    (concat
+                     (case layout
+                       :wrap [:layout :wrap :spacing 8 :run-spacing 8]
+                       [:spacing 8])
+                     [(fn [_ item] (ws1-tile item (= layout :wrap)))]))))
+           (ui/expanded))))))
+
 ;; ====== PREVIEW SWITCHER ======
 
 (def previews
-  [["Morph"      layout-tween-preview]
+  [["WS1"        ws1-preview]
+   ["Morph"      layout-tween-preview]
    ["Arrival"    arrival-morph-preview]
    ["Box Morph"  box-tween-preview]
    ["Flex Grid"  flexible-grid-preview]
