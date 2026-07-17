@@ -95,7 +95,7 @@
   c/IReset
   (-reset! [^AnimatedValue this new-value] (set-value this new-value))
   (dispose [^AnimatedValue this]
-    (.dispose (.-parent this))
+    (.dispose ^a/CurvedAnimation (.-parent this))
     (.dispose (.-controller this)))
   ^:mixin a/AnimationWithParentMixin)
 
@@ -421,7 +421,8 @@
   a/Animatable
   (^a/Animation animate [^Motion this ^#/(a/Animation double) parent]
     (if (instance? a/AnimationController parent)
-      (let [duration (.-duration parent)
+      (let [^a/AnimationController parent parent
+            duration (.-duration parent)
             {:keys [interpolate side-effects duration]} ((.-prepare this) nil duration)
             result (MotionAnimationWrapper nil nil nil interpolate parent)]
         (when (and duration (not= duration (.-duration parent)))

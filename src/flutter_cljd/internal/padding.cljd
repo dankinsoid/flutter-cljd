@@ -78,8 +78,8 @@
     (if-let [child (.-child this)]
       (let [^w/EdgeInsets padding (resolvedPadding this)
             ^w/BoxConstraints inner-constraints (.deflate constraints padding)
-            ^r/EdgeInsets result (+ (r/BaselineOffset (.getDryBaseline child inner-constraints baseline))
-                                    (.-top padding))]
+            ^r/BaselineOffset result (+ (r/BaselineOffset (.getDryBaseline child inner-constraints baseline))
+                                        (.-top padding))]
         (.-offset result))
       nil))
 

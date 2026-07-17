@@ -86,7 +86,7 @@
      (-> this .-widget .-child)))
 
   (dispose [^ValueAnimationBuilderState this]
-    (.dispose (.-animation this))
+    (.dispose ^a/CurvedAnimation (.-animation this))
     (some-> this .-controller .dispose)
     (.dispose ^super this))
 
@@ -112,7 +112,7 @@
           prev (.-resolvedOpts this)]
       (.-resolvedOpts! this (assoc resolved :duration duration))
       (when (or (nil? prev) (not= (:curve prev) (:curve resolved)))
-        (when (some? prev) (.dispose (.-animation this)))
+        (when (some? prev) (.dispose ^a/CurvedAnimation (.-animation this)))
         (.-animation! this (a/CurvedAnimation .parent (.-controller this) .curve (:curve resolved))))
       (.-duration! (.-controller this) duration))
     nil)
