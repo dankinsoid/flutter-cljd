@@ -72,13 +72,14 @@
                                  on-reassemble]}
                          child]
   (if (instance? OnStateActions child)
-    (doto child
-      (.-onDispose! (merge-fns on-dispose (.-onDispose child)))
-      (.-onInitState! (merge-fns on-create (.-onInitState child)))
-      (.-onUpdate! (merge-fns on-update (.-onUpdate child)))
-      (.-onDidChangeDependencies! (merge-fns on-did-change-dependencies (.-onDidChangeDependencies child)))
-      (.-onDeactivate! (merge-fns on-deactivate (.-onDeactivate child)))
-      (.-onReassemble! (merge-fns on-reassemble (.-onReassemble child))))
+    (let [^OnStateActions child child]
+      (doto child
+        (.-onDispose! (merge-fns on-dispose (.-onDispose child)))
+        (.-onInitState! (merge-fns on-create (.-onInitState child)))
+        (.-onUpdate! (merge-fns on-update (.-onUpdate child)))
+        (.-onDidChangeDependencies! (merge-fns on-did-change-dependencies (.-onDidChangeDependencies child)))
+        (.-onDeactivate! (merge-fns on-deactivate (.-onDeactivate child)))
+        (.-onReassemble! (merge-fns on-reassemble (.-onReassemble child)))))
     (OnStateActions on-dispose
                     on-create
                     on-update

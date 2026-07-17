@@ -483,7 +483,7 @@
                      ^:mutable stage
                      ;; The DraggableState that spawned this avatar — used to
                      ;; unregister on completion so it can be torn down on dispose.
-                     ^:mutable sourceState]
+                     ^:mutable ^DraggableState sourceState]
   :extends g/Drag
 
   ;; A nil entry means this avatar was torn down (source disposed mid-drag). The
@@ -556,12 +556,12 @@
           (.leaveAllEntered this)
           (let [new-target (->> targets
                                 (filter some?)
-                                (filter (fn [target]
+                                (filter (fn [^DragTargetState target]
                                           (.-enteredTargets! this (conj (.-enteredTargets this) target))
                                           (.didEnter target this)))
                                 first)]
 
-            (doseq [target (.-enteredTargets this)]
+            (doseq [^DragTargetState target (.-enteredTargets this)]
               (.didMove target this))
 
             (.-activeTarget! this new-target)))))
@@ -581,10 +581,10 @@
   ;; region *narrower* than the box drops the target. Then registered targets
   ;; whose region reaches *past* their box and thus can't be found by hit-test.
   (getDragTargets [^DragAvatar this ^w/Offset point path]
-    (let [path-targets (vec (for [entry path
+    (let [path-targets (vec (for [^g/HitTestEntry entry path
                                   :let [target (.-target entry)]
                                   :when (instance? r/RenderMetaData target)
-                                  :let [meta-data (.-metaData target)]
+                                  :let [meta-data (.-metaData ^r/RenderMetaData target)]
                                   :when (instance? DragTargetState meta-data)
                                   :when (.acceptsPoint ^DragTargetState meta-data point)]
                               meta-data))
@@ -604,7 +604,7 @@
                 t))))
 
   (leaveAllEntered [^DragAvatar this]
-    (doseq [target (.-enteredTargets this)]
+    (doseq [^DragTargetState target (.-enteredTargets this)]
       (.didLeave target this))
     (.-enteredTargets! this #{}))
 
@@ -622,7 +622,7 @@
       ;; defunct State's .-context still throws "unmounted" — drop such a target
       ;; and treat it as no-hit.
       (let [target (when (= end-kind :dropped)
-                     (when-let [t (.-activeTarget this)]
+                     (when-let [^DragTargetState t (.-activeTarget this)]
                        (when (.-mounted t) t)))
             target-box (some-> target .-context .findRenderObject)
             target-size (some-> ^w/RenderBox target-box .-size)
@@ -640,7 +640,7 @@
             ;; stays highlighted while the feedback flies in.
             was-accepted (boolean
                           (when target
-                            (.didDrop target this)
+                            (.didDrop ^DragTargetState target this)
                             true))
             last-offset (.-lastOffset this)
             velocity (or velocity w/Velocity.zero)
