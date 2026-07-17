@@ -666,6 +666,46 @@
     (is (= 0.0 (:cross e)))
     (is (true? (:canon e)))))
 
+;; --- above-window backfill snaps to a renewal point (#A: single-left-column) ---
+
+(deftest synth-renewal-checkpoint-lands-on-run-start
+  ;; #A repro: after a deep jump / layout switch there is NO stored checkpoint
+  ;; above the cache, so the backfill fell to the single-child estimate — which
+  ;; places each leading wrap cell as its OWN fresh run at cross 0 (the reported
+  ;; single left column). The fix synthesizes a checkpoint at the nearest renewal
+  ;; point (run start) from the layout's run structure so the backfill re-flows
+  ;; WHOLE runs. env: cross 200, avg-cross 90 ⇒ 2 items/run; run starts 0,2,4,…
+  (let [env (assoc wrap-env :avg-main 40.0 :avg-cross 90.0)]
+    (testing "a mid-run leading index snaps DOWN to its run start"
+      (let [cp (render/synth-renewal-checkpoint wrapl env 5)]
+        (is (= 4 (:index cp)))                              ; run start of 5
+        (is (= ((:approx-offset wrapl) env 4) (:offset cp)))  ; O(1) estimate
+        (is (= ((:anchor wrapl) env 4 (:offset cp)) (:state cp)))))  ; exact renewal anchor
+    (testing "an index that is itself a run start needs no snap — nil (stays on the
+              cheap single-child estimate path)"
+      (is (nil? (render/synth-renewal-checkpoint wrapl env 4))))
+    (testing "a layout without run structure (masonry) synthesizes nothing"
+      (is (nil? (render/synth-renewal-checkpoint
+                 (lay/masonry-layout {:cross-axis-count 3})
+                 (assoc env :cross-extent 320.0) 5))))))
+
+(deftest synth-renewal-reflow-produces-whole-runs-not-column
+  ;; Reflowing from the synthesized checkpoint yields real multi-column wrap runs —
+  ;; the anti-regression for the single-left-column bug. Contrast: the single-child
+  ;; leading estimate places index 5 at cross 0 (its own run); the run-start-seeded
+  ;; re-flow packs it into a real run at a nonzero cross.
+  (let [env (assoc wrap-env :avg-main 40.0 :avg-cross 90.0)
+        cp (render/synth-renewal-checkpoint wrapl env 5)
+        ;; re-flow [4,5] forward from the run-start seed (real :place, real sizes)
+        entries (tw/flow-run-entries wrapl env (wrap-sized 4 6) (:state cp))]
+    (testing "index 4 opens the run (cross 0); index 5 packs beside it (cross 90)"
+      (is (= 0.0 (:cross (nth entries 0))))
+      (is (= 90.0 (:cross (nth entries 1)))))                ; multi-column, NOT 0
+    (testing "the single-child estimate would instead put index 5 at cross 0 (column)"
+      (let [col (render/leading-step-entry wrapl env 5 (:offset cp)
+                                           (ui/Size 90 40) 40.0 1200.0)]
+        (is (= 0.0 (:cross col)))))))
+
 ;; --- structural-invariant guard (estimate-shaped entry in the visible window) ---
 
 (deftest window-canonical-violations-flags-estimate-in-window

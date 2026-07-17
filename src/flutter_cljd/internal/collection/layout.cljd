@@ -70,6 +70,15 @@
                 begins a fresh, independent run. The engine retains such indices as
                 exact backward-re-flow checkpoints. Absent → the engine keeps a
                 periodic full-:state checkpoint at an index stride instead.
+     :renewal-index (fn [env index] int) — OPTIONAL. The nearest renewal-point index
+                <= `index` (its run start), estimated in O(1) from the run structure
+                (never a walk). When NO stored checkpoint covers the region above the
+                cache (cold deep start / far jump / post-layout-switch), the engine
+                snaps a mid-run leading child down to this boundary and re-flows a
+                whole run — real :cross — instead of stacking one cell per row at
+                cross 0 (the single-left-column defect). Returns `index` itself for a
+                layout whose every index is a run start (list). Absent (masonry) → the
+                engine keeps the single-child leading estimate.
      :approx-offset (fn [env index] double) — OPTIONAL. O(1) main-axis offset
                 estimate for an ARBITRARY index, with NO walk. MUST be MONOTONE
                 NON-DECREASING in `index` (the engine binary-searches it to invert
@@ -215,6 +224,9 @@
        ;; every index begins its own run — flow state is a scalar offset the
        ;; :anchor reconstructs exactly, so every index is a renewal point.
        :renewal-point? (fn [_env _i _frame] true)
+       ;; nearest renewal point <= i is i itself (every index is a run start),
+       ;; so the engine keeps the single-child leading estimate — already exact.
+       :renewal-index (fn ^int [_env ^int i] i)
        :approx-offset (fn [env ^int i]
                         (* i (+ (double (or (:avg-main env) 0.0)) spacing)))})))
 
@@ -224,7 +236,18 @@
    Opts: :spacing (between items in a run), :run-spacing (between runs)."
   [opts]
   (let [^double sp (double (or (:spacing opts) 0))
-        ^double rsp (double (or (:run-spacing opts) 0))]
+        ^double rsp (double (or (:run-spacing opts) 0))
+        ;; O(1) estimated run width (items per run) from the measured aggregates —
+        ;; the shared basis for :approx-offset (per-run offset) and :renewal-index
+        ;; (which index starts each run). Approximate: the real pack uses measured
+        ;; sizes, so this may be off by an item, which the forward :place re-flow
+        ;; then corrects; the estimate only decides WHERE a backward re-flow seeds.
+        per-run (fn ^int [env]
+                  (let [^double ac (double (or (:avg-cross env) 0.0))
+                        ^double pitch (+ ac sp)]
+                    (if (pos? pitch)
+                      (math/max 1 (.floor ^double (/ ^double (:cross-extent env) pitch)))
+                      1)))]
     {:id [:wrap sp rsp]
      :collapse-axis :cross
      ;; state: x = cross-axis end of the current run (nil = empty run),
@@ -249,13 +272,17 @@
      ;; :cross == 0 marks the first item of a run — the state before it is an
      ;; empty run at that offset, exactly what :anchor reconstructs.
      :renewal-point? (fn [_env _i frame] (= 0.0 (double (:cross frame))))
+     ;; nearest renewal point (run start) <= i, from the estimated run width. The
+     ;; engine's above-window backfill snaps a mid-run leading index down to this
+     ;; boundary and re-flows a whole run (real cross) instead of stacking one cell
+     ;; per row at cross 0 (the single-left-column bug) when no checkpoint covers
+     ;; the region (cold deep start / far jump / post-layout-switch).
+     :renewal-index (fn ^int [env ^int i]
+                      (let [^int pr (per-run env)
+                            ^int run-idx (.floor ^double (/ i pr))]
+                        (* run-idx pr)))
      :approx-offset (fn [env ^int i]
-                      (let [^double ac (double (or (:avg-cross env) 0.0))
-                            ^double pitch (+ ac sp)
-                            ^int per-run (if (pos? pitch)
-                                           (math/max 1 (.floor ^double (/ ^double (:cross-extent env) pitch)))
-                                           1)
-                            ^int run-idx (.floor ^double (/ i per-run))]
+                      (let [^int run-idx (.floor ^double (/ i (per-run env)))]
                         (* run-idx (+ (double (or (:avg-main env) 0.0)) rsp))))}))
 
 (defn masonry-layout

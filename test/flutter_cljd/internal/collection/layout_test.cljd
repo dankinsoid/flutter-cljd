@@ -186,6 +186,43 @@
         (is (monotone-non-decreasing? (lay/wrap-layout {:spacing 8 :run-spacing 4}) env 300))
         (is (monotone-non-decreasing? (lay/masonry-layout {:cross-axis-count 4}) env 300))))))
 
+;; --- :renewal-index (nearest renewal-point index at or below i) — #A backfill snapping ---
+
+(deftest wrap-renewal-index-snaps-to-run-start
+  ;; cross 300, avg-cross 90 + spacing 10 = 100 pitch → 3 items/run: run starts at
+  ;; 0,3,6,9,… The engine's above-window backfill uses this to snap a mid-run
+  ;; leading child down to its run start and re-flow whole runs (not a single left
+  ;; column) when NO stored checkpoint covers the region (cold jump / layout switch).
+  (let [l (lay/wrap-layout {:spacing 10 :run-spacing 6})
+        env (assoc venv :avg-main 50.0 :avg-cross 90.0)
+        ri (:renewal-index l)]
+    (is (some? ri))
+    (testing "snaps any index down to the start of its (approx) run"
+      (is (= 0 (ri env 0)))
+      (is (= 0 (ri env 2)))
+      (is (= 3 (ri env 3)))
+      (is (= 3 (ri env 5)))
+      (is (= 6 (ri env 6)))
+      (is (= 6 (ri env 8))))
+    (testing "the snapped index is itself a renewal point (:approx-offset agrees)"
+      (is (= ((:approx-offset l) env 5) ((:approx-offset l) env (ri env 5)))))))
+
+(deftest list-renewal-index-is-identity
+  ;; every list index begins its own run, so the nearest renewal point <= i is i:
+  ;; the single-child leading estimate is already exact and stays on its fast path.
+  (let [l (lay/list-layout {:spacing 8})
+        env (assoc venv :avg-main 50.0)
+        ri (:renewal-index l)]
+    (is (some? ri))
+    (is (= 0 (ri env 0)))
+    (is (= 7 (ri env 7)))
+    (is (= 41 (ri env 41)))))
+
+(deftest masonry-has-no-renewal-index
+  ;; a column pack has no cheap run boundary, so no :renewal-index — the engine
+  ;; keeps the periodic full-:state checkpoint stride for backward re-flow.
+  (is (nil? (:renewal-index (lay/masonry-layout {:cross-axis-count 3})))))
+
 (deftest make-env-aggregates
   (let [c (sliver-constraints 300.0 600.0)]
     (testing "no seed and no measurement → nil aggregates"

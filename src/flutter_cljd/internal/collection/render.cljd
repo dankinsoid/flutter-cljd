@@ -1570,12 +1570,44 @@
     (.-cacheFirst! rs cf')
     (.-baseState! rs base')))
 
+(defn synth-renewal-checkpoint
+  "A backward-re-flow seed at the nearest renewal-point index `k` (<= `target`) for
+   a flow layout that exposes run structure (`:renewal-index` + `:approx-offset` +
+   `:anchor`) but has NO STORED checkpoint above the cache — the cold-deep-start /
+   far-jump / post-layout-switch state where the checkpoint store above the window
+   is empty or pruned to the band. Its :offset is the layout's O(1) :approx-offset
+   estimate and its :state the renewal-point :anchor state (exact at a run start by
+   the two-mode contract). Reflowing from it lands on a run boundary and produces
+   WHOLE RUNS with real :cross — this is what stops wrap's above-window backfill
+   from degenerating to a single left column (#A), the single-child leading
+   estimate's failure mode for a packed layout.
+
+   Returns nil when `target` is ITSELF a run start (k == target — list, or a wrap
+   run boundary), where the single-child leading estimate is already exact and
+   cheaper (no seam reconciliation), or when the layout lacks the hooks (masonry).
+   The synthesized run start is only an ESTIMATE (the real pack uses measured
+   sizes), so `k` may not be a true boundary — but the forward :place re-flow from
+   it packs subsequent cells by real size, so the structure is correct multi-column
+   forward of `k` with at most one approximate break at `k` itself, reconciled as
+   the walk reaches a true checkpoint or index 0. Pure."
+  [layout env ^int target]
+  (let [ri (:renewal-index layout)
+        approx (:approx-offset layout)
+        anchor (:anchor layout)]
+    (when (and ri approx anchor (not (neg? target)))
+      (let [^int k (int (ri env target))]
+        (when (< k target)
+          (let [^double off (double (approx env k))]
+            {:index k :offset off :state (anchor env k off)}))))))
+
 (defn- backfill-leading!
   "Materialises the leading margin [ws, cache[0].offset) above the cached region as
    REAL runs (WS2.2 §2.2): each step seeds at the nearest checkpoint at-or-above the
-   target and re-flows forward (real :cross / per-run :offset — kills #5's single
-   left column), falling back to the one-child estimator only where no checkpoint
-   exists. Returns this pass's refinement correction (double) or nil.
+   target — stored, else a run-boundary checkpoint synthesized from the layout's run
+   structure (synth-renewal-checkpoint) — and re-flows forward (real :cross /
+   per-run :offset — kills #5/#A's single left column), falling back to the
+   one-child estimator only where no checkpoint AND no run structure exist (list /
+   masonry). Returns this pass's refinement correction (double) or nil.
 
    Phase C refinement: a step that discovers a seam mismatch reconciles it and
    returns the delta as the pass's pixel-stable scrollOffsetCorrection (see
@@ -1645,7 +1677,8 @@
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
         (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
-          (let [cp (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
+          (let [cp (or (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
+                       (synth-renewal-checkpoint layout env (dec cf)))
                 stepped (if cp
                           (reflow-from-checkpoint! rs layout env cp emit?)
                           (estimate-leading-step! rs layout env))]
