@@ -66,7 +66,8 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   the design. (by: coordinator)
 
 ## Open questions
-- (none)
+- (none user-level; rebase-design's 5 technical open questions resolved by step-9
+  implementers per the design doc's own leanings, recorded in Decisions log)
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -76,9 +77,11 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
 - [x] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
 - [x] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
-- [ ] 8. Design pending-rebase structure (exactly-once protocol) — agent: Plan, model: fable
-- [ ] 9. Implement rebase unification (mechanism-by-mechanism, harness green between) — agent: general-purpose, model: opus
-- [ ] 10. Verify step-5 reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
+- [x] 8. Design pending-rebase structure (exactly-once protocol) — agent: general-purpose, model: fable
+- [ ] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
+- [ ] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
+- [ ] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
+- [ ] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
 - [ ] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
@@ -345,3 +348,19 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   segment runs must re-anchor the band instead of deferring to the frozen
   snapshot. NEW-1 adds a design question to the set-point itself. NEW-2/NEW-3 are
   wrap-tiling defects orthogonal to the rebase — schedule them separately.
+
+### 8. Design pending-rebase structure
+- Status: done
+- Files changed: .claude/orchestrate/rebase-design.md (commit 1f09e71)
+- Key findings: viewAnchor {idx key off extent frac} sampled post-layout every
+  resting pass (never nil while children exist); passRebase per-pass accumulator,
+  one publication site, three arms (:emit/:absorb/:value) + exactly-once debug
+  assert; pendingRebase record replaces landingEmitted/pendingLandingWs/
+  crossLayoutReanchor; capture extent via pure flow-total-extent (never reads
+  .-geometry back); set-point preserves intra-anchor FRACTION; tween windows
+  clamp to snapshot edge + segment :domain with engine-side settle; count change
+  = drop cache + re-anchor by viewAnchor key; NEW-2/NEW-3 freestanding.
+  Step 9 = 10 ordered stages, each default-green + O7-gated; fields 5->3.
+- Next-step impact: step 9 split into 9a (stages 0-3, fable), 9b (stages 4-6),
+  9c (stages 8-9); fuzz re-campaign (stage 7) folded into step 10. WIP diff
+  preserved as a patch file before stage-0 revert.
