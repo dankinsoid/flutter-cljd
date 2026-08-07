@@ -10,9 +10,12 @@
    so :animate?/:approx/:layout0/:cross0 can never drift out of sync with the
    generator.
 
-   Six are :known-red (real engine gaps) and excluded from the default run; two
+   Five are :known-red (real engine gaps) and excluded from the default run; two
    (NEW-6, NEW-8) were reclassified in step 7 as oracle/fuzzer miscalibration and
-   are kept GREEN here so the recalibration itself stays covered.
+   are kept GREEN here so the recalibration itself stays covered. NEW-4 lived in
+   an uncommitted seed-cache! WIP (preserved as
+   .claude/orchestrate/wip-seed-cache-reanchor.patch); its test stays green as a
+   guard against an unguarded re-anchor GC reappearing.
 
      clojure -M:cljd test -- -x \"known-red || fuzz\"   # green baseline
      clojure -M:cljd test -- -t known-red              # the reds only
@@ -38,10 +41,11 @@
      extent, and the run gap is lost — the next run starts exactly one
      :run-spacing early.
 
-   NEW-4 throws inside `seed-cache!`'s cross-layout re-anchor branch: its leading
-     collectGarbage can destroy EVERY attached child and the following
-     `^r/RenderBox (.-firstChild rs)` casts null before its own nil guards run.
-     That branch is the UNCOMMITTED WIP on render.cljd, not HEAD.
+   NEW-4 threw inside a seed-cache! cross-layout re-anchor WIP whose leading
+     collectGarbage could destroy EVERY attached child before a non-nullable
+     `^r/RenderBox (.-firstChild rs)` cast. The WIP is reverted; any re-anchor GC
+     must nil-check firstChild after collecting and skip a GC that would empty
+     the window.
 
    NEW-5 + NEW-7 SHARE ONE ROOT: `keyed-tween-layout`'s :first-index/:last-index
      map \"the frozen snapshot has no opinion at this offset\" to index 0. Viewport
@@ -115,8 +119,8 @@
     (is (nil? f) (str "NEW-3 the run after a morph starts one run-spacing early:"
                       (fail-str f)))))
 
-(deftest known-red-fuzz-null-render-box-cast-in-morph-after-remove
-  :tags [:widget :known-red]
+(deftest fuzz-null-render-box-cast-in-morph-after-remove
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 5
                             [[:fling 4392.159795761108]
