@@ -71,7 +71,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 ## Checklist
 - [ ] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
 - [ ] 2. Design viewport harness API — agent: Plan, model: opus
-- [ ] 3. Implement harness core — agent: general-purpose, model: opus
+- [x] 3. Implement harness core — agent: general-purpose, model: opus
 - [ ] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
 - [ ] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
 - [ ] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
@@ -105,3 +105,32 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   - CLI ns narrowing narrows COMPILATION only — use -t/-x/-N to narrow the run; helper ns must carry a smoke deftest; no deftest timeout ⇒ split fuzz tests + `--timeout 4x`.
   - O8 (correction convergence) depends on RenderProxySliver probe; degrades to O1+O3 if unworkable.
 - Next-step impact: steps 3-6 implement strictly from harness-design.md.
+
+### 3. Implement harness core
+- Status: done
+- Files changed: test/flutter_cljd/internal/collection/harness.cljd (new),
+  .claude/orchestrate/harness-design.md (run-command correction). Zero src/ changes.
+- Suite: 283 pass (baseline 281 + 2 smoke tests). Harness run ≈6 s.
+- Deviations from the design (all verified against Flutter 3.38):
+  - Run flags: `flutter test` rejects `-N`; use `--plain-name <substring>`.
+    `-t`/`-x`/`--timeout` unchanged. Design §7 amended.
+  - `scroll-by!` uses a raw gesture (down / one moveBy / up), not `dragFrom`.
+    The scrollable owns the ONLY arena member, so it is accepted at pointer-down
+    with a zero pending offset and no touch slop is lost — the drag lands exactly.
+    `dragFrom` would silently eat 20 px.
+  - Masonry args are `:cross-axis-spacing`/`:main-axis-spacing`; the design's
+    `:spacing`/`:run-spacing` are ignored by `masonry-layout` (would have meant 0 gaps).
+  - O4 `:grid`/`:masonry` check equal columns derived from the OBSERVED cell size
+    instead of re-deriving the grid solver's track math (same strength, no coupling).
+  - O4 wrap run-advance skips run 0 (leading GC can cut it, so its max main is unreliable).
+  - `check!` is async (O3 pumps a frame); `check-report!` also returns `:ran`/`:skipped`.
+  - O7 cold-restarts the SAME rig (one tester ⇒ one root); documented as destructive.
+  - §1.3's "no-op rebuild passes the same vector instance" is unreachable: the host
+    does `(vec source)`, which always allocates, so `data-changed` is true on every
+    rebuild — in the app too. Harmless (`pump!` never rebuilds), but the corollary buys nothing.
+- Confirmed working: probe sliver logs corrections (O8 non-vacuous), all four
+  layouts pass O4 at rest, `advance-segment!` walks a live wrap→list morph, O7
+  warm-vs-cold agrees, `replay!` round-trips an op vector.
+- Next-step impact: the animated smoke test already trips the TEMP fb24f35
+  instrumentation (`reanchorShift=1028.0 ... snap-extent` on a wrap→list morph),
+  so step 5's red has the right code path under the harness.

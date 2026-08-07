@@ -1,0 +1,1048 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.harness
+  "RenderViewport simulation harness for the collection virtualization engine.
+
+   Mounts the PUBLIC host (`custom-scroll` + `sliver-collection`) under
+   `testWidgets`, so the host↔engine protocol (segment gens, shadow index space,
+   `didUpdateWidget` diffing) is exercised for real. Everything here is
+   read-only towards `render.cljd` — no engine field is ever written.
+
+   Layout:
+   - rig lifecycle + widget tree           (§ rig)
+   - scenario ops: time / input / data / structural
+   - introspection: engine fields, children, probe log
+   - oracles O1–O9 + `check-report!` / `check!`
+   - `replay!` — consumes a fuzz failure's op vector verbatim
+
+   ASYNC DISCIPLINE: every `!`-suffixed fn compiles to an async Dart fn and
+   MUST be awaited. Never await inside a lazy seq op (`map`/`for`) — use
+   `doseq`/`loop`, which inline the await into the enclosing async fn.
+
+   Running — `:kind :flutter` execs `flutter test`, whose selection flags are
+   NOT `dart test`'s (`-N` is rejected). Namespace args after `test` narrow
+   COMPILATION only; a narrowed compile leaves other namespaces' Dart stale, so
+   compile everything before trusting a green run.
+
+     clojure -M:cljd test -- --plain-name harness-smoke
+     clojure -M:cljd test -- -x fuzz
+     clojure -M:cljd test -- -t fuzz --timeout 4x"
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/animation.dart" :as a]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]
+   [flutter-cljd.internal.collection.render :as render]))
+
+;; --- constants ---
+
+(def ^int segment-ms 300)
+
+(def ^double eps-exact 1e-9)   ;; idle stability — identical inputs, identical doubles
+(def ^double eps-geom 1e-3)    ;; tiling / spacing arithmetic
+(def ^double eps-equiv 0.5)    ;; cold-vs-warm equivalence (estimates differ sub-pixel-ish)
+
+(def ^int default-item-count 2200)
+
+(defn ^int cap [^int v ^int lo ^int hi]
+  (cond (< v lo) lo (> v hi) hi :else v))
+
+;; --- item model: sizes derive from :id, never from the index ---
+
+(defn ^double item-main [^int id] (+ 44.0 (* 13.0 (mod (* id 37) 7))))
+(defn ^double item-cross [^int id] (+ 60.0 (* 17.0 (mod (* id 23) 5))))
+
+(defn ^w/Widget tile
+  "Text-free, exact-double cell. No font metrics, no const-folding traps."
+  [item]
+  (let [^int id (:id item)]
+    (w/SizedBox .width (item-cross id) .height (item-main id))))
+
+(defn items-range
+  "`n` items with ids 0..n-1."
+  [^int n]
+  (mapv (fn [^int i] {:id i}) (range n)))
+
+;; --- layout specs: the args the host gets + the gaps the tiling oracle assumes ---
+
+(def layout-specs
+  {:list    {:args [:spacing 6]
+             :spacing 6.0 :run-spacing 6.0}
+   :wrap    {:args [:layout :wrap :spacing 6 :run-spacing 6]
+             :spacing 6.0 :run-spacing 6.0}
+   :grid    {:args [:layout :grid :columns {:count 3 :gap 8} :rows {:size {:aspect 1} :gap 8}]
+             :spacing 8.0 :run-spacing 8.0 :columns 3}
+   :masonry {:args [:layout :masonry :cross-axis-count 2
+                    :cross-axis-spacing 6 :main-axis-spacing 6]
+             :spacing 6.0 :run-spacing 6.0 :columns 2}})
+
+(def layout-kws [:list :wrap :grid :masonry])
+
+;; --- correction probe (test-only; zero release footprint) ---
+
+(deftype RenderProbeSliver [^:mutable sink]
+  :extends r/RenderProxySliver
+
+  ;; RenderProxySliver.performLayout inlined (two lines) rather than dispatched
+  ;; through ^super on an abstract class — see harness-design §1.5.
+  (performLayout [this]
+    (let [^r/RenderSliver ch (.-child this)
+          ^r/SliverConstraints cs (.-constraints this)]
+      (.layout ch cs .parentUsesSize true)
+      (let [^r/SliverGeometry g (.-geometry ch)]
+        (.-geometry! this g)
+        (when (some? sink)
+          (swap! sink conj
+                 {:scroll-offset (.-scrollOffset cs)
+                  :correction (.-scrollOffsetCorrection g)
+                  :scroll-extent (.-scrollExtent g)
+                  :paint-extent (.-paintExtent g)}))))
+    nil))
+
+(deftype ProbeSliver [^w/Widget kid sink]
+  :extends (w/SingleChildRenderObjectWidget .child kid)
+
+  (createRenderObject [_this _ctx] (RenderProbeSliver sink))
+  (updateRenderObject [_this _ctx ^RenderProbeSliver ro]
+    (.-sink! ro sink)
+    nil))
+
+(defn- ^w/Widget probe-sliver [sink ^w/Widget child]
+  (if (some? sink) (ProbeSliver child sink) child))
+
+;; --- rig ---
+
+(defn- ^ft/WidgetTester tester [rig] (:tester @rig))
+(defn- ^w/ScrollController controller [rig] (:ctl @rig))
+
+(defn- ^w/Widget rig-tree [rig]
+  (let [st @rig
+        ^double cross (:cross st)
+        ^double main (:main st)
+        items (:items st)
+        animate? (:animate? st)
+        approx (:approx st)
+        spec (get layout-specs (:layout st))]
+    (w/Directionality
+     .textDirection ui/TextDirection.ltr
+     .child
+     (w/MediaQuery
+      .data (w/MediaQueryData .size (ui/Size cross main))
+      .child
+      ;; Align is mandatory: pumpWidget hands the root TIGHT surface constraints,
+      ;; so a bare SizedBox would be ignored and :cross changes would do nothing.
+      (w/Align
+       .alignment w/Alignment.topLeft
+       .child
+       (w/SizedBox
+        .width cross
+        .height main
+        .child
+        (w/KeyedSubtree
+         .key (w/ValueKey (:cold-gen st))
+         .child
+         (f/custom-scroll
+          :controller (:ctl st)
+          :physics :clamping
+          (probe-sliver
+           (:probe st)
+           (apply f/sliver-collection
+                  items
+                  :key-fn :id
+                  (concat
+                   (when animate?
+                     [:animate {:duration segment-ms :move {:duration segment-ms}}])
+                   (when (some? approx) [:approximate-item-size approx])
+                   (:args spec)
+                   [(fn [_ctx item] (tile item))])))))))))))
+
+(defn- rebuild!
+  "Re-pumps the same root widget type+key, so SliverCollectionState
+   .didUpdateWidget fires exactly as it does in the app."
+  [rig]
+  (await (.pumpWidget (tester rig) (rig-tree rig)))
+  nil)
+
+(defn make-rig
+  "Creates and mounts a rig; returns the rig atom. MUST be awaited.
+
+   Opts: :items :layout :cross :main :animate? :approx :probe? :offset"
+  [^ft/WidgetTester t & {:keys [items layout cross main animate? approx probe? offset]
+                         :or {layout :list cross 400.0 main 600.0
+                              animate? true probe? true offset 0.0}}]
+  (let [^w/ScrollController ctl (w/ScrollController .initialScrollOffset (double offset))
+        rig (atom {:tester t
+                   :ctl ctl
+                   :ctls [ctl]
+                   :items (or items (items-range default-item-count))
+                   :layout layout
+                   :cross (double cross)
+                   :main (double main)
+                   :animate? animate?
+                   :approx approx
+                   :cold-gen 0
+                   :probe (when probe? (atom []))})]
+    ;; retired controllers are disposed at teardown, never inline — their old
+    ;; subtree is still attached during the frame that retires them.
+    (ft/addTearDown
+     (fn []
+       (doseq [c (:ctls @rig)]
+         (.dispose ^w/ScrollController c))
+       nil))
+    (await (rebuild! rig))
+    rig))
+
+(defn cold-restart!
+  "Fresh element tree (cold-gen bump) on a fresh controller seeded at `init`."
+  [rig ^double init]
+  (let [^w/ScrollController ctl (w/ScrollController .initialScrollOffset init)]
+    (swap! rig (fn [st] (-> st
+                            (assoc :ctl ctl)
+                            (update :ctls conj ctl)
+                            (update :cold-gen inc))))
+    (await (rebuild! rig))
+    nil))
+
+;; --- time ---
+
+(defn pump!
+  ([rig]
+   (await (.pump (tester rig)))
+   nil)
+  ([rig ^int ms]
+   (await (.pump (tester rig) (dc/Duration .milliseconds ms)))
+   nil))
+
+(defn pump-n!
+  ([rig ^int n] (await (pump-n! rig n 16)) nil)
+  ([rig ^int n ^int ms]
+   (loop [i 0]
+     (when (< i n)
+       (await (pump! rig ms))
+       (recur (inc i))))
+   nil))
+
+(defn settle!
+  "pumpAndSettle with an EXPLICIT 10 s cap — the flutter default is 10 minutes,
+   which turns the non-settling states this harness hunts into a CI stall."
+  [rig]
+  (await (.pumpAndSettle (tester rig)
+                         (dc/Duration .milliseconds 16)
+                         ft/EnginePhase.sendSemanticsUpdate
+                         (dc/Duration .seconds 10)))
+  nil)
+
+;; --- input ---
+
+(defn- ^ui/Offset rig-center [rig]
+  (let [st @rig
+        ^double cross (:cross st)
+        ^double main (:main st)]
+    (ui/Offset (/ cross 2.0) (/ main 2.0))))
+
+(defn scroll-by!
+  "Drag the viewport by exactly `dy` (positive = scroll forward, `pixels` grows).
+
+   Unlike `tester.dragFrom` this loses no touch slop: the scrollable owns the
+   only recognizer in the arena, so it is accepted at pointer-down with a zero
+   pending offset and every move is a full update. No time passes between down
+   and up, so the velocity tracker stays empty and the release does not fling."
+  [rig ^double dy]
+  (let [^ft/TestGesture g (await (.startGesture (tester rig) (rig-center rig)))]
+    (await (.moveBy g (ui/Offset 0.0 (- dy))))
+    (await (.up g))
+    (await (pump! rig))
+    nil))
+
+(defn fling!
+  "Ballistic scroll; positive `speed` = forward. Bounded pumps, never settle —
+   a fling into a non-settling state must fail an oracle, not hang."
+  [rig ^double speed]
+  (let [^double dist (if (neg? speed) 300.0 -300.0)]
+    (await (.flingFrom (tester rig) (rig-center rig) (ui/Offset 0.0 dist) (.abs speed)))
+    (await (pump-n! rig 8 16))
+    nil))
+
+(defn grab! [rig]
+  (let [g (await (.startGesture (tester rig) (rig-center rig)))]
+    (swap! rig assoc :gesture g)
+    (await (pump! rig))
+    nil))
+
+(defn move! [rig ^double dy]
+  (await (.moveBy ^ft/TestGesture (:gesture @rig) (ui/Offset 0.0 (- dy))))
+  (await (pump! rig))
+  nil)
+
+(defn release! [rig]
+  (await (.up ^ft/TestGesture (:gesture @rig)))
+  (swap! rig dissoc :gesture)
+  (await (pump! rig))
+  nil)
+
+(defn jump-to! [rig ^double off]
+  (.jumpTo (controller rig) off)
+  (await (pump! rig))
+  nil)
+
+(defn animate-to!
+  "The `.animateTo` Future completes only once the animation ends, which needs
+   pumps — awaiting it would deadlock. Discard it and pump across `ms`."
+  [rig ^double off ^int ms ^w/Curve? curve]
+  (.animateTo (controller rig) off
+              .duration (dc/Duration .milliseconds ms)
+              .curve (or curve w/Curves.easeInOut))
+  (await (pump-n! rig (+ 2 (quot ms 16)) 16))
+  nil)
+
+;; --- data mutation (each rebuilds; pumpWidget pumps the frame) ---
+
+(defn insert! [rig ^int idx ^int id]
+  (swap! rig update :items
+         (fn [v] (let [^int i (cap idx 0 (count v))]
+                   (into (conj (subvec v 0 i) {:id id}) (subvec v i)))))
+  (await (rebuild! rig))
+  nil)
+
+(defn remove-at! [rig ^int idx]
+  (swap! rig update :items
+         (fn [v] (if (zero? (count v))
+                   v
+                   (let [^int i (cap idx 0 (dec (count v)))]
+                     (into (subvec v 0 i) (subvec v (inc i)))))))
+  (await (rebuild! rig))
+  nil)
+
+(defn swap-items! [rig ^int i ^int j]
+  (swap! rig update :items
+         (fn [v] (if (< (count v) 2)
+                   v
+                   (let [^int a (cap i 0 (dec (count v)))
+                         ^int b (cap j 0 (dec (count v)))]
+                     (assoc v a (nth v b) b (nth v a))))))
+  (await (rebuild! rig))
+  nil)
+
+(defn rotate!
+  "Block move: the item at `i` is lifted and re-inserted at `j`."
+  [rig ^int i ^int j]
+  (swap! rig update :items
+         (fn [v] (if (< (count v) 2)
+                   v
+                   (let [^int a (cap i 0 (dec (count v)))
+                         item (nth v a)
+                         rest-v (into (subvec v 0 a) (subvec v (inc a)))
+                         ^int b (cap j 0 (count rest-v))]
+                     (into (conj (subvec rest-v 0 b) item) (subvec rest-v b))))))
+  (await (rebuild! rig))
+  nil)
+
+(defn set-items! [rig v]
+  (swap! rig assoc :items v)
+  (await (rebuild! rig))
+  nil)
+
+;; --- structural ---
+
+(defn set-layout! [rig kw]
+  (swap! rig assoc :layout kw)
+  (await (rebuild! rig))
+  nil)
+
+(defn set-cross!
+  "Simulated rotation: a different SizedBox width, which drives the same
+   (not= crossAxisExtent crossCached) cache drop as a real view resize."
+  [rig ^double width]
+  (swap! rig assoc :cross width)
+  (await (rebuild! rig))
+  nil)
+
+(defn set-approx! [rig v]
+  (swap! rig assoc :approx v)
+  (await (rebuild! rig))
+  nil)
+
+;; --- introspection (read-only) ---
+
+(defn ^render/CollectionRenderSliver sliver [rig]
+  (first (filter (fn [ro] (instance? render/CollectionRenderSliver ro))
+                 (.-allRenderObjects (tester rig)))))
+
+(defn ^w/ScrollPosition position [rig] (.-position (controller rig)))
+
+(defn ^double offset [rig] (.-pixels (position rig)))
+
+(defn scroll-limits [rig]
+  (let [^w/ScrollPosition p (position rig)]
+    {:min (.-minScrollExtent p)
+     :max (.-maxScrollExtent p)
+     :viewport (.-viewportDimension p)}))
+
+(defn ^double scroll-offset
+  "The sliver's own scrollOffset — equal to `pixels` while the collection is the
+   only sliver in the viewport, but read from the constraints for honesty."
+  [rig]
+  (let [^r/SliverConstraints c (.-constraints (sliver rig))]
+    (.-scrollOffset c)))
+
+(defn ^double cross-extent [rig]
+  (let [^r/SliverConstraints c (.-constraints (sliver rig))]
+    (.-crossAxisExtent c)))
+
+(defn geometry [rig]
+  (let [^r/SliverGeometry? g (.-geometry (sliver rig))]
+    (when (some? g)
+      {:scroll-extent (.-scrollExtent ^r/SliverGeometry g)
+       :paint-extent (.-paintExtent ^r/SliverGeometry g)
+       :cache-extent (.-cacheExtent ^r/SliverGeometry g)
+       :max-paint-extent (.-maxPaintExtent ^r/SliverGeometry g)
+       :layout-extent (.-layoutExtent ^r/SliverGeometry g)
+       :overflow? (.-hasVisualOverflow ^r/SliverGeometry g)})))
+
+(defn children
+  "Attached children in sibling order — {:index :offset :cross :main-size
+   :cross-size :end}. Vertical axis ⇒ main = height, cross = width."
+  [rig]
+  (let [^render/CollectionRenderSliver rs (sliver rig)]
+    (loop [child (.-firstChild rs) acc []]
+      (if (nil? child)
+        acc
+        (let [^r/RenderBox ch child
+              ^r/SliverGridParentData pd (.-parentData ch)
+              ^ui/Size sz (.-size ch)
+              ^double off (or (.-layoutOffset pd) 0.0)
+              ^double m (.-height sz)]
+          (recur (.childAfter rs ch)
+                 (conj acc {:index (.indexOf rs ch)
+                            :offset off
+                            :cross (or (.-crossAxisOffset pd) 0.0)
+                            :main-size m
+                            :cross-size (.-width sz)
+                            :end (+ off m)})))))))
+
+(defn engine
+  "The engine's mutable state, flattened. This is what a failing test prints; it
+   is also the diff surface for the later rebase / anchor-primary refactors — a
+   key that disappears is a subsystem that was actually removed."
+  [rig]
+  (let [^render/CollectionRenderSliver rs (sliver rig)]
+    {:cache-first (.-cacheFirst rs)        :cache-n (count (.-cache rs))
+     :anchored0 (.-anchoredTo0 rs)         :regime (.-curRegime rs)
+     :reanchor-shift (.-reanchorShift rs)  :cross-reanchor (.-crossLayoutReanchor rs)
+     :landing-emitted (.-landingEmitted rs) :pending-landing-ws (.-pendingLandingWs rs)
+     :cur-gen (.-curGen rs)                :seg-gen (.-segGen rs)
+     :seg-anchor (.-segAnchor rs)          :resting-top (.-restingTop rs)
+     :tweening? (some? (.-tweenAnim rs))   :vel (.-velocityEMA rs)
+     :pass-materialized (.-passMaterialized rs)
+     :checkpoints (sort (keys (.-checkpoints rs)))
+     :committed-n (count (.-committed rs))
+     :overscan [(.-overscanBehind rs) (.-overscanAhead rs)]}))
+
+(defn probe-log [rig]
+  (let [p (:probe @rig)] (if (some? p) @p [])))
+
+(defn probe-reset! [rig]
+  (let [p (:probe @rig)] (when (some? p) (reset! p [])))
+  nil)
+
+(defn snapshot
+  "The canonical comparable."
+  [rig]
+  {:offset (offset rig)
+   :scroll-extent (:scroll-extent (geometry rig))
+   :children (children rig)})
+
+(defn ^bool tweening? [rig]
+  (let [^render/CollectionRenderSliver rs (sliver rig)
+        ^a/Animation? anim (.-tweenAnim rs)]
+    (and (some? anim)
+         (not (identical? (.-status ^#/(a/Animation double) anim) a/AnimationStatus.completed))
+         (not (identical? (.-status ^#/(a/Animation double) anim) a/AnimationStatus.dismissed)))))
+
+(defn ^bool at-rest?
+  "No segment running and no scroll activity — the precondition for every
+   oracle that compares against a stable layout."
+  [rig]
+  (and (not (tweening? rig))
+       (not (.-value (.-isScrollingNotifier (position rig))))))
+
+(defn top-anchor
+  "The item key at the viewport top plus its intra-item offset, or nil.
+
+   REST-ONLY: the child index space equals the data index space only when no
+   cell is dying (mid-segment the host builds over the live+dying shadow)."
+  [rig]
+  (let [^double so (scroll-offset rig)
+        items (:items @rig)
+        cs (sort-by :index (children rig))
+        hit (first (filter (fn [c] (> ^double (:end c) (+ so eps-geom))) cs))]
+    (when (some? hit)
+      (let [^int i (:index hit)]
+        {:index i
+         :key (when (< i (count items)) (:id (nth items i)))
+         :intra (- so ^double (:offset hit))}))))
+
+;; --- oracles ---
+
+(defn- v [oracle detail] {:oracle oracle :detail detail})
+
+(defn ^bool close? [^double a ^double b ^double eps] (< (.abs (- a b)) eps))
+
+(defn o1-no-exception
+  "O1 — carrier for the engine's own debug asserts (assert-window-canonical!,
+   assert-materialization-bounded!) AND for Flutter's viewport layout-cycle cap.
+   flutter_test DEFERS exceptions, so an unchecked one surfaces in an unrelated
+   later test — this must run after EVERY op. Calling it CLEARS the exception."
+  [rig]
+  (let [e (.takeException (tester rig))]
+    (if (some? e) [(v :o1 {:exception (str e)})] [])))
+
+(defn o2-top-edge
+  "O2 — at the top of the scroll range index 0 sits at offset 0 and nothing is
+   above it. The direct oracle for `top element #1700, nothing above, clamps at 0`."
+  [rig]
+  (let [^double min-e (:min (scroll-limits rig))
+        ^double px (offset rig)]
+    (if (> px (+ min-e eps-geom))
+      []
+      (let [cs (sort-by :index (children rig))
+            top (first cs)
+            neg (filter (fn [c] (< ^double (:offset c) (- eps-geom))) cs)]
+        (cond-> []
+          (nil? top)
+          (conj (v :o2 {:why :no-children}))
+
+          (and (some? top) (not= 0 (:index top)))
+          (conj (v :o2 {:why :first-index-not-0 :index (:index top)}))
+
+          (and (some? top) (not (close? (:offset top) 0.0 eps-geom)))
+          (conj (v :o2 {:why :first-offset-not-0 :offset (:offset top)}))
+
+          (seq neg)
+          (conj (v :o2 {:why :negative-offsets :children (vec (take 4 neg))})))))))
+
+(defn- snapshots-differ
+  "Field-level diff of two snapshots at `eps`; nil when equal."
+  [a b ^double eps]
+  (cond
+    (not (close? (:offset a) (:offset b) eps))
+    {:why :pixels :before (:offset a) :after (:offset b)}
+
+    (not (close? (or (:scroll-extent a) 0.0) (or (:scroll-extent b) 0.0) eps))
+    {:why :scroll-extent :before (:scroll-extent a) :after (:scroll-extent b)}
+
+    (not= (mapv :index (:children a)) (mapv :index (:children b)))
+    {:why :index-set :before (mapv :index (:children a)) :after (mapv :index (:children b))}
+
+    :else
+    (first (keep (fn [[x y]]
+                   (when-not (and (close? (:offset x) (:offset y) eps)
+                                  (close? (:cross x) (:cross y) eps)
+                                  (close? (:main-size x) (:main-size y) eps)
+                                  (close? (:cross-size x) (:cross-size y) eps))
+                     {:why :child :index (:index x) :before x :after y}))
+                 (map vector (:children a) (:children b))))))
+
+(defn o3-idle-stability!
+  "O3 — pump an idle frame; nothing may move. Catches correction loops that
+   oscillate below the viewport-cycle cap, and any per-frame drift."
+  [rig]
+  (let [before (snapshot rig)]
+    (await (pump! rig))
+    (let [after (snapshot rig)
+          d (snapshots-differ before after eps-exact)]
+      (if (some? d) [(v :o3 d)] []))))
+
+;; O4 helpers
+
+(defn- overlaps-both?
+  [x y]
+  (let [^double ax (:offset x) ^double axe (:end x)
+        ^double bx (:offset y) ^double bxe (:end y)
+        ^double ac (:cross x) ^double ace (+ ^double (:cross x) ^double (:cross-size x))
+        ^double bc (:cross y) ^double bce (+ ^double (:cross y) ^double (:cross-size y))
+        main-ov (- (min axe bxe) (max ax bx))
+        cross-ov (- (min ace bce) (max ac bc))]
+    (and (> main-ov eps-geom) (> cross-ov eps-geom))))
+
+(defn- merge-spans
+  "Merged main-axis intervals of `cs`, ascending."
+  [cs]
+  (reduce (fn [acc c]
+            (let [^double s (:offset c) ^double e (:end c)]
+              (if (empty? acc)
+                [[s e]]
+                (let [[^double ps ^double pe] (peek acc)]
+                  (if (<= s (+ pe eps-geom))
+                    (conj (pop acc) [ps (max pe e)])
+                    (conj acc [s e]))))))
+          []
+          (sort-by :offset cs)))
+
+(defn- o4-generic [rig cs]
+  (let [pairs (for [i (range (count cs))
+                    j (range (inc i) (count cs))
+                    :when (overlaps-both? (nth cs i) (nth cs j))]
+                [(:index (nth cs i)) (:index (nth cs j))])
+        spans (merge-spans cs)
+        ^double rsp (:run-spacing (get layout-specs (:layout @rig)))
+        holes (keep (fn [[[_ ^double ae] [^double bs _]]]
+                      (when (> (- bs ae) (+ rsp eps-geom)) [ae bs]))
+                    (map vector spans (rest spans)))
+        ^double so (scroll-offset rig)
+        ^double pe (or (:paint-extent (geometry rig)) 0.0)
+        sorted (sort-by :offset cs)
+        ^double lo (max so ^double (:offset (first sorted)))
+        ^double hi (min (+ so pe) ^double (reduce (fn [^double m c] (max m ^double (:end c))) 0.0 cs))
+        ^double ms (if (seq spans) ^double (first (first spans)) 0.0)
+        ^double me (if (seq spans) ^double (second (peek spans)) 0.0)
+        covered? (and (seq spans)
+                      (<= ms (+ lo eps-geom))
+                      (>= me (- hi eps-geom)))]
+    (cond-> []
+      (seq pairs) (conj (v :o4 {:why :overlap :pairs (vec (take 4 pairs))}))
+      (seq holes) (conj (v :o4 {:why :hole :holes (vec (take 4 holes))}))
+      (and (seq cs) (< hi (- lo eps-geom)))
+      (conj (v :o4 {:why :inverted-coverage :lo lo :hi hi}))
+      (and (seq cs) (>= hi (- lo eps-geom)) (not covered?))
+      (conj (v :o4 {:why :coverage :want [lo hi] :spans spans})))))
+
+(defn- o4-list [cs ^double spacing]
+  (let [ordered (vec (sort-by :index cs))
+        bad-cross (filter (fn [c] (not (close? (:cross c) 0.0 eps-geom))) ordered)
+        bad-pitch (keep (fn [[x y]]
+                          (when (and (= (inc ^int (:index x)) ^int (:index y))
+                                     (not (close? (:offset y)
+                                                  (+ ^double (:offset x) ^double (:main-size x) spacing)
+                                                  eps-geom)))
+                            {:from (:index x) :to (:index y)
+                             :want (+ ^double (:offset x) ^double (:main-size x) spacing)
+                             :got (:offset y)}))
+                        (map vector ordered (rest ordered)))]
+    (cond-> []
+      (seq bad-cross) (conj (v :o4 {:why :list-cross-not-0 :children (vec (take 4 bad-cross))}))
+      (seq bad-pitch) (conj (v :o4 {:why :list-pitch :cases (vec (take 4 bad-pitch))})))))
+
+(defn- o4-wrap [rig cs ^double spacing ^double run-spacing]
+  (let [^double ce (cross-extent rig)
+        runs (->> (sort-by (fn [c] [(:offset c) (:cross c)]) cs)
+                  (partition-by (fn [c] (.toStringAsFixed ^double (:offset c) 3))))
+        bad-run (keep (fn [run]
+                        (let [ordered (vec run)
+                              gaps (keep (fn [[x y]]
+                                           (when-not (close? (:cross y)
+                                                             (+ ^double (:cross x) ^double (:cross-size x) spacing)
+                                                             eps-geom)
+                                             {:from (:index x) :to (:index y)}))
+                                         (map vector ordered (rest ordered)))
+                              lst (peek ordered)
+                              ^double total (+ ^double (:cross lst) ^double (:cross-size lst))]
+                          (cond
+                            (seq gaps) {:why :wrap-run-pitch :cases (vec (take 2 gaps))}
+                            (> total (+ ce eps-geom)) {:why :wrap-run-overflow :total total :cross-extent ce})))
+                      runs)
+        bad-advance (keep (fn [[p q]]
+                            (let [^double po (:offset (first p))
+                                  ^double ph (reduce (fn [^double m c] (max m ^double (:main-size c))) 0.0 p)
+                                  ^double qo (:offset (first q))]
+                              (when-not (close? qo (+ po ph run-spacing) eps-geom)
+                                {:from po :to qo :want (+ po ph run-spacing)})))
+                          ;; run 0 may be cut by leading GC, so its max main is unreliable
+                          (map vector (rest runs) (rest (rest runs))))]
+    (cond-> []
+      (seq bad-run) (conj (v :o4 (first bad-run)))
+      (seq bad-advance) (conj (v :o4 {:why :wrap-run-advance :cases (vec (take 2 bad-advance))})))))
+
+(defn- o4-columns
+  "Grid / masonry: every cell sits on one of `n` equal columns, and the column
+   pitch is uniform. Derived from the OBSERVED cell size, so it does not depend
+   on re-deriving the grid solver's track math."
+  [rig cs ^int n ^double gap]
+  (let [^double ce (cross-extent rig)
+        ^double cw (/ (- ce (* gap (dec n))) n)
+        bad (keep (fn [c]
+                    (let [^double x (:cross c)
+                          ^double col (/ x (+ cw gap))
+                          ^int ci (.round col)]
+                      (when (or (< ci 0) (>= ci n)
+                                (not (close? x (* ci (+ cw gap)) eps-geom))
+                                (not (close? (:cross-size c) cw eps-geom)))
+                        {:index (:index c) :cross x :cross-size (:cross-size c)
+                         :want-width cw :want-pitch (+ cw gap)})))
+                  cs)]
+    (if (seq bad) [(v :o4 {:why :column-grid :cases (vec (take 4 bad))})] [])))
+
+(defn o4-tiling
+  "O4 — REST-ONLY. During a segment §8a lays cells at their full size and
+   paint-clips them, so layout rects legitimately overlap."
+  [rig]
+  (let [cs (children rig)]
+    (if (empty? cs)
+      []
+      (let [kw (:layout @rig)
+            spec (get layout-specs kw)
+            ^double sp (:spacing spec)
+            ^double rsp (:run-spacing spec)]
+        (into (o4-generic rig cs)
+              (case kw
+                :list (o4-list cs sp)
+                :wrap (o4-wrap rig cs sp rsp)
+                :grid (o4-columns rig cs (:columns spec) sp)
+                :masonry (o4-columns rig cs (:columns spec) sp)
+                []))))))
+
+(defn o5-extent-sanity [rig]
+  (let [g (geometry rig)
+        cs (children rig)
+        lim (scroll-limits rig)
+        ^double min-e (:min lim)
+        ^double max-e (:max lim)
+        ^double px (offset rig)]
+    (if (nil? g)
+      [(v :o5 {:why :no-geometry})]
+      (let [^double se (:scroll-extent g)
+            ^double mpe (:max-paint-extent g)
+            ^double pe (:paint-extent g)
+            ^double last-end (reduce (fn [^double m c] (max m ^double (:end c))) 0.0 cs)]
+        (cond-> []
+          (or (.-isNaN se) (.-isInfinite se))
+          (conj (v :o5 {:why :extent-not-finite :scroll-extent se}))
+
+          (and (seq cs) (< se (- last-end eps-geom)))
+          (conj (v :o5 {:why :extent-below-content :scroll-extent se :last-end last-end}))
+
+          (< mpe (- pe eps-geom))
+          (conj (v :o5 {:why :max-paint-below-paint :max mpe :paint pe}))
+
+          (or (< px (- min-e eps-geom)) (> px (+ max-e eps-geom)))
+          (conj (v :o5 {:why :pixels-out-of-range :pixels px :min min-e :max max-e})))))))
+
+(defn o6-anchor-preserved
+  "O6 — for ops that must not move content (layout swap, insert/remove ABOVE the
+   window, :approx toggle, segment settle) the viewport-top item key and its
+   intra-item offset survive. Cross-extent changes are excluded by design.
+
+   `before` is a `top-anchor` captured at rest before the op."
+  [rig before]
+  (let [after (top-anchor rig)]
+    (cond
+      (nil? before) []
+      (nil? after) [(v :o6 {:why :no-top-child :before before})]
+      (not= (:key before) (:key after))
+      [(v :o6 {:why :key-moved :before before :after after})]
+      (not (close? (:intra before) (:intra after) eps-equiv))
+      [(v :o6 {:why :intra-drift :before before :after after})]
+      :else [])))
+
+(defn- shape-of
+  "Pairwise offset differences + sizes + cross positions, keyed by index."
+  [snap]
+  (let [cs (sort-by :index (:children snap))
+        ^double base (if (seq cs) ^double (:offset (first cs)) 0.0)]
+    (into {} (map (fn [c] [(:index c) {:rel (- ^double (:offset c) base)
+                                       :cross (:cross c)
+                                       :main-size (:main-size c)
+                                       :cross-size (:cross-size c)}]))
+          cs)))
+
+(defn o7-compare
+  "O7 core — `absolute?` when BOTH rigs report anchoredTo0; otherwise shape +
+   top index only (a cold deep start is by design a checkpoint-relative
+   estimate, but it may not land on a different item)."
+  [warm cold ^bool absolute?]
+  (let [wtop (first (sort (map :index (:children warm))))
+        ctop (first (sort (map :index (:children cold))))
+        ws (shape-of warm)
+        cs (shape-of cold)
+        common (filter (fn [k] (contains? cs k)) (keys ws))
+        shape-bad (keep (fn [k]
+                          (let [a (get ws k) b (get cs k)]
+                            (when-not (and (close? (:rel a) (:rel b) eps-equiv)
+                                           (close? (:cross a) (:cross b) eps-equiv)
+                                           (close? (:main-size a) (:main-size b) eps-equiv)
+                                           (close? (:cross-size a) (:cross-size b) eps-equiv))
+                              {:index k :warm a :cold b})))
+                        common)
+        abs-bad (when absolute?
+                  (keep (fn [c]
+                          (let [m (into {} (map (fn [x] [(:index x) x])) (:children cold))
+                                b (get m (:index c))]
+                            (when (and (some? b) (not (close? (:offset c) (:offset b) eps-equiv)))
+                              {:index (:index c) :warm (:offset c) :cold (:offset b)})))
+                        (:children warm)))]
+    (cond-> []
+      (empty? common)
+      (conj (v :o7 {:why :no-common-indices :warm-top wtop :cold-top ctop}))
+
+      (not= wtop ctop)
+      (conj (v :o7 {:why :top-index :warm wtop :cold ctop}))
+
+      (seq shape-bad)
+      (conj (v :o7 {:why :shape :cases (vec (take 4 shape-bad))}))
+
+      (seq abs-bad)
+      (conj (v :o7 {:why :absolute :cases (vec (take 4 abs-bad))})))))
+
+(defn o7-cold-equivalence!
+  "O7 — settles, cold-restarts THE SAME rig at the current offset and compares.
+   Destructive: after this the rig runs on a fresh element tree + controller."
+  [rig]
+  (await (settle! rig))
+  (let [warm (snapshot rig)
+        warm-a0 (:anchored0 (engine rig))
+        ^double off (offset rig)]
+    (await (cold-restart! rig off))
+    (await (settle! rig))
+    (let [cold (snapshot rig)
+          cold-a0 (:anchored0 (engine rig))]
+      (o7-compare warm cold (boolean (and warm-a0 cold-a0))))))
+
+(defn o8-convergence
+  "O8 — over the probe log since the last reset: at most 10 correcting passes in
+   a row, and the final pass never leaves a correction pending. Without the probe
+   this degrades to O1 + O3 (the divergent subset only)."
+  [rig]
+  (let [log (probe-log rig)]
+    (if (empty? log)
+      []
+      (let [^int worst (loop [xs log run 0 best 0]
+                         (if (empty? xs)
+                           best
+                           (let [c (:correction (first xs))
+                                 run' (if (some? c) (inc run) 0)]
+                             (recur (rest xs) run' (max best run')))))
+            tail (:correction (peek log))]
+        (cond-> []
+          (> worst 10)
+          (conj (v :o8 {:why :correction-run :run worst}))
+
+          (some? tail)
+          (conj (v :o8 {:why :unfinished-correction :correction tail
+                        :tail (vec (take-last 3 log))})))))))
+
+(defn o8-idle-quiet
+  "O8 (idle clause) — while nothing is driving the viewport no frame may emit a
+   correction at all. Reads the probe log accumulated by an idle pump."
+  [rig]
+  (let [bad (filter (fn [e] (some? (:correction e))) (probe-log rig))]
+    (if (seq bad) [(v :o8 {:why :idle-correction :entries (vec (take 3 bad))})] [])))
+
+(defn o9-bounded-state
+  "O9 — retention stays proportional to the live window. Catches unbounded growth
+   across long episodes, which no single-frame assert can see."
+  [rig]
+  (let [e (engine rig)
+        ^int n (count (children rig))
+        ^int lim (+ (* 8 n) 64)
+        probes [[:cache-n (:cache-n e)]
+                [:committed-n (:committed-n e)]
+                [:checkpoints (count (:checkpoints e))]]
+        bad (filter (fn [[_ ^int c]] (> c lim)) probes)]
+    (if (seq bad) [(v :o9 {:why :unbounded :limit lim :counts (vec bad)})] [])))
+
+;; --- driver ---
+
+(defn check-report!
+  "Runs the oracle battery. Returns
+   {:violations [...] :ran #{...} :skipped {oracle reason} :ctx ctx}.
+
+   Rest-only oracles are skipped when a segment is running or the position is
+   still ballistic — the skip is RECORDED so a scenario cannot silently check
+   nothing. O1 first: takeException clears deferred exceptions, and the engine's
+   own debug asserts arrive through it."
+  [rig ctx]
+  (let [ex (o1-no-exception rig)]
+    (if (seq ex)
+      ;; never keep checking after an engine assert fired — the tree is mid-layout
+      {:violations ex :ran #{:o1} :skipped {} :ctx ctx}
+      (let [conv (o8-convergence rig)
+            _ (probe-reset! rig)
+            rest? (at-rest? rig)
+            base (into (into conv (o5-extent-sanity rig)) (o9-bounded-state rig))]
+        (if-not rest?
+          {:violations base
+           :ran #{:o1 :o5 :o8 :o9}
+           :skipped {:o2 :in-motion :o3 :in-motion :o4 :in-motion}
+           :ctx ctx}
+          (let [idle (await (o3-idle-stability! rig))     ;; pumps one idle frame
+                quiet (o8-idle-quiet rig)
+                _ (probe-reset! rig)
+                more (into (into (into base idle) quiet)
+                           (into (o2-top-edge rig) (o4-tiling rig)))]
+            {:violations (into more (o1-no-exception rig))
+             :ran #{:o1 :o2 :o3 :o4 :o5 :o8 :o9}
+             :skipped {}
+             :ctx ctx}))))))
+
+(defn check!
+  "The violations vec alone — `(is (empty? (await (check! rig {:step ...}))))`."
+  [rig ctx]
+  (let [rep (await (check-report! rig ctx))]
+    (:violations rep)))
+
+(defn report
+  "Failure payload: what a red test prints next to its violations."
+  [rig ctx]
+  {:ctx ctx
+   :offset (offset rig)
+   :limits (scroll-limits rig)
+   :geometry (geometry rig)
+   :engine (engine rig)
+   :children (children rig)})
+
+(defn advance-segment!
+  "Five pumps across one segment, checking at each mid-morph frame. Returns the
+   concatenated violations."
+  [rig ctx]
+  (loop [i 0 acc []]
+    (if (>= i 5)
+      acc
+      (let [_ (await (pump! rig (quot segment-ms 5)))
+            vs (await (check! rig (assoc ctx :segment-frame i)))]
+        (recur (inc i) (into acc vs))))))
+
+;; --- replay (consumes a fuzz failure's op vector verbatim) ---
+
+(defn rig-from-header!
+  "Mounts the rig a fuzz episode header describes:
+   {:seed :animate? :approx :layout0 :cross0 :items0}"
+  [^ft/WidgetTester t header]
+  (await (make-rig t
+                   :items (items-range (or (:items0 header) default-item-count))
+                   :layout (or (:layout0 header) :list)
+                   :cross (double (or (:cross0 header) 400.0))
+                   :animate? (boolean (:animate? header))
+                   :approx (:approx header))))
+
+(defn apply-op!
+  "One fully-parameterized op. Index-bearing ops clamp into range — DEFINED
+   behaviour, so shrinking a replay vector can never crash (design §6.4)."
+  [rig op]
+  (let [[k a b] op]
+    (case k
+      :drag        (await (scroll-by! rig (double a)))
+      :pump        (await (pump-n! rig (int a) 16))
+      :fling       (await (fling! rig (double a)))
+      :settle      (await (settle! rig))
+      :insert      (await (insert! rig (int a) (int b)))
+      :remove      (await (remove-at! rig (int a)))
+      :rotate      (await (rotate! rig (int a) (int b)))
+      :layout      (await (set-layout! rig a))
+      :cross       (await (set-cross! rig (double a)))
+      :approx      (await (set-approx! rig a))
+      :jump        (await (jump-to! rig (double a)))
+      :to-top      (await (jump-to! rig 0.0))
+      :animate-top (await (animate-to! rig 0.0 (int a) nil))
+      :cold        (await (cold-restart! rig (double a)))
+      :fling-catch (do (await (fling! rig (double a)))
+                       (await (pump-n! rig (max 1 (quot (int b) 16)) 16))
+                       (await (grab! rig))
+                       (await (release! rig)))
+      (throw (Exception. (str "unknown harness op: " op)))))
+  nil)
+
+(defn replay!
+  "Applies an op vector, checking after every op. Returns nil on success, or
+   {:op-index i :op op :violations [...] :report {...}} at the first violation.
+   Aborts on the first failure — never continue after an engine assert fired."
+  [rig ops]
+  (loop [i 0]
+    (if (>= i (count ops))
+      nil
+      (let [op (nth ops i)
+            _ (await (apply-op! rig op))
+            vs (await (check! rig {:op-index i :op op}))]
+        (if (seq vs)
+          {:op-index i :op op :violations vs :report (report rig {:op-index i :op op})}
+          (recur (inc i)))))))
+
+;; --- smoke ---
+
+;; a helper ns with no deftest compiles into the library output, never the suite
+(deftest harness-smoke
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (make-rig tester
+                             :items (items-range 300)
+                             :layout :list
+                             :animate? false))]
+    (await (settle! rig))
+    (is (pos? (count (children rig))) "children attached after the first frame")
+    (is (= 0 (:index (first (children rig)))) "cold start at the top shows index 0")
+    (let [vs (await (check! rig {:step :mounted}))]
+      (is (empty? vs) (str "oracles at rest: " vs " " (report rig {:step :mounted}))))
+
+    ;; exact-landing drive: jumpTo is not slop-affected, so this is an equality
+    (await (jump-to! rig 1500.0))
+    (await (settle! rig))
+    (is (close? (offset rig) 1500.0 eps-geom) (str "jump landed at " (offset rig)))
+
+    ;; a lost await shows up here as an offset that is not where it was driven
+    (let [^double before (offset rig)]
+      (await (scroll-by! rig 200.0))
+      (is (close? (offset rig) (+ before 200.0) eps-geom)
+          (str "drag landed at " (offset rig) " from " before)))
+
+    (let [vs (await (check! rig {:step :deep}))]
+      (is (empty? vs) (str "oracles deep: " vs " " (report rig {:step :deep}))))
+
+    ;; without a live probe O8 is vacuously green
+    (probe-reset! rig)
+    (await (jump-to! rig 900.0))
+    (is (seq (probe-log rig)) "probe sliver records the layout passes of a frame")
+
+    (await (jump-to! rig 0.0))
+    (await (settle! rig))
+
+    (let [before (top-anchor rig)]
+      (is (some? before) "top-anchor resolves at rest")
+      (await (set-approx! rig 80.0))
+      (await (settle! rig))
+      (let [vs (o6-anchor-preserved rig before)]
+        (is (empty? vs) (str "approx toggle held the anchor: " vs))))
+    ;; every layout's tiling oracle must agree with the engine it is checking
+    (doseq [kw layout-kws]
+      (await (set-layout! rig kw))
+      (await (settle! rig))
+      (let [vs (await (check! rig {:step :layout :layout kw}))]
+        (is (empty? vs) (str "oracles under " kw ": " vs " " (report rig {:layout kw})))))
+    (await (set-layout! rig :list))
+    (await (settle! rig))
+
+    (let [rep (await (check-report! rig {:step :top}))]
+      (is (empty? (:violations rep)) (str "oracles at top: " rep))
+      (is (contains? (:ran rep) :o2) "top-edge oracle actually ran"))
+
+    ;; the round trip a fuzz failure takes to become a red test
+    (let [fail (await (replay! rig [[:jump 900.0] [:drag -300.0] [:pump 2] [:settle]]))]
+      (is (nil? fail) (str "replay: " fail)))
+
+    ;; destructive — the rig runs on a fresh tree afterwards
+    (let [vs (await (o7-cold-equivalence! rig))]
+      (is (empty? vs) (str "warm and cold agree at the same anchor: " vs)))))
+
+;; the animated path: mid-segment frames must stay checkable, and the rig must
+;; come to rest — a live ticker at teardown fails the whole file
+(deftest harness-smoke-segment
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (make-rig tester
+                             :items (items-range 300)
+                             :layout :wrap
+                             :animate? true))]
+    (await (settle! rig))
+    (await (jump-to! rig 600.0))
+    (await (settle! rig))
+    (await (set-layout! rig :list))
+    (is (tweening? rig) "a layout swap opens a segment")
+    (let [vs (await (advance-segment! rig {:step :morph}))]
+      (is (empty? (filter (fn [x] (= :o1 (:oracle x))) vs))
+          (str "no engine assert fired mid-morph: " vs)))
+    (await (settle! rig))
+    (is (not (tweening? rig)) "the segment closed")
+    (let [vs (await (check! rig {:step :settled}))]
+      (is (empty? vs) (str "oracles after the morph settled: " vs
+                           " " (report rig {:step :settled}))))))

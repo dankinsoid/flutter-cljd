@@ -502,8 +502,15 @@ Run:
 clojure -M:cljd test                                   # everything (compiles all)
 clojure -M:cljd test -- -x fuzz                        # CI-fast: no fuzz
 clojure -M:cljd test -- -t fuzz --timeout 4x           # fuzz only, relaxed cap
-clojure -M:cljd test -- -N far-scroll-wrap-to-list     # one test by name
+clojure -M:cljd test -- --plain-name far-scroll-wrap-to-list   # one test by name
 ```
+
+**Correction (verified against Flutter 3.38, step 3):** `:kind :flutter` execs
+`flutter test`, not `dart test`, so the by-name flag is `--plain-name <substring>`
+(or `--name <regexp>`) — `-N` is rejected outright. `-t` / `-x` / `--timeout` are
+identical. Also: a narrowed *compile* (`test <ns>`) leaves the other namespaces'
+`_test.dart` stale, so a run right after a rename fails on unrelated files —
+compile everything before trusting a green run.
 
 Optional deps.edn alias (implementer's call; combine as `-M:fast:cljd test`):
 
