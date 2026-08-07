@@ -2775,7 +2775,17 @@
                           (.-overscanAhead! rs (+ ahead0 extra))
                           (flow-layout! rs layout c)
                           (.-overscanAhead! rs ahead0)
-                          (tw/frozen-frame-source (live-only-flow-window rs layout c))))
+                          (let [snap (live-only-flow-window rs layout c)]
+                            (when fd/kDebugMode
+                              (fd/debugPrint
+                               (str "[coll morph] flow capture:"
+                                    " scrollOffset=" (.-scrollOffset c)
+                                    " reanchorShift=" (.-reanchorShift rs)
+                                    " cacheFirst=" (.-cacheFirst rs)
+                                    " snap-base=" (:base snap)
+                                    " snap-frames=" (count (:frames snap))
+                                    " snap-extent=" (:extent snap))))
+                            (tw/frozen-frame-source snap))))
         ;; WS3.2: the dying slots come from the host as a SPARSE, ascending-by-shadow-
         ;; index vector (built in the already-O(n) rebuild-shadow!), so the segment
         ;; never rebuilds an O(n) live/dying mask. Off-window dying slots are only an
@@ -2842,6 +2852,10 @@
                                ^double to-slot (double (:offset tgt))]
                            {:from from-slot :to to-slot
                             :screen (- from-slot (.-scrollOffset c))}))))
+        _ (when fd/kDebugMode
+            (fd/debugPrint (str "[coll morph] seg-anchor: resting=" resting
+                                " seg-anchor=" seg-anchor))
+            nil)
         ;; §7b: leave-slide `to`s. The segment's scroll set-point moves the
         ;; window by (to − from) at t=1; a cell whose target index falls outside
         ;; the UNION of the current and end-of-segment window spans is leaving —
