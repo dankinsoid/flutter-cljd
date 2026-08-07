@@ -42,7 +42,7 @@
     (.-crossAxisOffset! pd offset)))
 
 (declare flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
-         segment-start! update-velocity! overscan-extent)
+         segment-start! update-velocity! overscan-extent sample-view-anchor!)
 
 ;; --- Render object ---
 
@@ -75,8 +75,8 @@
    ^:mutable ^double segPrevDesired ;; last EMITTED desired value for the incremental set-point (docs §9);
                            ;; seeded desired(0) = scroll-off at segment start so the animation delta composes
                            ;; with user drag (scrollOffset = drag + Σcorrections); telescopes exactly to to−from
-   ^:mutable restingTop    ;; nil | {:idx ^int :off ^double} — OLD viewport top captured at the end of
-                           ;; each resting pass (indices consistent); seeds segAnchor at segment start
+   ^:mutable viewAnchor    ;; nil | {:idx :key :off :extent :frac} — viewport-top truth, sampled post-layout
+                           ;; each resting pass from attached children; non-nil while sized children exist
    ^:mutable clips        ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at full but painted
                           ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass.
                           ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
@@ -257,6 +257,16 @@
           ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
           :else
           (indexed-layout! this (.-segTween this) c)))
+      ;; viewAnchor epilogue: resting passes only — a segment holds the pre-segment truth
+      (when (nil? (.-tweenAnim this))
+        (sample-view-anchor! this c)
+        (when fd/kDebugMode
+          (let [sized? (loop [ch (.-firstChild this)]
+                         (cond (nil? ch) false
+                               (.-hasSize ^r/RenderBox ch) true
+                               :else (recur (.childAfter this ^r/RenderBox ch))))]
+            (assert (or (not sized?) (some? (.-viewAnchor this)))
+                    "collection: viewAnchor nil after a resting pass that left sized attached children"))))
       ;; Refinement motion sensor: remember this pass's offset compensated by any
       ;; correction it emitted, so the correction's same-frame re-run (and the
       ;; corrected next frame) read as no user motion — only real drag/ballistic
@@ -801,6 +811,41 @@
      :cross (double (or (.-crossAxisOffset pd) 0.0))
      :main-extent (lay/size-main env size)
      :cross-extent (lay/size-cross env size)}))
+
+;; @ai-generated(guided)
+(defn- sample-view-anchor!
+  "Samples viewAnchor from the attached children's post-layout frames. The
+   comparison offset is scrollOffset + this pass's emitted correction, so the
+   stored :off/:frac live in the frame the next pass observes. When every sized
+   child ends at/before it (overscroll past the end) the last one anchors and
+   :frac clamps to 1; no sized child leaves viewAnchor untouched."
+  [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  (let [^r/SliverGeometry? g (.-geometry rs)
+        ^double corr (double (or (when (some? g)
+                                   (.-scrollOffsetCorrection ^r/SliverGeometry g))
+                                 0.0))
+        ^double so' (+ (.-scrollOffset c) corr)
+        env (lay/make-env c (.-itemCount rs) (env-agg rs))
+        entry (fn [^r/RenderBox ch ^double off ^double ext]
+                (let [^int idx (.indexOf rs ch)]
+                  {:idx idx :key (key-for rs idx) :off off :extent ext
+                   :frac (if (pos? ext)
+                           (math/max 0.0 (math/min 1.0 (/ (- so' off) ext)))
+                           0.0)}))
+        anchor (loop [child (.-firstChild rs) last-hit nil]
+                 (if child
+                   (let [^r/RenderBox ch child]
+                     (if (.-hasSize ch)
+                       (let [^r/SliverGridParentData pd (.-parentData ch)
+                             ^double off (double (or (.-layoutOffset pd) 0.0))
+                             ^double ext (lay/size-main env (.-size ch))]
+                         (if (> (+ off ext) so')
+                           (entry ch off ext)
+                           (recur (.childAfter rs ch) (entry ch off ext))))
+                       (recur (.childAfter rs ch) last-hit)))
+                   last-hit))]
+    (when anchor
+      (.-viewAnchor! rs anchor))))
 
 (defn committed-rect
   "The content-space rect stored in `committed` for a laid child: its full laid
@@ -1417,17 +1462,37 @@
               (.-anchoredTo0! rs true))
 
           (some? anchor-fn)
-          (let [^double stale (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
-                approx-off (when (and cross-layout? approx-fn (pos? ^int idx))
-                             (double (approx-fn env idx)))
-                ^double off (reanchor-offset (boolean cross-layout?) (int idx) stale approx-off)]
-            ;; a cross-layout re-anchor moved the survivor to the new-layout estimate;
-            ;; record the shift so flow-layout! emits it as a scrollOffsetCorrection
-            ;; and the visible child holds still (no jump) as the indicator updates.
+          ;; cross-layout: re-anchor on the viewport top (viewAnchor), not the
+          ;; overscan head, or content slides by the leading margin
+          (let [va (when cross-layout? (.-viewAnchor rs))
+                ^int va-idx (if va (int (:idx va)) -1)
+                _ (when (and va (.-firstChild rs))
+                    (let [^int total (count-attached rs)
+                          ^int lead (loop [ch (.-firstChild rs) ^int n 0]
+                                      (if (and ch (< (.indexOf rs ^r/RenderBox ch) va-idx))
+                                        (recur (.childAfter rs ^r/RenderBox ch) (inc n))
+                                        n))]
+                      ;; skip a GC that would empty the window — the nil-firstChild
+                      ;; cast crash (NEW-4)
+                      (when (and (pos? lead) (< lead total))
+                        (.collectGarbage rs lead 0))
+                      nil))
+                ^r/RenderBox? fc2 (.-firstChild rs)
+                ^int a-idx (if fc2 (.indexOf rs ^r/RenderBox fc2) (int idx))
+                ;; viewAnchor :off is the anchor's OLD offset — the exact stale
+                ;; when anchoring on it
+                ^double stale (if (and va fc2 (= a-idx va-idx))
+                                (double (:off va))
+                                (double (or (when fc2 (.childScrollOffset rs ^r/RenderBox fc2))
+                                            0.0)))
+                approx-off (when (and cross-layout? approx-fn (pos? a-idx))
+                             (double (approx-fn env a-idx)))
+                ^double off (reanchor-offset (boolean cross-layout?) a-idx stale approx-off)]
+            ;; the shift is emitted as a scrollOffsetCorrection so the visible child holds still
             (when (not= off stale)
               (.-reanchorShift! rs (- off stale)))
-            (.-cacheFirst! rs idx)
-            (.-baseState! rs (anchor-fn env idx off))
+            (.-cacheFirst! rs a-idx)
+            (.-baseState! rs (anchor-fn env a-idx off))
             ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
             ;; surviving anchoredTo0 here would be a stale truth claim (Phase D).
             (.-anchoredTo0! rs false))
@@ -2336,10 +2401,6 @@
             ;; Without this a fast up-fling leaves a gap above item 0 until it
             ;; decelerates (#B).
             origin-emit? (origin-refine-emit? seg?)]
-        ;; RESTING only: the anchored top {:idx :off} seeds the next segment's
-        ;; set-point. During a segment flow-layout! runs to capture the target.
-        (when (nil? (.-tweenAnim rs))
-          (.-restingTop! rs anchor))
         (if-not (align-start! rs layout env align-ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr))
@@ -2401,24 +2462,6 @@
 ;; ============================================================
 ;; Indexed driver
 ;; ============================================================
-
-;; @ai-generated(solo)
-(defn- capture-resting-top!
-  "Records the OLD viewport top for the next segment's set-point: the first laid
-   child whose content-space span reaches past `scroll-off`, as {:idx :off} in
-   content space. Called only on a RESTING indexed pass, while indices are
-   consistent. Stores nil when no attached child overlaps."
-  [^CollectionRenderSliver rs env ^double scroll-off]
-  (.-restingTop! rs
-    (loop [child (.-firstChild rs)]
-      (when child
-        (let [^r/RenderBox ch child
-              ^r/SliverGridParentData pd (.-parentData ch)
-              ^double off (double (or (.-layoutOffset pd) 0.0))
-              ^double me (if (.-hasSize ch) (lay/size-main env (.-size ch)) 0.0)]
-          (if (> (+ off me) scroll-off)
-            {:idx (.indexOf rs ^r/RenderBox ch) :off off}
-            (recur (.childAfter rs ^r/RenderBox ch))))))))
 
 ;; @ai-generated(solo)
 (defn- seg-scroll-correction
@@ -2517,8 +2560,6 @@
                                   (double ((:max-extent layout) env (int item-count)))
                                   0.0)]
             (.-geometry! rs (r/SliverGeometry .scrollExtent max-ext .maxPaintExtent max-ext))
-            (when (nil? (.-tweenAnim rs))
-              (capture-resting-top! rs env (.-scrollOffset c)))
             (.didFinishLayout mgr))
 
           (let [^double leading-off (double (:offset gm-first))
@@ -2626,9 +2667,6 @@
                                           (not (zero? (.-overlap c))))))
                 (when (or reached (= total trail-end))
                   (.setDidUnderflow mgr true))
-                ;; RESTING only: record the OLD viewport top for the next segment.
-                (when (nil? (.-tweenAnim rs))
-                  (capture-resting-top! rs env (.-scrollOffset c)))
                 (.didFinishLayout mgr)))))))))
 
 ;; ============================================================
@@ -2834,12 +2872,9 @@
                       committed-from on-screen (.-entering rs) to-src env ctx #(key-for rs %)
                       (int fi) (int li) ws we old-frame)
                      committed-from)                                     ; (a')
-        ;; Set-point anchor from the viewport-top INDEX SLOT captured at the last
-        ;; resting pass (docs §9): fromSlot = its OLD content-space offset, toSlot =
-        ;; its offset in the NEW target layout. Index-based ⇒ immune to which keys
-        ;; shuffled where; nil when nothing was resting or the slot's target frame
-        ;; is off the (flow) snapshot window ⇒ no correction this segment.
-        resting (.-restingTop rs)
+        ;; index-slot set-point (docs §9); nil when nothing was resting or the
+        ;; slot's target frame is off the flow snapshot ⇒ no correction this segment
+        resting (.-viewAnchor rs)
         seg-anchor (when resting
                      (let [^int raw (int (:idx resting))
                            ^int n (int (or (.-itemCount rs) 0))

@@ -438,7 +438,7 @@
      :reanchor-shift (.-reanchorShift rs)  :cross-reanchor (.-crossLayoutReanchor rs)
      :landing-emitted (.-landingEmitted rs) :pending-landing-ws (.-pendingLandingWs rs)
      :cur-gen (.-curGen rs)                :seg-gen (.-segGen rs)
-     :seg-anchor (.-segAnchor rs)          :resting-top (.-restingTop rs)
+     :seg-anchor (.-segAnchor rs)          :view-anchor (.-viewAnchor rs)
      :tweening? (some? (.-tweenAnim rs))   :vel (.-velocityEMA rs)
      :pass-materialized (.-passMaterialized rs)
      :checkpoints (sort (keys (.-checkpoints rs)))
