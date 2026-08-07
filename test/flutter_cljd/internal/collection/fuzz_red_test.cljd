@@ -160,6 +160,26 @@
     (is (nil? f) (str "NEW-7 one pass materialized the whole dataset after a "
                       "mid-segment far jump:" (fail-str f)))))
 
+;; known-B in its fuzz-campaign form (intra-drift, seed 10): the harness_test red
+;; covers the key-moved form
+(deftest fuzz-insert-above-window-holds-anchor
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 10
+                            [[:drag -251.21960163116455]
+                             [:jump 17847.88191318512]
+                             [:drag -420.46699047088623]
+                             [:fling 3703.7041187286377]
+                             [:drag 352.2779846191406]
+                             [:fling 4489.896488189697]
+                             [:drag -253.9003086090088]
+                             [:drag -672.1532535552979]
+                             [:pump 3]
+                             [:pump 2]
+                             [:insert 2 900010]]))]
+    (is (nil? f) (str "known-B an insert above the window slid the content under "
+                      "the viewport top:" (fail-str f)))))
+
 ;; --- reclassified in step 7: green, and guarding the recalibrations ---
 
 ;; NEW-6: `pixels` re-enters the range at frame 68, past the old 45-frame wait

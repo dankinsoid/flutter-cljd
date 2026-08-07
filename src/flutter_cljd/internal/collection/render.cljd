@@ -1016,8 +1016,14 @@
       (.-checkpoints! rs {})
       (.-anchoredTo0! rs false)
       (.-pendingRebase! rs nil))
+    ;; every index shifted: the cache answers for the OLD item at each slot
+    (when count-changed
+      (.-cache! rs [])
+      (.-baseState! rs nil)
+      (.-pendingRebase! rs {:cause :count-change :seed :anchor :delta 0.0
+                            :expect-ws dc/double.nan}))
     ;; an :id change leaves survivor offsets in the OLD layout's space; a count
-    ;; change keeps the space, so no cross-layout re-anchor there
+    ;; change keeps the space, so its re-anchor keeps the offsets (§3.3/§3.4)
     (when layout-changed
       (.-pendingRebase! rs {:cause :cross-layout :seed :anchor :delta 0.0
                             :expect-ws dc/double.nan}))
@@ -1292,6 +1298,19 @@
           (rebase+! rs residual))))
     (.-segAnchor! rs nil)))
 
+;; @ai-generated(guided)
+(defn- ^int attached-index-of-key
+  "Index of the attached child carrying animation key `k`, or -1. A count change
+   renumbers every slot, so the anchor has to be found by identity; keyed
+   reconciliation has already moved the element to its new index. O(window)."
+  [^CollectionRenderSliver rs k]
+  (loop [child (.-firstChild rs)]
+    (if child
+      (let [^r/RenderBox ch child
+            ^int i (.indexOf rs ch)]
+        (if (= (key-for rs i) k) i (recur (.childAfter rs ch))))
+      -1)))
+
 (defn reanchor-offset
   "Offset to re-anchor a lost-cache survivor at index `idx`. `stale-off` is its
    last layoutOffset — coordinate-valid only WITHIN the layout it was placed
@@ -1485,9 +1504,16 @@
           (some? anchor-fn)
           ;; cross-layout: re-anchor on the viewport top (viewAnchor), not the
           ;; overscan head, or content slides by the leading margin
-          (let [va (when cross-layout? (.-viewAnchor rs))
-                ^int va-idx (if va (int (:idx va)) -1)
-                _ (when (and va (.-firstChild rs))
+          (let [va (.-viewAnchor rs)
+                count-change? (= :count-change (:cause pending))
+                ^int va-idx (cond
+                              (nil? va) -1
+                              cross-layout? (int (:idx va))
+                              ;; the anchor's identity is its KEY: reconciliation
+                              ;; moved that element to a new index (§3.3)
+                              count-change? (attached-index-of-key rs (:key va))
+                              :else -1)
+                _ (when (and (not (neg? va-idx)) (.-firstChild rs))
                     (let [^int total (count-attached rs)
                           ^int lead (loop [ch (.-firstChild rs) ^int n 0]
                                       (if (and ch (< (.indexOf rs ^r/RenderBox ch) va-idx))
@@ -1502,7 +1528,7 @@
                 ^int a-idx (if fc2 (.indexOf rs ^r/RenderBox fc2) (int idx))
                 ;; viewAnchor :off is the anchor's OLD offset — the exact stale
                 ;; when anchoring on it
-                ^double stale (if (and va fc2 (= a-idx va-idx))
+                ^double stale (if (and (not (neg? va-idx)) fc2 (= a-idx va-idx))
                                 (double (:off va))
                                 (double (or (when fc2 (.childScrollOffset rs ^r/RenderBox fc2))
                                             0.0)))
@@ -2956,7 +2982,10 @@
                                         (int (:idx va)) (.-scrollOffset c))
                     va))
         seg-anchor (when resting
-                     (let [^int raw (int (:idx resting))
+                     ;; the stored :idx is stale after a count change — the anchor
+                     ;; is its KEY, and reconciliation moved it to a new slot
+                     (let [^int k-idx (attached-index-of-key rs (:key resting))
+                           ^int raw (if (neg? k-idx) (int (:idx resting)) k-idx)
                            ^int n (int (or (.-itemCount rs) 0))
                            ^int idx (if (pos? n)
                                       (math/max 0 (math/min raw (dec n)))

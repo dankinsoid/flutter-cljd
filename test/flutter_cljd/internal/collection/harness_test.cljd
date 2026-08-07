@@ -146,7 +146,7 @@
 
 ;; --- 7. data insert / remove / shuffle at rest ---
 
-;; anchor identity is checked separately — known-red-insert-remove-above-window-anchor
+;; anchor identity is checked separately — insert-remove-above-window-anchor
 (deftest baseline-data-mutation-at-rest
   :tags [:widget]
   :runner (ft/testWidgets [tester])
@@ -227,11 +227,9 @@
   :runner (ft/testWidgets [tester])
   (await (morph-shallow! tester :grid :masonry)))
 
-;; --- known-red: excluded from the default run via `-x known-red` ---
-
-;; update-render! resets checkpoints on a count change but not the index cache
-(deftest known-red-insert-remove-above-window-anchor
-  :tags [:widget :known-red]
+;; a count change drops the per-index cache and re-anchors by viewAnchor key
+(deftest insert-remove-above-window-anchor
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [rig (await (h/make-rig tester
                                :items (h/items-range 900)
