@@ -64,6 +64,27 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - 2026-08-07: Fuzz dataset starts at 2200 items, drop to ~600 if baseline >60s;
   no :fast alias for now; no debug counters in render.cljd without re-opening
   the design. (by: coordinator)
+- 2026-08-07: rebase-design open Q4 (:expect-ws slack) resolved per its default:
+  one viewport (remainingPaintExtent) for all causes. (by: step-9a)
+- 2026-08-07: rebase-design open Q5 (O9 corrected? input): commit-prune? keeps
+  reading `(some? scrollOffsetCorrection)` off the FINAL geometry — with the
+  no-emit capture that is exactly "the emit arm ran"; the mid-segment committed
+  bound re-verifies in step 10's re-campaign as planned. (by: step-9a)
+- 2026-08-07: pendingRebase arms only for :cross-layout (pre-emit, by
+  update-render! — the stale-offsets fact originates at the mutation) and
+  :landing (post-emit, :seed :init); seam/underflow corrected re-runs need no
+  seed contract (cache prefix/dead-reckon serve them), so they arm nothing —
+  minimal faithful mapping of the three deleted one-shots. (by: step-9a)
+- 2026-08-07: segment-tail residual is a rebase producer the design did not
+  enumerate: the host clock can complete before a t=1 pass runs, leaving
+  desired(1) − segPrevDesired un-emitted; consume-seg-tail! publishes it via
+  the accumulator on the first resting pass (segAnchor finally has an explicit
+  end-of-life). Required for the far-morph-animated flip (O6 eps 0.5px vs
+  ~5.8px tail on an 89k-px rebase). (by: step-9a)
+- 2026-08-07: segAnchor flow `to` reads the capture-placed cache entry; the
+  indexed target keeps the exact to-src frame (never nil in range); the
+  exiting-anchor re-pick ships with segAnchor v2 in 9b's stage 4 per the
+  design's stage map. (by: step-9a)
 
 ## Open questions
 - (none user-level; rebase-design's 5 technical open questions resolved by step-9
@@ -78,7 +99,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
 - [x] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
 - [x] 8. Design pending-rebase structure (exactly-once protocol) — agent: general-purpose, model: fable
-- [ ] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
+- [x] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
 - [ ] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
 - [ ] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
 - [ ] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
@@ -88,6 +109,64 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 9a. Rebase stages 0-3
+- Status: done (commits 07c9ea3, 640daa3, 6832572, a3c2276, e540dab — one per stage,
+  bisectable; WIP preserved as .claude/orchestrate/wip-seed-cache-reanchor.patch)
+- Files changed: render.cljd; harness.cljd (engine-map keys), render_test.cljd
+  (reanchor-band 0-sentinel), morph_red_test.cljd + fuzz_red_test.cljd (flip
+  re-tags). TEMP fb24f35 instrumentation kept (step 10 reverts).
+- Suite: default `-x "known-red || fuzz"` 297 → **302** green after each stage;
+  O7 (harness-smoke cold-vs-warm) green each stage; `-t known-red` 11 → **6**
+  (`+0 -6`: NEW-1/2/3/5/7 + known-B — exactly the stages 4-6/8-9 targets);
+  bin/check clean at stages 1-3.
+- Stage 0 (WIP revert): flipped NEW-4 → `fuzz-null-render-box-cast-in-morph-after-remove`
+  (kept green as a guard against an unguarded re-anchor GC).
+- Stage 1 (viewAnchor): field replaces restingTop + both capture paths
+  (`anchor-before` resting write, `capture-resting-top!`); sampled in the
+  performLayout epilogue from ATTACHED children in the corrected frame
+  (`so' = scrollOffset + emitted correction`), every resting pass incl.
+  re-seeding ones; non-nil-while-sized-children debug assert. Cross-layout
+  re-anchor anchors on viewAnchor with the NEW-4 guards (skip GC that would
+  empty the window; nullable firstChild re-read). Flipped:
+  `view-anchor-survives-far-jump` (was resting-top-lost),
+  `far-morph-wrap-to-list-not-animated`, and — **unexpected early flip,
+  investigated** — `far-morph-capture-extent-truncated`: its oracle
+  (mid-segment scrollExtent >= laid content) is a proxy; the restored set-point
+  keeps the laid window inside the still-truncated snapshot extent. Un-tagged as
+  `far-morph-capture-extent-covers-laid-content`; the extent root was fixed
+  properly in stage 3.
+- Stage 2 (passRebase + pendingRebase): all producers publish via `rebase+!`;
+  ONE emission site in flow-layout!; `reanchor-band` reads the accumulator
+  (0 = none). pendingRebase replaces crossLayoutReanchor/landingEmitted/
+  pendingLandingWs; seed-cache! clears it unconditionally on entry; the
+  consumed :landing marker feeds :violated detection and is wiped by the next
+  seed — no disarm dance. Exactly-once epilogue assert (resting passes):
+  emitted correction == produced rebase. No flips, by design.
+- Stage 3 (no-emit capture): flow-layout! grew a two-valued mode axis
+  (:resting/:capture — step 11 extends it); :capture never writes correction
+  geometry and returns {:rebase :extent}. `flow-total-extent` factored out of
+  finish-flow-geometry! supplies the frozen snapshot :extent from the TARGET
+  layout (live-only-flow-window no longer reads .-geometry back). segAnchor
+  flow `to` = the capture walk's placed cache entry (post-rebase frame);
+  snapshot lookup only a fallback. Absorption asserts: capture geometry carries
+  no correction; produced rebase with segAnchor nil fails loudly.
+  **New defect found + fixed en route**: the segment clock can complete before
+  a t=1 layout pass runs, so the set-point's un-emitted tail (~5.8px here)
+  snapped content at segment end — `consume-seg-tail!` retires the lingering
+  segAnchor on the first resting pass and publishes the residual through the
+  accumulator (indexed driver honors the accumulator at rest via its correction
+  exit). Flipped: `far-morph-wrap-to-list-animated` (verified stable 3x).
+- Field-count delta: −5 (restingTop, crossLayoutReanchor, reanchorShift,
+  landingEmitted, pendingLandingWs) +3 (viewAnchor, passRebase, pendingRebase)
+  = net −2, as designed.
+- Deferred to 9b per the design's own stage map: exiting-anchor re-pick (§2.5,
+  stage 4), fraction set-point, tween window sanity/domain, count-change
+  re-anchor.
+- Next-step impact: 9b's stage 4 replaces segAnchor v1 {:from :to :screen} with
+  the fraction record; `consume-seg-tail!`'s residual formula
+  (`(to − screen) − segPrevDesired`) must be updated in lockstep with the new
+  `desired` formula or the tail emission silently regresses.
 
 ### 1. Explore test infra
 - Status: done
