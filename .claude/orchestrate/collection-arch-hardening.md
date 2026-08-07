@@ -72,7 +72,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
 - [x] 2. Design viewport harness API — agent: Plan, model: opus
 - [x] 3. Implement harness core — agent: general-purpose, model: opus
-- [ ] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
+- [x] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
 - [ ] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
 - [ ] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
 - [ ] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
@@ -134,3 +134,37 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - Next-step impact: the animated smoke test already trips the TEMP fb24f35
   instrumentation (`reanchorShift=1028.0 ... snap-extent` on a wrap→list morph),
   so step 5's red has the right code path under the harness.
+
+### 4. Green baseline scenario tests
+- Status: done
+- Files changed: test/flutter_cljd/internal/collection/harness_test.cljd (new,
+  11 deftests). Zero src/ changes (the pre-existing uncommitted WIP diff on
+  render.cljd from an earlier session was left untouched and unstaged).
+- Suite: 294 pass with `-- -x known-red` (283 baseline + 11). Full run
+  (compile + `flutter test`) ≈ 28-30s, inside the <60s budget.
+- Coverage: cold start × 4 layouts, small scrolls both directions, deep fling,
+  far jumpTo both directions + back to 0, exact jump-to-top landing, cross
+  (rotation) change at rest ×2 and at depth, insert/remove/swap/rotate at rest,
+  layout morph at shallow depth × all 4 combos (list→wrap, wrap→grid,
+  masonry→list, grid→masonry).
+- Known-red (2 deftests, `:tags [:known-red]`, excluded via `-x known-red`,
+  reproduced 3x in isolation each — real engine gaps, not harness defects):
+  - `known-red-insert-remove-above-window-anchor` — `update-render!`
+    (render.cljd L963-975) resets checkpoints on an item-count change but
+    never clears the per-index geometry cache; inserting/removing above an
+    already-materialized window leaves the cache answering for the OLD item
+    at that index, so the viewport-top key silently shifts by the count delta
+    (O6 fails: key 354→353 with index and intra-offset unchanged).
+  - Investigated but NOT kept red: a `:grid`→`:masonry` shallow morph inside a
+    shared 4-combo deftest failed once (O6), but reproduces standalone 3/3 as
+    GREEN — root cause was cross-rig pollution (undisposed controllers/tickers
+    across sequential `make-rig` calls sharing one `testWidgets` tester within
+    one deftest, not the engine). Fixed by giving every independent scenario
+    its own deftest (also applied to the other 3 morph combos and to
+    data-mutation, so a red assertion never masks untested siblings —
+    `is` throws in this cljd port, aborting the rest of the deftest body).
+- Harness changes: none needed; zero defects found in harness.cljd itself.
+- Next-step impact: the insert/remove-above-window cache-staleness gap is a
+  distinct architectural finding (checkpoints/cache invalidation split) worth
+  folding into step 9's rebase-unification scope, alongside the wrap→list
+  far-morph bug step 5 targets.

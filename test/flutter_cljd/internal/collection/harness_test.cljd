@@ -1,0 +1,253 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.harness-test
+  "GREEN baseline scenarios for the collection viewport harness (step 4 of
+   collection-arch-hardening). Every scenario here is expected to PASS on
+   today's engine — it establishes the floor the rebase work (steps 8-13) must
+   not regress. The far-scroll wrap->list morph red repro is step 5's file, not
+   this one.
+
+   Runner note: harness.cljd already carries a `deftest` (harness-smoke), so
+   this ns compiles into its own `_test.dart` independently — see
+   harness.cljd's docstring for the `flutter test` selection-flag caveats."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.internal.collection.harness :as h]))
+
+;; --- 1. cold start per layout ---
+
+(deftest baseline-cold-start-per-layout
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (doseq [kw h/layout-kws]
+    (let [rig (await (h/make-rig tester
+                                 :items (h/items-range 400)
+                                 :layout kw
+                                 :animate? false))]
+      (await (h/settle! rig))
+      (is (pos? (count (h/children rig))) (str "children attached: " kw))
+      (is (= 0 (:index (first (h/children rig)))) (str "cold start at top: " kw))
+      (let [vs (await (h/check! rig {:step :cold-start :layout kw}))]
+        (is (empty? vs) (str "oracles at cold start under " kw ": " vs " "
+                             (h/report rig {:layout kw})))))))
+
+;; --- 2. small scrolls, both directions ---
+
+(deftest baseline-small-scrolls
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 800)
+                               :layout :list
+                               :animate? false))]
+    (await (h/settle! rig))
+    (doseq [^double dy [80.0 -40.0 150.0 -200.0 60.0]]
+      (await (h/scroll-by! rig dy))
+      (let [vs (await (h/check! rig {:step :small-scroll :dy dy}))]
+        (is (empty? vs) (str "oracles after small scroll " dy ": " vs " "
+                             (h/report rig {:dy dy})))))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :small-scroll-settled}))]
+      (is (empty? vs) (str "oracles after small-scroll settle: " vs)))))
+
+;; --- 3. deep fling (ballistic, mid-fling checks + settle) ---
+
+(deftest baseline-deep-fling
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range h/default-item-count)
+                               :layout :list
+                               :animate? false))]
+    (await (h/settle! rig))
+    (doseq [^double speed [4000.0 6000.0 -5000.0]]
+      (await (h/fling! rig speed))
+      (let [vs (await (h/check! rig {:step :deep-fling :speed speed}))]
+        (is (empty? vs) (str "oracles during/after fling " speed ": " vs " "
+                             (h/report rig {:speed speed})))))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :deep-fling-settled}))]
+      (is (empty? vs) (str "oracles after fling settle: " vs " " (h/report rig {}))))))
+
+;; --- 4. far jumpTo, both directions ---
+
+(deftest baseline-far-jump-both-directions
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range h/default-item-count)
+                               :layout :wrap
+                               :animate? false))]
+    (await (h/settle! rig))
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.7 max-off)))
+      (await (h/settle! rig))
+      (let [vs (await (h/check! rig {:step :far-jump-forward}))]
+        (is (empty? vs) (str "oracles after far forward jump: " vs " " (h/report rig {}))))
+
+      (await (h/jump-to! rig max-off))
+      (await (h/settle! rig))
+      (let [vs (await (h/check! rig {:step :far-jump-max}))]
+        (is (empty? vs) (str "oracles at max jump: " vs " " (h/report rig {}))))
+
+      (await (h/jump-to! rig 0.0))
+      (await (h/settle! rig))
+      (let [vs (await (h/check! rig {:step :far-jump-back-to-top}))]
+        (is (empty? vs) (str "oracles jumping back to 0: " vs " " (h/report rig {})))
+        (is (h/close? (h/offset rig) 0.0 h/eps-geom) (str "landed at " (h/offset rig)))))))
+
+;; --- 5. jump-to-top exact landing ---
+
+(deftest baseline-jump-to-top-exact-landing
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 1200)
+                               :layout :list
+                               :animate? false))]
+    (await (h/settle! rig))
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.8 max-off)))
+      (await (h/settle! rig)))
+    (await (h/jump-to! rig 0.0))
+    (await (h/settle! rig))
+    (is (h/close? (h/offset rig) 0.0 h/eps-geom) (str "jump-to-top landed at " (h/offset rig)))
+    (let [vs (await (h/check! rig {:step :jump-to-top}))]
+      (is (empty? vs) (str "oracles at exact top landing: " vs " " (h/report rig {}))))))
+
+;; --- 6. rotation (cross-extent change), at rest and at depth ---
+
+(deftest baseline-rotation-cross-change
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 900)
+                               :layout :wrap
+                               :cross 400.0
+                               :animate? false))]
+    (await (h/settle! rig))
+    (await (h/set-cross! rig 640.0))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :rotate-at-rest :cross 640.0}))]
+      (is (empty? vs) (str "oracles after rotation at rest: " vs " " (h/report rig {}))))
+
+    (await (h/set-cross! rig 280.0))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :rotate-at-rest :cross 280.0}))]
+      (is (empty? vs) (str "oracles after second rotation at rest: " vs " " (h/report rig {}))))
+
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.5 max-off)))
+      (await (h/settle! rig)))
+    (await (h/set-cross! rig 900.0))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :rotate-at-depth :cross 900.0}))]
+      (is (empty? vs) (str "oracles after rotation at depth: " vs " " (h/report rig {}))))))
+
+;; --- 7. data insert / remove / shuffle at rest ---
+
+;; anchor identity is checked separately — known-red-insert-remove-above-window-anchor
+(deftest baseline-data-mutation-at-rest
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 900)
+                               :layout :list
+                               :animate? false))]
+    (await (h/settle! rig))
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.4 max-off)))
+      (await (h/settle! rig)))
+
+    (await (h/insert! rig 0 -1))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :insert-above}))]
+      (is (empty? vs) (str "oracles after insert above the window: " vs " " (h/report rig {}))))
+
+    (await (h/remove-at! rig 0))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :remove-above}))]
+      (is (empty? vs) (str "oracles after remove above the window: " vs " " (h/report rig {}))))
+
+    (await (h/swap-items! rig 2 5))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :swap-items}))]
+      (is (empty? vs) (str "oracles after swap-items: " vs " " (h/report rig {}))))
+
+    (await (h/rotate! rig 3 40))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :rotate-items}))]
+      (is (empty? vs) (str "oracles after rotate (block move): " vs " " (h/report rig {}))))))
+
+;; --- 8. basic layout morphs, shallow depth ---
+
+;; one deftest per combo — `is` throws here, so a shared doseq would abort
+;; before reaching combos after the first failure
+(defn- morph-shallow!
+  [tester from to]
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 600)
+                               :layout from
+                               :animate? true))]
+    (await (h/settle! rig))
+    (await (h/scroll-by! rig 220.0))
+    (await (h/settle! rig))
+    (let [before (h/top-anchor rig)]
+      (await (h/set-layout! rig to))
+      (is (h/tweening? rig) (str "layout swap " from "->" to " opens a segment"))
+      (let [vs (await (h/advance-segment! rig {:step :morph :from from :to to}))]
+        (is (empty? (filter (fn [x] (= :o1 (:oracle x))) vs))
+            (str "no engine assert mid-morph " from "->" to ": " vs)))
+      (await (h/settle! rig))
+      (is (not (h/tweening? rig)) (str "segment closed " from "->" to))
+      (let [vs (await (h/check! rig {:step :morph-settled :from from :to to}))]
+        (is (empty? vs) (str "oracles after " from "->" to " settle: " vs " " (h/report rig {}))))
+      (when (some? before)
+        (let [ovs (h/o6-anchor-preserved rig before)]
+          (is (empty? ovs) (str "anchor preserved across " from "->" to ": " ovs)))))
+    nil))
+
+(deftest baseline-layout-morph-shallow-list-wrap
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (morph-shallow! tester :list :wrap)))
+
+(deftest baseline-layout-morph-shallow-wrap-grid
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (morph-shallow! tester :wrap :grid)))
+
+(deftest baseline-layout-morph-shallow-masonry-list
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (morph-shallow! tester :masonry :list)))
+
+(deftest baseline-layout-morph-shallow-grid-masonry
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (morph-shallow! tester :grid :masonry)))
+
+;; --- known-red: excluded from the default run via `-x known-red` ---
+
+;; update-render! resets checkpoints on a count change but not the index cache
+(deftest known-red-insert-remove-above-window-anchor
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 900)
+                               :layout :list
+                               :animate? false))]
+    (await (h/settle! rig))
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.4 max-off)))
+      (await (h/settle! rig)))
+    (let [before (h/top-anchor rig)]
+      (await (h/insert! rig 0 -1))
+      (await (h/settle! rig))
+      (let [ovs (h/o6-anchor-preserved rig before)]
+        (is (empty? ovs) (str "anchor preserved after insert above the window: " ovs))))
+    (let [before (h/top-anchor rig)]
+      (await (h/remove-at! rig 0))
+      (await (h/settle! rig))
+      (let [ovs (h/o6-anchor-preserved rig before)]
+        (is (empty? ovs) (str "anchor preserved after remove above the window: " ovs))))))
