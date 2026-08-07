@@ -75,31 +75,44 @@
 ;; shell (persistent state, per-tick relayout, controller) lives in each host's
 ;; render object. See docs/CollectionRectAnimator.md.
 
+;; @ai-generated(guided)
+(defn ^double point-desired
+  "The segment set-point's desired scrollOffset at curved tween value `t` (docs §9).
+   The anchor is `{:from-off :from-ext :to-off :to-ext :frac :screen}`: the
+   viewport-top item's content offset and main extent at both endpoints, the
+   fraction of it consumed above the viewport top, and the residual
+   `(from-off + frac·from-ext) − scrollOffset` captured at segment start.
+
+     desired(t) = lerp(from-off, to-off, t) + frac · lerp(from-ext, to-ext, t) − screen
+
+   What stays at the viewport top is therefore the content point at `frac` of the
+   anchor item, not its top edge: an anchor that RESIZES across a morph (a grid row
+   becoming a list cell) no longer slides out from under the viewport. With an
+   unchanged extent this is pixel-identical to the rigid `to − from` shift, and
+   desired(0) is exactly the segment-start scrollOffset by construction of `screen`."
+  [{:keys [from-off from-ext to-off to-ext frac screen]} ^double t]
+  (- (+ (lerp (double from-off) (double to-off) t)
+        (* (double frac) (lerp (double from-ext) (double to-ext) t)))
+     (double screen)))
+
 ;; @ai-generated(solo)
 (defn point-correction-delta
   "Incremental (relative) scroll set-point for the animating/indexed path (docs §9).
-   Given the segment anchor `{:from :to :screen}` (content-space main axis: the
-   captured viewport-top slot's OLD offset, its NEW offset in the target layout, and
-   its screen position = OLD offset − scrollOffset at segment start), the current
-   curved tween value `t`, and `prev-desired` (the previously EMITTED desired value;
-   seed = desired(0) = the segment-start scrollOffset), returns
-   `[correction new-prev-desired]`:
-
-     desired    = lerp(from, to, t) − screen
-     correction = desired − prev-desired
+   Given the segment `anchor` (see `point-desired`), the current curved tween value
+   `t`, and `prev-desired` (the previously EMITTED desired value; seed =
+   desired(0) = the segment-start scrollOffset), returns
+   `[correction new-prev-desired]` with `correction = desired(t) − prev-desired`.
 
    The correction is the per-pass ANIMATION delta only — it does NOT read the live
    scrollOffset, so a concurrent user drag composes with it (scrollOffset = drag +
    Σcorrections) instead of being reverted. When |correction| ≤ 1e-3 the correction
    is nil and `new-prev-desired == prev-desired`: the sub-threshold delta is
    RETAINED (not dropped) so repeated passes at the same t emit 0 and the emitted
-   deltas telescope to exactly desired(1) − desired(0) = to − from over the segment.
+   deltas telescope to exactly desired(1) − desired(0) over the segment.
    `prev-desired` therefore tracks the last *emitted* target, keeping the sum exact
    even across float accumulation."
-  [{:keys [from to screen]} ^double t ^double prev-desired]
-  (let [^double from (double from)
-        ^double to (double to)
-        desired (- (+ from (* (- to from) t)) (double screen))
+  [anchor ^double t ^double prev-desired]
+  (let [^double desired (point-desired anchor t)
         d (- desired prev-desired)]
     (if (> (.abs d) 1e-3)
       [d desired]

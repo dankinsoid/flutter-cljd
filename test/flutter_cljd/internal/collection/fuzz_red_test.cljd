@@ -10,7 +10,7 @@
    so :animate?/:approx/:layout0/:cross0 can never drift out of sync with the
    generator.
 
-   Five are :known-red (real engine gaps) and excluded from the default run; two
+   The remaining :known-red ones (real engine gaps) are excluded from the default run; two
    (NEW-6, NEW-8) were reclassified in step 7 as oracle/fuzzer miscalibration and
    are kept GREEN here so the recalibration itself stays covered. NEW-4 lived in
    an uncommitted seed-cache! WIP (preserved as
@@ -22,12 +22,12 @@
 
    Confirmed diagnoses (step 7; the fixes belong to steps 8-11):
 
-   NEW-1 `segAnchor` translates the anchor slot rigidly by (:to − :from), pinning
-     the anchor's TOP EDGE to a fixed screen position rather than the viewport-top
-     item. When the anchor cell's own main extent shrinks across the morph (grid
-     208 -> list 109) while it is partly scrolled past, the top slides into the
-     next item. The set-point is PRESENT and correct here — this is a defect of
-     its model, not of its capture, so it is a different root from known-A/NEW-7.
+   NEW-1 (FIXED, stage 4) `segAnchor` translated the anchor slot rigidly by
+     (:to − :from), pinning the anchor's TOP EDGE to a fixed screen position
+     rather than the viewport-top item; a morph that shrinks a partly
+     scrolled-past anchor (grid 208 -> list 109) then slid the top into the next
+     item. The set-point now lerps the anchor's extent too and preserves the
+     consumed FRACTION (`tw/point-desired`).
 
    NEW-2 `refine-seam-delta` reconciles a backward re-flow against the cache head
      on the MAIN axis only. A re-flow ending with an OPEN run places the head at
@@ -89,8 +89,8 @@
 
 ;; --- the reds ---
 
-(deftest known-red-fuzz-morph-loses-anchor-without-jump
-  :tags [:widget :known-red]
+(deftest fuzz-morph-holds-anchor-without-jump
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 26
                             [[:settle]

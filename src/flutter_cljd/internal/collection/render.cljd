@@ -69,9 +69,7 @@
    ^:mutable leaving        ;; {key -> edge frame} leave-slide `to`s this segment (§7b);
                             ;; also the GC exemption set for kept out-of-window cells
    ^:mutable segTween      ;; the built keyed-tween-layout for the current segment, or nil
-   ^:mutable segAnchor     ;; nil | {:from ^double :to ^double :screen ^double} — the viewport-top
-                           ;; INDEX SLOT set-point that drives this segment's scroll correction (docs §9);
-                           ;; frozen in segment-start!, self-nullifying when the slot doesn't move
+   ^:mutable segAnchor     ;; nil | segment set-point, frozen in segment-start! (tw/point-desired)
    ^:mutable ^double segPrevDesired ;; last EMITTED desired value for the incremental set-point (docs §9);
                            ;; seeded desired(0) = scroll-off at segment start so the animation delta composes
                            ;; with user drag (scrollOffset = drag + Σcorrections); telescopes exactly to to−from
@@ -1279,8 +1277,7 @@
   (when-let [sa (.-segAnchor rs)]
     ;; nothing attached ⇒ nothing to hold still — drop the residual
     (when (.-firstChild rs)
-      (let [^double residual (- (- (double (:to sa)) (double (:screen sa)))
-                                (.-segPrevDesired rs))]
+      (let [^double residual (- (tw/point-desired sa 1.0) (.-segPrevDesired rs))]
         (when (> (.abs residual) 1e-3)
           (rebase+! rs residual))))
     (.-segAnchor! rs nil)))
@@ -2748,6 +2745,31 @@
         (recur (.childAfter rs ch) (conj! ks (key-for rs (.indexOf rs ch)))))
       (persistent! ks))))
 
+;; @ai-generated(guided)
+(defn- repick-view-anchor
+  "Replacement viewAnchor when the sampled one's item is EXITING: pinning the
+   viewport to a cell that collapses to nothing would drag the content with it.
+   Takes the first surviving attached slot at/after it, framed by its pre-segment
+   committed rect (the capture pass has already relaid the children at target).
+   nil when nothing at/below the anchor survives — the segment then runs with no
+   set-point, as it does when the anchor's target frame is unknown."
+  [^CollectionRenderSliver rs committed exiting ^int from-idx ^double so]
+  (loop [child (.-firstChild rs)]
+    (when child
+      (let [^r/RenderBox ch child
+            ^int i (.indexOf rs ch)
+            k (key-for rs i)
+            rect (when (and (>= i from-idx) (not (contains? exiting k)))
+                   (get committed k))]
+        (if rect
+          (let [^double off (double (:offset rect))
+                ^double ext (double (or (:full-main rect) (:main-extent rect) 0.0))]
+            {:idx i :key k :off off :extent ext
+             :frac (if (pos? ext)
+                     (math/max 0.0 (math/min 1.0 (/ (- so off) ext)))
+                     0.0)})
+          (recur (.childAfter rs ch)))))))
+
 ;; @ai-generated(solo)
 (defn- segment-start!
   "First pass of a new segment (docs §4.1/§6). Freezes the OLD committed rects as
@@ -2869,9 +2891,14 @@
                       committed-from on-screen (.-entering rs) to-src env ctx #(key-for rs %)
                       (int fi) (int li) ws we old-frame)
                      committed-from)                                     ; (a')
-        ;; index-slot set-point (docs §9); nil when nothing was resting or the
-        ;; slot's target frame is off the flow snapshot ⇒ no correction this segment
-        resting (.-viewAnchor rs)
+        ;; fraction-preserving set-point (docs §9); nil when nothing was resting or
+        ;; the slot's target frame is unknown ⇒ no correction this segment
+        va (.-viewAnchor rs)
+        resting (when va
+                  (if (contains? (.-exiting rs) (:key va))
+                    (repick-view-anchor rs committed-from (.-exiting rs)
+                                        (int (:idx va)) (.-scrollOffset c))
+                    va))
         seg-anchor (when resting
                      (let [^int raw (int (:idx resting))
                            ^int n (int (or (.-itemCount rs) 0))
@@ -2882,12 +2909,19 @@
                            cache (.-cache rs)
                            ^int rel (- idx (.-cacheFirst rs))
                            to-slot (if (and (not indexed) (>= rel 0) (< rel (count cache)))
-                                     (:offset (nth cache rel))
-                                     (:offset ((:frame to-src) env ctx idx)))]
+                                     (let [e (nth cache rel)]
+                                       {:offset (:offset e) :main-extent (:extent e)})
+                                     ((:frame to-src) env ctx idx))]
                        (when to-slot
-                         (let [^double from-slot (double (:off resting))]
-                           {:from from-slot :to (double to-slot)
-                            :screen (- from-slot (.-scrollOffset c))}))))
+                         (let [^double from-off (double (:off resting))
+                               ^double from-ext (double (:extent resting))
+                               ^double frac (double (:frac resting))]
+                           {:from-off from-off :from-ext from-ext
+                            :to-off (double (:offset to-slot))
+                            :to-ext (double (:main-extent to-slot))
+                            :frac frac
+                            :screen (- (+ from-off (* frac from-ext))
+                                       (.-scrollOffset c))}))))
         _ (when fd/kDebugMode
             (fd/debugPrint (str "[coll morph] seg-anchor: resting=" resting
                                 " seg-anchor=" seg-anchor))
@@ -2899,7 +2933,8 @@
         ;; the union are normal stay/arrive machinery (a cell the viewport
         ;; naturally scrolls away from must NOT be edge-dragged).
         ^double shift (if seg-anchor
-                        (- (double (:to seg-anchor)) (double (:from seg-anchor)))
+                        (- (tw/point-desired seg-anchor 1.0)
+                           (tw/point-desired seg-anchor 0.0))
                         0.0)
         ^double end-ws (+ ws shift)
         ^double end-we (+ we shift)
@@ -2936,12 +2971,8 @@
     (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
     (.-segAnchor! rs seg-anchor)
-    ;; seed the incremental set-point at desired(0) = from − screen (== the current
-    ;; scrollOffset), so the first animating pass emits desired(t)−desired(0) with no
-    ;; jump, and a retrigger mid-segment re-seeds against the live offset (§9).
-    (.-segPrevDesired! rs (if seg-anchor
-                            (- (double (:from seg-anchor)) (double (:screen seg-anchor)))
-                            0.0))
+    ;; desired(0) == the live scrollOffset, so t≈0 emits no jump on a retrigger (§9)
+    (.-segPrevDesired! rs (if seg-anchor (tw/point-desired seg-anchor 0.0) 0.0))
     (.-leaving! rs leaving)
     (.-segGen! rs (.-curGen rs))
     ;; (e) display at `from` (t≈0); continue passes go through indexed-layout!(seg-tween)

@@ -473,7 +473,8 @@
        (not (.-value (.-isScrollingNotifier (position rig))))))
 
 (defn top-anchor
-  "The item key at the viewport top plus its intra-item offset, or nil.
+  "The item key at the viewport top, its intra-item offset, its main extent and
+   the fraction of it consumed above the top, or nil.
 
    REST-ONLY: the child index space equals the data index space only when no
    cell is dying (mid-segment the host builds over the live+dying shadow)."
@@ -483,10 +484,14 @@
         cs (sort-by :index (children rig))
         hit (first (filter (fn [c] (> ^double (:end c) (+ so eps-geom))) cs))]
     (when (some? hit)
-      (let [^int i (:index hit)]
+      (let [^int i (:index hit)
+            ^double intra (- so ^double (:offset hit))
+            ^double ext (double (:main-size hit))]
         {:index i
          :key (when (< i (count items)) (:id (nth items i)))
-         :intra (- so ^double (:offset hit))}))))
+         :intra intra
+         :extent ext
+         :frac (if (pos? ext) (/ intra ext) 0.0)}))))
 
 ;; --- oracles ---
 
@@ -725,8 +730,14 @@
 
 (defn o6-anchor-preserved
   "O6 — for ops that must not move content (layout swap, insert/remove ABOVE the
-   window, :approx toggle, segment settle) the viewport-top item key and its
-   intra-item offset survive. Cross-extent changes are excluded by design.
+   window, :approx toggle, segment settle) the viewport-top item key and the
+   FRACTION of it consumed above the top survive. Cross-extent changes are
+   excluded by design.
+
+   The invariant is the fraction, not the absolute intra offset: a morph that
+   resizes the anchor cell (a wrap run becoming a grid row) cannot hold both, and
+   holding the pixel offset is what pushes the top past a shrinking anchor into
+   the next item (fuzz NEW-1). With an unchanged extent the two coincide.
 
    `before` is a `top-anchor` captured at rest before the op."
   [rig before]
@@ -736,7 +747,8 @@
       (nil? after) [(v :o6 {:why :no-top-child :before before})]
       (not= (:key before) (:key after))
       [(v :o6 {:why :key-moved :before before :after after})]
-      (not (close? (:intra before) (:intra after) eps-equiv))
+      (not (close? (* ^double (:frac before) ^double (:extent after))
+                   (:intra after) eps-equiv))
       [(v :o6 {:why :intra-drift :before before :after after})]
       :else [])))
 

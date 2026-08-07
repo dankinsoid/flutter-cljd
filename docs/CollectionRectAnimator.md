@@ -338,7 +338,7 @@ at its real (scattered) index while the drivers simply never bridge the gap. Shi
   `to` = its target frame slid past the near END-window edge (`edge-slide-block`
   over `[end-ws, end-we]`) — index above the span → `:trailing`, below →
   `:leading`. The end window is the current one shifted by the
-  §9 set-point delta (`to − from` of `segAnchor`), so a cell the viewport merely
+  §9 set-point delta (`desired(1) − desired(0)`), so a cell the viewport merely
   scrolls away from keeps its real target and is NOT edge-dragged. Exiting
   (data-removed) keys are skipped — they exit-collapse in place (§7a).
   `keyed-tween-layout` takes the map as `:leaving` and lerps committed → edge at

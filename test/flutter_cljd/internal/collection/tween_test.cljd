@@ -159,19 +159,14 @@
       (is (= 3 ((:first-index src) genv ctx 50.0)))
       (is (close? 200.0 ((:extent src) genv ctx 10))))))
 
-;; point-correction-delta drives scrollOffset so the captured viewport-top INDEX
-;; SLOT tracks its lerped OLD→NEW position (docs §9). Index-based ⇒ immune to which
-;; keys shuffled where; INCREMENTAL per pass (emits desired(t) − prev-desired) ⇒ the
-;; animation delta composes with user drag instead of reverting it, and the emitted
-;; deltas telescope to exactly to − from; self-nullifying when the slot doesn't move.
-;;
-;; `seed`: prev-desired starts at desired(0) = from − screen (== segment-start
-;; scrollOffset). Each call returns [correction new-prev-desired]; the render sliver
-;; feeds new-prev-desired back in next pass.
+;; deltas are per-pass so a concurrent user drag composes with the animation
 (deftest point-correction-delta-tracks-anchor-slot
-  (let [seed (fn [{:keys [from screen]}] (- (double from) (double screen)))]
+  (let [rigid (fn [^double from ^double to ^double screen]
+                {:from-off from :to-off to :from-ext 50.0 :to-ext 50.0
+                 :frac 0.0 :screen screen})
+        seed (fn [a] (tw/point-desired a 0.0))]
     (testing "grid rescale: slot moves 100→140, per-pass deltas telescope to to−from"
-      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+      (let [anchor (rigid 100.0 140.0 0.0)
             p0 (seed anchor)]                         ; desired(0) = 100
         ;; t=0: desired = 100 == prev → no jump, prev unchanged
         (let [[c p] (tw/point-correction-delta anchor 0.0 p0)]
@@ -185,9 +180,8 @@
               ;; sum of emitted deltas == to − from == 40
               (is (close? 40.0 (- (double p) p0))))))))
     (testing "delta ignores the live offset ⇒ a user drag between passes survives"
-      ;; prev-desired is the ONLY state; the live scrollOffset never enters the math,
-      ;; so whatever the user dragged to is untouched — the pass adds only +20.
-      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+      ;; prev-desired is the ONLY state; the live scrollOffset never enters the math
+      (let [anchor (rigid 100.0 140.0 0.0)
             [c _] (tw/point-correction-delta anchor 0.5 100.0)]
         (is (close? 20.0 c))
         ;; identical result regardless of any drag the user applied to scrollOffset
@@ -195,14 +189,14 @@
     (testing "same-t re-layout (post-correction re-run) emits 0"
       ;; after emitting the t=0.5 delta prev==120; re-running at the SAME t must be 0
       ;; so the viewport layout converges within the frame.
-      (let [anchor {:from 100.0 :to 140.0 :screen 0.0}
+      (let [anchor (rigid 100.0 140.0 0.0)
             [_ p] (tw/point-correction-delta anchor 0.5 (seed anchor))
             [c p2] (tw/point-correction-delta anchor 0.5 p)]
         (is (nil? c)) (is (close? 120.0 p2))))
     (testing "retrigger mid-segment: re-seed against the live offset ⇒ no jump"
-      ;; a new segment-start! re-seeds prev = new-from − new-screen; the first pass at
-      ;; the fresh t=0 must emit nil (no jump) then track the new endpoints.
-      (let [anchor {:from 130.0 :to 90.0 :screen 10.0}   ; live scrollOffset now 120
+      ;; a new segment-start! re-seeds prev = desired(0); the first pass at the
+      ;; fresh t=0 must emit nil (no jump) then track the new endpoints.
+      (let [anchor (rigid 130.0 90.0 10.0)              ; live scrollOffset now 120
             p0 (seed anchor)]                             ; desired(0) = 120
         (is (close? 120.0 p0))
         (let [[c p] (tw/point-correction-delta anchor 0.0 p0)]
@@ -211,7 +205,7 @@
             ;; desired(1) = 90 − 10 = 80 → −40, telescopes to to − from = −40
             (is (close? -40.0 c)) (is (close? 80.0 p))))))
     (testing "plain shuffle: slot does not move (from==to) → no correction at any t"
-      (let [anchor {:from 100.0 :to 100.0 :screen 20.0}
+      (let [anchor (rigid 100.0 100.0 20.0)
             p (seed anchor)]                              ; desired = 80 for every t
         (is (nil? (first (tw/point-correction-delta anchor 0.0 p))))
         (is (nil? (first (tw/point-correction-delta anchor 0.5 p))))
@@ -219,7 +213,7 @@
     (testing "sub-threshold deltas are retained, not dropped ⇒ no drift"
       ;; a tiny per-pass step (< 1e-3) emits nil and keeps prev, so it accumulates and
       ;; eventually crosses the threshold rather than being silently lost.
-      (let [anchor {:from 0.0 :to 1.0 :screen 0.0}       ; to−from = 1 over the segment
+      (let [anchor (rigid 0.0 1.0 0.0)                  ; to−from = 1 over the segment
             p0 (seed anchor)                              ; 0.0
             ;; a 0.0005 step (< 1e-3): nil, prev held at 0
             [c p] (tw/point-correction-delta anchor 0.0005 p0)]
@@ -227,6 +221,24 @@
         ;; next pass reaches 0.002 total: delta from held prev = 0.002 > 1e-3 → emits
         (let [[c p] (tw/point-correction-delta anchor 0.002 p)]
           (is (close? 0.002 c)) (is (close? 0.002 p)))))))
+
+;; NEW-1: a shrinking anchor must not slide the viewport top into the next item
+(deftest point-desired-preserves-anchor-fraction
+  (testing "grid row 208 → list cell 109 at 69.5% consumed"
+    ;; the fuzz NEW-1 numbers: item 6 at 432 (grid) → 516 (list), viewport top 576.5
+    (let [frac (/ (- 576.5 432.0) 208.0)
+          anchor {:from-off 432.0 :from-ext 208.0 :to-off 516.0 :to-ext 109.0
+                  :frac frac :screen (- (+ 432.0 (* frac 208.0)) 576.5)}]
+      (is (close? 576.5 (tw/point-desired anchor 0.0)))
+      ;; the top must stay inside item 6's target span [516, 625)
+      (let [^double d1 (tw/point-desired anchor 1.0)]
+        (is (close? (+ 516.0 (* frac 109.0)) d1))
+        (is (and (>= d1 516.0) (< d1 625.0))))))
+  (testing "an unchanged extent reduces to the rigid to−from shift"
+    (let [anchor {:from-off 432.0 :from-ext 208.0 :to-off 516.0 :to-ext 208.0
+                  :frac 0.25 :screen 7.0}]
+      (is (close? 84.0 (- (tw/point-desired anchor 1.0)
+                          (tw/point-desired anchor 0.0)))))))
 
 ;; --- keyed combinator (v2): the `from` side is key-addressed ---
 
