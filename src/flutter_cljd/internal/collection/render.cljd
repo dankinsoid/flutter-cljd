@@ -102,10 +102,6 @@
                           ;; correction that pass emitted (so a same-frame correction re-run reads as no motion).
                           ;; NaN before the first pass. Drives the refinement suppression gate: a negative
                           ;; pass-over-pass delta = active backward drag / ballistic-up (WS2.3 tier 3).
-   ^:mutable ^bool landingEmitted ;; one-shot: the previous pass emitted an exact-landing correction, so the
-                          ;; current geometry is a fresh from-:init re-flow. If index 0 is STILL off zero the
-                          ;; layout broke the ":init places index 0 at 0" contract — assert in debug, accept a
-                          ;; constant inset in release (see landing-decision) instead of re-emitting forever.
    ;; --- WS2 phase E: velocity sensor + directional overscan + regime gate ---
    ^:mutable overscanConfig  ;; normalized :overscan spec (resolve-overscan); never nil (zero-config ⇒ {:mode :dynamic})
    ^:mutable ^double velocityEMA ;; smoothed signed scroll velocity px/s (correction-compensated). 0 at rest.
@@ -118,26 +114,14 @@
    ^:mutable ^double overscanAhead ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
    ^:mutable ^int flyingRun ;; consecutive frames the EMA has held ≥ v-fast (0 = not fast) — the flying
                           ;; entry gate; a lone fast frame (desktop scroll notch/jump/glitch) never trips it.
-   ^:mutable ^bool crossLayoutReanchor ;; a layout :id change dropped the cache; the surviving top child's
-                          ;; last offset lives in the OLD layout's coordinate space. The next seed-cache!
-                          ;; must re-anchor it at the NEW layout's :approx-offset (not the stale, differently
-                          ;; scaled offset) so the leading extent above the window matches the new layout and
-                          ;; backfill can still walk to index 0. Set by update-render!, consumed by seed-cache!.
-   ^:mutable ^double reanchorShift ;; NaN | the (approx − stale) offset delta a cross-layout re-anchor
-                          ;; introduced this pass; flow-layout! emits it as a scrollOffsetCorrection so the
-                          ;; visible child holds still while the indicator jumps to the new-layout estimate.
+   ^:mutable ^double passRebase ;; per-pass sum of every coordinate-frame delta produced (via rebase+!);
+                          ;; reset each performLayout, consumed by exactly one arm at pass end
+   ^:mutable pendingRebase ;; nil | {:cause :seed :delta :expect-ws (:consumed)} — the cross-pass seed
+                          ;; contract; cleared unconditionally by the next seed-cache!
    ^:mutable ^int passMaterialized ;; children laid out by the CURRENT flow pass (walk / backfill / leading
                           ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
                           ;; tripwire (assert-materialization-bounded!) — a pass that lays O(gap) children
                           ;; means some path walked a gap instead of seeding geometrically.
-   ^:mutable ^double pendingLandingWs ;; NaN | the window start (scrollOffset+cacheOrigin) the exact-landing
-                          ;; emission expects its corrected re-run at. seed-cache! consumes it
-                          ;; (landing-reseed-decision): near the expectation it FORCES the from-:init seed —
-                          ;; the landing contract — because the usual empty-cache dead-reckon at a surviving
-                          ;; child (whose stale offset the correction deliberately did not move) rebuilds the
-                          ;; STALE frame and re-derives the same residual every pass (the non-convergent
-                          ;; correction loop / per-frame :violated assert). Far from it the frame aborted
-                          ;; mid-correction (viewport cycle cap) — abandon: disarm landingEmitted, seed normally.
    ^:mutable dyingSlots] ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
                           ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
@@ -220,8 +204,8 @@
         ;; are stale (list's are cross-independent, but dropping all is cheap).
         (.-checkpoints! this {})
         (.-anchoredTo0! this false)
-        (.-landingEmitted! this false)
-        (.-pendingLandingWs! this dc/double.nan))
+        (.-pendingRebase! this nil))
+      (.-passRebase! this 0.0)
       ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
       ;; frame's directional overscan window BEFORE dispatching. A playing segment
       ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
@@ -266,7 +250,14 @@
                                (.-hasSize ^r/RenderBox ch) true
                                :else (recur (.childAfter this ^r/RenderBox ch))))]
             (assert (or (not sized?) (some? (.-viewAnchor this)))
-                    "collection: viewAnchor nil after a resting pass that left sized attached children"))))
+                    "collection: viewAnchor nil after a resting pass that left sized attached children"))
+          ;; exactly-once: a produced rebase must be fully consumed by the emit arm
+          (let [^double pr (.-passRebase this)
+                ^r/SliverGeometry g (.-geometry this)
+                ^double corr (double (or (.-scrollOffsetCorrection g) 0.0))]
+            (assert (<= (.abs (- pr corr)) 1e-3)
+                    (str "collection: pass produced rebase " pr " but emitted correction "
+                         corr " — a rebase must be consumed exactly once")))))
       ;; Refinement motion sensor: remember this pass's offset compensated by any
       ;; correction it emitted, so the correction's same-frame re-run (and the
       ;; corrected next frame) read as no user motion — only real drag/ballistic
@@ -1016,14 +1007,12 @@
     (when (or layout-changed count-changed)
       (.-checkpoints! rs {})
       (.-anchoredTo0! rs false)
-      (.-landingEmitted! rs false)
-      (.-pendingLandingWs! rs dc/double.nan))
-    ;; a layout :id change invalidates the survivor's stale offset (it is in the OLD
-    ;; layout's space) — flag the next seed-cache! to re-anchor at the NEW layout's
-    ;; :approx-offset instead. A count change keeps the same layout space, so its
-    ;; offsets stay valid — no cross-layout re-anchor there.
+      (.-pendingRebase! rs nil))
+    ;; an :id change leaves survivor offsets in the OLD layout's space; a count
+    ;; change keeps the space, so no cross-layout re-anchor there
     (when layout-changed
-      (.-crossLayoutReanchor! rs true))
+      (.-pendingRebase! rs {:cause :cross-layout :seed :anchor :delta 0.0
+                            :expect-ws dc/double.nan}))
     (.-prevLayout! rs (next-prev-layout (.-prevLayout rs) old
                                         (boolean layout-changed) (some? tween-anim)))
     ;; always swap the fns — same :id means same behavior, fresher closures
@@ -1272,6 +1261,14 @@
           ^int trailing (math/max 0 (math/min trailing (- total leading)))]
       (.collectGarbage rs leading trailing))))
 
+;; @ai-generated(guided)
+(defn- rebase+!
+  "The single write path of the per-pass rebase accumulator: every producer
+   (cross-layout re-anchor, seam, underflow, landing, anchor-follow) adds its
+   delta here and continues working in the shifted frame."
+  [^CollectionRenderSliver rs ^double d]
+  (.-passRebase! rs (+ (.-passRebase rs) d)))
+
 (defn reanchor-offset
   "Offset to re-anchor a lost-cache survivor at index `idx`. `stale-off` is its
    last layoutOffset — coordinate-valid only WITHIN the layout it was placed
@@ -1294,18 +1291,17 @@
     stale-off))
 
 (defn reanchor-band
-  "The band a flow pass materializes/GCs/prunes against, [ws we] shifted by a
-   recorded cross-layout re-anchor. seed-cache!'s re-anchor rebased the walked
-   frame by `rsh` = approx − stale (NaN = none this pass), and the emitted
-   scrollOffsetCorrection (or the segment set-point) lands the NEXT window
-   exactly there — so this pass must fill the SHIFTED band. Filling the OLD one
-   made backfill-leading! walk the whole [old-ws, new-head) gap one leading
-   child at a time, O(gap) materialisations in one frame (the first wrap→list
-   morph freeze); the shift keeps per-pass work O(window+overscan) regardless
-   of the rebase distance — the corrected re-run absorbs the coordinate jump.
-   Pure."
-  [^double ws ^double we ^double rsh]
-  (if (.-isNaN rsh) [ws we] [(+ ws rsh) (+ we rsh)]))
+  "The band a flow pass materializes/GCs/prunes against, [ws we] shifted by the
+   pass rebase produced so far (`pr`, 0 = none). A re-anchor rebased the walked
+   frame and the emitted scrollOffsetCorrection (or the segment set-point) lands
+   the NEXT window exactly there — so this pass must fill the SHIFTED band.
+   Filling the OLD one made backfill-leading! walk the whole [old-ws, new-head)
+   gap one leading child at a time, O(gap) materialisations in one frame (the
+   first wrap→list morph freeze); the shift keeps per-pass work
+   O(window+overscan) regardless of the rebase distance — the corrected re-run
+   absorbs the coordinate jump. Pure."
+  [^double ws ^double we ^double pr]
+  (if (zero? pr) [ws we] [(+ ws pr) (+ we pr)]))
 
 (defn window-far-from-band?
   "Geometric seeding decision — the cache is an accelerator, never the algorithm:
@@ -1359,7 +1355,6 @@
                              (anchor-fn env start off-start)
                              ((:init layout) env)))
           (.-anchoredTo0! rs false)
-          (.-crossLayoutReanchor! rs false)
           :seeded)
       (zero? start) :at-top
       :else :degenerate)))
@@ -1372,8 +1367,7 @@
   (.-checkpoints! rs {})
   (.-cacheFirst! rs 0)
   (.-baseState! rs ((:init layout) env))
-  (.-anchoredTo0! rs true)
-  (.-crossLayoutReanchor! rs false))
+  (.-anchoredTo0! rs true))
 
 (defn- seed-cache!
   "Re-anchors the geometry cache when it cannot serve this pass's window. Two
@@ -1399,7 +1393,10 @@
         fc (.-firstChild rs)
         ;; deep window with nothing attached and an invertible estimate — the
         ;; cold-start precondition for the O(1) inverse seed
-        deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))]
+        deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))
+        ;; the cross-pass seed contract is consumed here, unconditionally
+        pending (.-pendingRebase rs)]
+    (.-pendingRebase! rs nil)
     (cond
       ;; FAR JUMP over a live band: seed by geometry.
       (and (nil? fc) (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we))
@@ -1420,30 +1417,21 @@
 
       :else
       (let [idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
-            ;; consumed once: the survivor's stale offset is cross-layout (see
-            ;; reanchor-offset) only on the first seed after a layout :id change.
-            cross-layout? (.-crossLayoutReanchor rs)
-            ;; consumed once: an exact-landing emission last pass requires THIS
-            ;; pass to re-flow from :init (landing-reseed-decision) — the
-            ;; dead-reckon below would rebuild the stale frame and re-derive
-            ;; the same landing residual forever.
-            reseed (landing-reseed-decision (.-pendingLandingWs rs) ws
-                                            (.-remainingPaintExtent c))]
-        (.-crossLayoutReanchor! rs false)
-        (when-not (= :none reseed)
-          (.-pendingLandingWs! rs dc/double.nan))
-        (when (= :abandon reseed)
-          ;; frame aborted between emission and re-run, window moved: the
-          ;; "fresh from-:init re-flow" premise behind the :violated one-shot
-          ;; is gone — disarm it so an honest later landing can emit again.
-          (.-landingEmitted! rs false))
+            ;; the survivor's stale offset is cross-layout (see reanchor-offset)
+            ;; only on the first seed after a layout :id change
+            cross-layout? (= :cross-layout (:cause pending))
+            ;; an exact-landing emission last pass requires THIS pass to re-flow
+            ;; from :init — a dead-reckon would re-derive the same residual forever
+            reseed (landing-reseed-decision
+                    (if (= :init (:seed pending))
+                      (double (:expect-ws pending))
+                      dc/double.nan)
+                    ws (.-remainingPaintExtent c))]
         (cond
-          ;; PENDING LANDING: the previous pass emitted the exact-landing
-          ;; correction and dropped cache+checkpoints; the corrected re-run
-          ;; re-flows from :init so index 0 lands at 0 and the residual is
-          ;; absorbed (landing-decision :converged) instead of re-derived.
+          ;; landing contract: re-flow from :init absorbs the residual; a dead-reckon re-derives it
           (= :init-seed reseed)
-          (do (.-cacheFirst! rs 0)
+          (do (.-pendingRebase! rs (assoc pending :consumed true))
+              (.-cacheFirst! rs 0)
               (.-baseState! rs (init-fn env))
               (.-anchoredTo0! rs false))
 
@@ -1490,7 +1478,7 @@
                 ^double off (reanchor-offset (boolean cross-layout?) a-idx stale approx-off)]
             ;; the shift is emitted as a scrollOffsetCorrection so the visible child holds still
             (when (not= off stale)
-              (.-reanchorShift! rs (- off stale)))
+              (rebase+! rs (- off stale)))
             (.-cacheFirst! rs a-idx)
             (.-baseState! rs (anchor-fn env a-idx off))
             ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
@@ -1955,7 +1943,8 @@
    structure (synth-renewal-checkpoint) — and re-flows forward (real :cross /
    per-run :offset — kills #5/#A's single left column), falling back to the
    one-child estimator only where no checkpoint AND no run structure exist (list /
-   masonry). Returns this pass's refinement correction (double) or nil.
+   masonry). Every correction it derives is published through `rebase+!`; the
+   pass-end publication site emits the accumulated total.
 
    Phase C refinement, telescoped per pass: every step that discovers a seam
    mismatch reconciles it in place (reflow-from-checkpoint! shifts the content
@@ -1981,27 +1970,27 @@
         approx-fn (:approx-offset layout)
         land (fn [^double wsx]
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
-                 (let [^double z (double (:offset (nth (.-cache rs) 0)))]
-                   (case (landing-decision z origin-emit? (.-landingEmitted rs))
+                 (let [^double z (double (:offset (nth (.-cache rs) 0)))
+                       p (.-pendingRebase rs)
+                       consumed-landing? (boolean (and p (:consumed p)
+                                                       (= :landing (:cause p))))]
+                   (case (landing-decision z origin-emit? consumed-landing?)
                      :converged (do (.-anchoredTo0! rs true)
-                                    (.-landingEmitted! rs false)
+                                    (.-pendingRebase! rs nil)
                                     nil)
                      :defer nil
                      :emit (do (.-cache! rs [])
-                               ;; stale-frame checkpoints would re-seed the OLD
-                               ;; coordinates on the corrected re-run — the
-                               ;; residual would be re-derived, not absorbed
+                               ;; stale-frame checkpoints would re-derive the residual on the re-run
                                (.-checkpoints! rs {})
                                (.-baseState! rs (init-fn env))
                                (.-anchoredTo0! rs false)
-                               (.-landingEmitted! rs true)
-                               ;; where the corrected re-run's window will sit
-                               ;; (wsx = ws + this pass's accumulated seam
-                               ;; corrections); seed-cache! consumes it and
-                               ;; forces the from-:init walk
-                               (.-pendingLandingWs! rs
-                                 (+ wsx (.-overscanBehind rs) (- z)))
-                               (- z))
+                               ;; wsx + overscan − z = where the corrected re-run's
+                               ;; window will sit; the record forces its :init seed
+                               (.-pendingRebase! rs
+                                 {:delta (- z) :cause :landing :seed :init
+                                  :expect-ws (+ wsx (.-overscanBehind rs) (- z))})
+                               (rebase+! rs (- z))
+                               nil)
                      :violated
                      (do (when fd/kDebugMode
                            (assert false
@@ -2011,7 +2000,7 @@
                          ;; release: degrade to a constant inset — accept z as the
                          ;; origin so the offset stops creeping by z every pass.
                          (.-anchoredTo0! rs true)
-                         (.-landingEmitted! rs false)
+                         (.-pendingRebase! rs nil)
                          nil)))))
         ;; Top-underflow: the leading backfill stalled at a positive frontier `cf`
         ;; sitting at/above the coordinate origin because the re-anchor estimate
@@ -2040,21 +2029,13 @@
                     (.-cache! rs [])
                     (.-checkpoints! rs {})
                     (.-anchoredTo0! rs false)
+                    (rebase+! rs deficit)
                     deficit))))))]
-    ;; The walk ACCUMULATES seam corrections instead of ending the pass per
-    ;; emission: each reconciled seam already shifted the content at/below it
-    ;; (shift-attached-from!), so the deltas compose additively into ONE summed
-    ;; scrollOffsetCorrection and the loop continues in the shifted frame
-    ;; (wsx = ws + acc tracks where the corrected window will sit). One
-    ;; emission per pass ⇒ one viewport re-run per frame, however many stale
-    ;; seams the band holds — a chain of N seams used to cost N layout cycles
-    ;; and hit the RenderViewport 10-cycle cap in a single frame.
-    (loop [^double acc 0.0 ^double wsx ws]
+    ;; per-seam pass-ending emissions hit the viewport 10-cycle cap on a deep
+    ;; stale band — deltas accumulate and wsx tracks the shifted frame
+    (loop [^double wsx ws]
       (let [cache (.-cache rs)
-            ^int cf (.-cacheFirst rs)
-            total (fn [tail]
-                    (let [^double t (+ acc (double (or tail 0.0)))]
-                      (when (> (.abs t) 1e-3) t)))]
+            ^int cf (.-cacheFirst rs)]
         (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) wsx))
           (let [cp (or (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
                        (synth-renewal-checkpoint layout env (dec cf)))
@@ -2062,17 +2043,15 @@
                           (reflow-from-checkpoint! rs layout env cp emit?)
                           (estimate-leading-step! rs layout env))]
             (cond
-              (identical? true stepped) (recur acc wsx)
-              (or (nil? stepped) (false? stepped)) (total (land wsx))
-              ;; seam correction reconciled — fold it in and keep walking in
-              ;; the shifted frame; the single corrected re-run re-walks the
-              ;; window from the exact prefix state.
+              (identical? true stepped) (recur wsx)
+              (or (nil? stepped) (false? stepped)) (land wsx)
+              ;; reconciled seam — keep walking in the shifted frame
               :else (let [^double d (double stepped)]
-                      (recur (+ acc d) (+ wsx d)))))
-          ;; leading budget exhausted (head <= wsx) or cf==0: manufacture the
-          ;; missing leading extent when the frontier undershoots the origin,
-          ;; else land.
-          (total (or (underflow) (land wsx))))))))
+                      (rebase+! rs d)
+                      (recur (+ wsx d)))))
+          ;; head <= wsx or cf==0: underflow manufactures the missing leading extent
+          (do (or (underflow) (land wsx))
+              nil))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
@@ -2360,8 +2339,6 @@
     ;; §8a: flow children are never engine-clipped — clear any stale clip map
     ;; left by a prior indexed segment so it doesn't paint-clip this flow pass.
     (.-clips! rs {})
-    ;; fresh each pass: seed-cache! sets it only when it re-anchors cross-layout.
-    (.-reanchorShift! rs dc/double.nan)
     ;; per-pass laid-child counter for the O(window+overscan) tripwire
     (.-passMaterialized! rs 0)
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
@@ -2379,11 +2356,9 @@
       (pre-gc! rs ws-o we-o)
       (seed-cache! rs layout env)
       (normalize-cache! rs layout env)
-      (let [;; a cross-layout re-anchor (seed-cache!) rebased the walked frame by
-            ;; reanchorShift and the emitted correction / segment set-point lands
-            ;; the window there — materialize THIS pass against the shifted band,
-            ;; or backfill walks the whole (approx − stale) gap in one frame.
-            [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-reanchorShift rs))
+      (let [;; a re-anchor rebased the walked frame — materialize against the shifted
+            ;; band, or backfill walks the whole (approx − stale) gap in one frame
+            [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-passRebase rs))
             ^double align-ws (+ ws (- ws-eff ws-o))
             anchor (anchor-before rs so)
             ;; Phase C emission gate, phase-E suppression signal: refinement
@@ -2415,49 +2390,29 @@
                                    (int kl))
                                  last-i)]
             (post-gc! rs keep-last ws-eff)
-            (let [corr (backfill-leading! rs layout env ws-eff emit? origin-emit?)]
-              ;; Row 3 memory bound: front-trim the cache to the overscan band so a
-              ;; from-0-anchored deep scroll doesn't keep [0..head] on the heap. The
-              ;; retained offsets stay exact (baseState re-seeds from the last
-              ;; dropped entry), so this never degrades the frontier.
-              (trim-front! rs ws-eff)
-              ;; Geometric checkpoint scoping (phase-E-widened): keep the overscan
-              ;; band [ws-eff, we-eff] plus one seed above (the D prune re-scoped).
-              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
-              ;; Frontier reconciliation: geometric prune/trim never clears
-              ;; anchoredTo0 under the Row 3 invariant — its claim is "offsets exact",
-              ;; which trimming preserves; degradation is owned by the offset ops.
-              (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
-              ;; measured aggregates track the live window on resting passes so
-              ;; :approx-offset / extent extrapolation follow reality (§1.1).
-              (when (nil? (.-tweenAnim rs))
-                (let [sample (update-measured-agg! rs env)]
-                  ;; O(window+overscan) tripwire (debug, resting passes — a segment
-                  ;; capture legitimately widens the window via widen-window!). The
-                  ;; budget's density comes from THIS pass's sample, not the EMA:
-                  ;; env was built pre-pass and the EMA is stale across a layout
-                  ;; :id change (tripwire-env).
-                  (assert-materialization-bounded! rs layout (tripwire-env env sample)
-                                                   (- we-o ws-o))))
-              ;; A cross-layout re-anchor (seed-cache!) takes precedence: this pass's
-              ;; anchor was captured AFTER the re-anchor so anchor-delta reads ~0; the
-              ;; recorded shift is the real correction that keeps the visible child put
-              ;; while the offset jumps to the new-layout estimate. During a segment
-              ;; capture pass segment-start! overwrites this geometry, so the segment's
-              ;; own set-point (not this) moves the viewport — no double count.
-              (let [^double rsh (.-reanchorShift rs)]
-                (cond
-                  (not (.-isNaN rsh))
-                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection rsh))
-                      (.didFinishLayout mgr))
-                  corr
-                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
-                      (.didFinishLayout mgr))
-                  :else
-                  (if-let [delta (anchor-delta rs anchor)]
-                    (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double delta)))
-                        (.didFinishLayout mgr))
-                    (finish-flow-geometry! rs layout env c walked)))))))))))
+            (backfill-leading! rs layout env ws-eff emit? origin-emit?)
+            ;; Row 3 memory bound: a from-0-anchored deep scroll must not keep [0..head] on the heap
+            (trim-front! rs ws-eff)
+            ;; checkpoint scoping: the overscan band plus one seed above
+            (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
+            ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
+            (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
+            ;; measured aggregates track the live window on resting passes (§1.1)
+            (when (nil? (.-tweenAnim rs))
+              (let [sample (update-measured-agg! rs env)]
+                ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change
+                (assert-materialization-bounded! rs layout (tripwire-env env sample)
+                                                 (- we-o ws-o))))
+            ;; anchor-follow folds last: when any producer already ran, the cache
+            ;; was dropped/replaced so anchor-delta reads nil — no double count
+            (when-let [delta (anchor-delta rs anchor)]
+              (rebase+! rs (double delta)))
+            ;; the ONE emission site: the pass's accumulated rebase, or honest geometry
+            (let [^double pr (.-passRebase rs)]
+              (if (> (.abs pr) 1e-3)
+                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection pr))
+                    (.didFinishLayout mgr))
+                (finish-flow-geometry! rs layout env c walked)))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -2818,7 +2773,7 @@
                               (fd/debugPrint
                                (str "[coll morph] flow capture:"
                                     " scrollOffset=" (.-scrollOffset c)
-                                    " reanchorShift=" (.-reanchorShift rs)
+                                    " passRebase=" (.-passRebase rs)
                                     " cacheFirst=" (.-cacheFirst rs)
                                     " snap-base=" (:base snap)
                                     " snap-frames=" (count (:frames snap))
@@ -2973,9 +2928,9 @@
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {}
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
-                                     fadeEnter fadeExit nil approxSize nil {} false dc/double.nan false
+                                     fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     false dc/double.nan 0 dc/double.nan (or dyingSlots []))]
+                                     0.0 nil 0 (or dyingSlots []))]
       (set-tween-anim! rs tweenAnim)
       rs))
 

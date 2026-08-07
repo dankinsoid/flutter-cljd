@@ -17,7 +17,7 @@
    2. The cross-layout re-anchor must anchor on the viewport-top item
       (viewAnchor), not `firstChild` (the overscan head), or content slides by
       the leading margin: anchor key 1346 -> 1340.
-   3. The capture pass's rebase (reanchorShift ~88 778) must reach the segment:
+   3. The capture pass's rebase (~88 778 px) must reach the segment:
       `from-relay!` overwrites correction-only geometry, and
       `live-only-flow-window` reading `scrollExtent` back off it truncates the
       frozen snapshot's `:extent` to the window end (119 744 vs the true list

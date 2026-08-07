@@ -435,8 +435,7 @@
   (let [^render/CollectionRenderSliver rs (sliver rig)]
     {:cache-first (.-cacheFirst rs)        :cache-n (count (.-cache rs))
      :anchored0 (.-anchoredTo0 rs)         :regime (.-curRegime rs)
-     :reanchor-shift (.-reanchorShift rs)  :cross-reanchor (.-crossLayoutReanchor rs)
-     :landing-emitted (.-landingEmitted rs) :pending-landing-ws (.-pendingLandingWs rs)
+     :pass-rebase (.-passRebase rs)        :pending-rebase (.-pendingRebase rs)
      :cur-gen (.-curGen rs)                :seg-gen (.-segGen rs)
      :seg-anchor (.-segAnchor rs)          :view-anchor (.-viewAnchor rs)
      :tweening? (some? (.-tweenAnim rs))   :vel (.-velocityEMA rs)

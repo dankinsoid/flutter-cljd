@@ -295,15 +295,11 @@
                   [{:offset 1700.0 :end 1800.0 :max-end 1800.0}]
                   40000.0 41800.0))))))
 
-;; --- cross-layout re-anchor band shift (first wrap->list morph freeze) ---
-;; A cross-layout re-anchor rebases the walked frame by reanchorShift and emits it
-;; as a scrollOffsetCorrection that lands the NEXT window there. The SAME pass must
-;; materialize against the shifted band — filling the OLD band made backfill walk
-;; the whole (approx - stale) gap one leading child at a time (the morph freeze).
-
+;; the same pass must materialize against the shifted band, or backfill
+;; walks the whole (approx - stale) gap in one frame (the morph freeze)
 (deftest reanchor-band-shifts-with-the-correction
-  (testing "no re-anchor this pass (NaN) leaves the band untouched"
-    (is (= [1000.0 2200.0] (render/reanchor-band 1000.0 2200.0 ##NaN))))
+  (testing "no rebase this pass (0) leaves the band untouched"
+    (is (= [1000.0 2200.0] (render/reanchor-band 1000.0 2200.0 0.0))))
   (testing "a positive shift moves both edges by the recorded delta"
     (is (= [1300.0 2500.0] (render/reanchor-band 1000.0 2200.0 300.0))))
   (testing "a negative shift (new estimate below the survivor) shifts both down"
