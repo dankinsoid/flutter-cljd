@@ -95,10 +95,10 @@
            :mid mid :settled settled :anchor-vs anchor-vs :top top
            :settled-report settled-report})))))
 
-;; --- 1. the headline: an animated far morph loses the anchor entirely ---
+;; --- 1. the headline: the animated far morph holds the anchor ---
 
-(deftest known-red-far-morph-wrap-to-list-animated
-  :tags [:widget :known-red]
+(deftest far-morph-wrap-to-list-animated
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [t (await (morph-trace! tester true))]
     ;; observed: the O(window) tripwire fires — the settling pass walks the gap

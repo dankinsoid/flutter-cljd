@@ -1137,11 +1137,13 @@
    {:frames :base :extent} shape `frozen-frame-source` consumes, addressed by
    pure-live index (what `shadow-frame-source` remaps shadow indices into).
 
-   Extent excludes the dying cells' main-extents (subtracted from the shadow scroll
-   extent) so `keyed-tween-layout`'s max-extent lerp lands on the true pure-live
-   total — no end-of-segment snap. Guards all-attached-dying (empty survivors →
-   empty frames, gap frames fall back to extent)."
-  [^CollectionRenderSliver rs to-layout ^r/SliverConstraints c]
+   `shadow-ext` is the TARGET layout's honest total over the shadow band
+   (flow-total-extent, supplied by the capture pass) — never read back off
+   `.-geometry`, which a correction-only pass zeroes. Extent excludes the dying
+   cells' main-extents so `keyed-tween-layout`'s max-extent lerp lands on the
+   true pure-live total — no end-of-segment snap. Guards all-attached-dying
+   (empty survivors → empty frames, gap frames fall back to extent)."
+  [^CollectionRenderSliver rs to-layout ^r/SliverConstraints c ^double shadow-ext]
   (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
         env (if-let [prep (:prepare to-layout)] (assoc env :ctx (prep env)) env)
         exiting (.-exiting rs)
@@ -1164,8 +1166,6 @@
                          (or first-off (.childScrollOffset rs ch)) dext))
                 (recur (.childAfter rs ch) surv first-off dext)))
             [surv first-off dext]))
-        ^double shadow-ext (if-let [^r/SliverGeometry g (.-geometry rs)]
-                             (.-scrollExtent g) 0.0)
         ^double live-ext (math/max 0.0 (- shadow-ext dying-ext))]
     (if (empty? survivors)
       {:frames [] :base 0 :extent live-ext}
@@ -1264,10 +1264,26 @@
 ;; @ai-generated(guided)
 (defn- rebase+!
   "The single write path of the per-pass rebase accumulator: every producer
-   (cross-layout re-anchor, seam, underflow, landing, anchor-follow) adds its
-   delta here and continues working in the shifted frame."
+   (cross-layout re-anchor, seam, underflow, landing, anchor-follow, segment
+   tail) adds its delta here and continues working in the shifted frame."
   [^CollectionRenderSliver rs ^double d]
   (.-passRebase! rs (+ (.-passRebase rs) d)))
+
+;; @ai-generated(guided)
+(defn- consume-seg-tail!
+  "Retires the segment set-point on the first resting pass after a segment. The
+   clock can complete before a t=1 layout pass runs, so the set-point's
+   un-emitted tail (desired(1) − segPrevDesired) would snap content under a
+   stationary viewport — publish it through the accumulator instead."
+  [^CollectionRenderSliver rs]
+  (when-let [sa (.-segAnchor rs)]
+    ;; nothing attached ⇒ nothing to hold still — drop the residual
+    (when (.-firstChild rs)
+      (let [^double residual (- (- (double (:to sa)) (double (:screen sa)))
+                                (.-segPrevDesired rs))]
+        (when (> (.abs residual) 1e-3)
+          (rebase+! rs residual))))
+    (.-segAnchor! rs nil)))
 
 (defn reanchor-offset
   "Offset to re-anchor a lost-cache survivor at index `idx`. `stale-off` is its
@@ -2178,10 +2194,17 @@
                    band-extent "px band. Per-pass work must be O(window+overscan);"
                    " some path walked a gap instead of seeding geometrically.")))))
 
-(defn- finish-flow-geometry!
-  [^CollectionRenderSliver rs layout env ^r/SliverConstraints c walked]
-  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)
-        ^double end (double (:end walked))
+;; @ai-generated(guided)
+(defn flow-total-extent
+  "Total content extent of a flow layout from a walked frontier
+   {:last-i :end :reached}: the walked end when the walk reached the last child,
+   else the :estimate / density extrapolation over item-count. While un-anchored
+   (`anchored0` false) the measured-density :approx-offset raises the estimate
+   toward truth, never below the walked end (§2.4 indicator honesty). This is
+   the ONE total-extent expression — a segment capture supplies it explicitly
+   to the frozen snapshot instead of reading geometry back. Pure."
+  ^double [layout env walked ^bool anchored0]
+  (let [^double end (double (:end walked))
         ^int last-i (int (:last-i walked))
         reached (boolean (:reached walked))
         item-count (:item-count env)
@@ -2192,19 +2215,19 @@
           :else (math/max end
                           (if-let [est (:estimate layout)]
                             (double (est env last-i end (int item-count)))
-                            (* end (/ (double item-count) (double (inc last-i)))))))
-        ;; §2.4 indicator honesty: while anchoredTo0 the reported extent is truth
-        ;; (walked/estimated from exact offsets). While un-anchored it is honest-
-        ;; but-approximate — let the measured-density :approx-offset raise it
-        ;; toward truth, never below the walked end (content is laid there).
-        ^double total
-        (if (and (not reached)
-                 (not (.-anchoredTo0 rs))
-                 item-count)
-          (if-let [approx-fn (:approx-offset layout)]
-            (math/max total (double (approx-fn env (int item-count))))
-            total)
-          total)
+                            (* end (/ (double item-count) (double (inc last-i)))))))]
+    (if (and (not reached) (not anchored0) item-count)
+      (if-let [approx-fn (:approx-offset layout)]
+        (math/max total (double (approx-fn env (int item-count))))
+        total)
+      total)))
+
+(defn- finish-flow-geometry!
+  [^CollectionRenderSliver rs layout env ^r/SliverConstraints c walked]
+  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)
+        ^double end (double (:end walked))
+        reached (boolean (:reached walked))
+        ^double total (flow-total-extent layout env walked (.-anchoredTo0 rs))
         ^double first-off (if-let [fc (.-firstChild rs)]
                             (or (.childScrollOffset rs ^r/RenderBox fc) 0.0)
                             (let [cache (.-cache rs)]
@@ -2332,7 +2355,14 @@
                   (when reached (.setDidUnderflow mgr true))
                   (.didFinishLayout mgr))))))))))
 
-(defn- flow-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+(defn- flow-layout!
+  "The resting flow driver. `mode` :resting emits the accumulated pass rebase as
+   a scrollOffsetCorrection; :capture (a segment's target-materialization pass)
+   NEVER writes correction geometry — it returns {:rebase :extent} as values, and
+   segment-start! absorbs the rebase into the set-point (§2.3 :absorb). A capture
+   correction would be overwritten by from-relay! and the delta silently lost."
+  ([rs layout c] (flow-layout! rs layout c :resting))
+  ([^CollectionRenderSliver rs layout ^r/SliverConstraints c mode]
   (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
     (.setDidUnderflow mgr false)
@@ -2341,6 +2371,8 @@
     (.-clips! rs {})
     ;; per-pass laid-child counter for the O(window+overscan) tripwire
     (.-passMaterialized! rs 0)
+    (when (nil? (.-tweenAnim rs))
+      (consume-seg-tail! rs))
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           ^double so (.-scrollOffset c)
@@ -2378,7 +2410,8 @@
             origin-emit? (origin-refine-emit? seg?)]
         (if-not (align-start! rs layout env align-ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
-              (.didFinishLayout mgr))
+              (.didFinishLayout mgr)
+              (when (= :capture mode) {:rebase 0.0 :extent 0.0}))
           (let [walked (walk! rs layout env we-eff)
                 ^int last-i (int (:last-i walked))
                 ;; §7b: this branch runs mid-segment only as the CAPTURE pass
@@ -2407,12 +2440,18 @@
             ;; was dropped/replaced so anchor-delta reads nil — no double count
             (when-let [delta (anchor-delta rs anchor)]
               (rebase+! rs (double delta)))
-            ;; the ONE emission site: the pass's accumulated rebase, or honest geometry
-            (let [^double pr (.-passRebase rs)]
-              (if (> (.abs pr) 1e-3)
-                (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection pr))
-                    (.didFinishLayout mgr))
-                (finish-flow-geometry! rs layout env c walked)))))))))
+            (if (= :capture mode)
+              ;; :absorb — no correction geometry ever; the rebase and the target's
+              ;; honest total return as values for the set-point / frozen snapshot
+              (do (finish-flow-geometry! rs layout env c walked)
+                  {:rebase (.-passRebase rs)
+                   :extent (flow-total-extent layout env walked (.-anchoredTo0 rs))})
+              ;; the ONE emission site: the pass's accumulated rebase, or honest geometry
+              (let [^double pr (.-passRebase rs)]
+                (if (> (.abs pr) 1e-3)
+                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection pr))
+                      (.didFinishLayout mgr))
+                  (finish-flow-geometry! rs layout env c walked)))))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -2474,6 +2513,8 @@
     (.setDidUnderflow mgr false)
     ;; §8a: fresh clip map each pass; a resting/non-collapsing frame leaves it {}.
     (.-clips! rs {})
+    (when (nil? (.-tweenAnim rs))
+      (consume-seg-tail! rs))
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
           geo-fn (:geometry layout)
@@ -2599,12 +2640,11 @@
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
                 ;; §8a: record each animating cell's paint-clip window (shared helper).
                 _clips (compute-clips! rs env geo-fn)
-                ;; Scroll correction (animating only): the indexed path writes
-                ;; geometry directly, so when content above collapses/rescales
-                ;; mid-segment the viewport-top slot jumps unless we follow it.
-                ;; Incremental set-point model (docs §9) — per-pass animation delta,
-                ;; composes with user drag; same-t re-layout converges to 0.
-                corr (seg-scroll-correction rs c)]
+                ;; mid-segment: the incremental set-point (docs §9); at rest: the
+                ;; pass rebase (e.g. a consumed segment tail) through the same exit
+                corr (or (seg-scroll-correction rs c)
+                         (let [^double pr (.-passRebase rs)]
+                           (when (> (.abs pr) 1e-3) pr)))]
             (if corr
               (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
                   (.didFinishLayout mgr))
@@ -2746,39 +2786,41 @@
         ;; on the plain target (widen-window! keeps leave-slides attached too). The
         ;; segAnchor reset makes this pass' scroll-correction a no-op (segAnchor is
         ;; rebuilt below); the first frame is then displayed by from-relay!.
+        ;; the flow capture runs in :capture mode (no correction geometry — §2.3
+        ;; :absorb) and returns the rebase + the target's honest total as values
+        flow-cap (when-not indexed
+                   ;; the walk-ahead covers the extent dying cells vacate, so the
+                   ;; replacements below are materialized before the collapse plays
+                   (let [^double cap-ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+                         ^double cap-we (+ cap-ws (.-remainingCacheExtent c))
+                         ^double extra (if (.-isFinite cap-we)
+                                         (vacated-trailing-extent
+                                          (into [] (keep #(get committed-from (:key %)))
+                                                (.-dyingSlots rs))
+                                          cap-ws cap-we)
+                                         0.0)
+                         ^double ahead0 (.-overscanAhead rs)]
+                     (.-overscanAhead! rs (+ ahead0 extra))
+                     (let [cap (flow-layout! rs layout c :capture)]
+                       (.-overscanAhead! rs ahead0)
+                       cap)))
         pure-live-src (if indexed
                         (do (.-segAnchor! rs nil)
                             (indexed-layout! rs layout c)
                             (tw/indexed-frame-source layout))
-                        ;; The capture walk fills the SHADOW band, where dying cells
-                        ;; still hold their full extent — extend it by the extent they
-                        ;; will vacate (vacated-trailing-extent) so the pure-live `to`
-                        ;; snapshot covers the FULL band and every replacement rising
-                        ;; in from below is materialized in THIS frame, before the
-                        ;; removal collapse plays, not after it.
-                        (let [^double cap-ws (+ (.-scrollOffset c) (.-cacheOrigin c))
-                              ^double cap-we (+ cap-ws (.-remainingCacheExtent c))
-                              ^double extra (if (.-isFinite cap-we)
-                                              (vacated-trailing-extent
-                                               (into [] (keep #(get committed-from (:key %)))
-                                                     (.-dyingSlots rs))
-                                               cap-ws cap-we)
-                                              0.0)
-                              ^double ahead0 (.-overscanAhead rs)]
-                          (.-overscanAhead! rs (+ ahead0 extra))
-                          (flow-layout! rs layout c)
-                          (.-overscanAhead! rs ahead0)
-                          (let [snap (live-only-flow-window rs layout c)]
-                            (when fd/kDebugMode
-                              (fd/debugPrint
-                               (str "[coll morph] flow capture:"
-                                    " scrollOffset=" (.-scrollOffset c)
-                                    " passRebase=" (.-passRebase rs)
-                                    " cacheFirst=" (.-cacheFirst rs)
-                                    " snap-base=" (:base snap)
-                                    " snap-frames=" (count (:frames snap))
-                                    " snap-extent=" (:extent snap))))
-                            (tw/frozen-frame-source snap))))
+                        (let [snap (live-only-flow-window rs layout c
+                                                          (double (:extent flow-cap)))]
+                          (when fd/kDebugMode
+                            (fd/debugPrint
+                             (str "[coll morph] flow capture:"
+                                  " scrollOffset=" (.-scrollOffset c)
+                                  " passRebase=" (.-passRebase rs)
+                                  " cacheFirst=" (.-cacheFirst rs)
+                                  " cap=" flow-cap
+                                  " snap-base=" (:base snap)
+                                  " snap-frames=" (count (:frames snap))
+                                  " snap-extent=" (:extent snap))))
+                          (tw/frozen-frame-source snap)))
         ;; WS3.2: the dying slots come from the host as a SPARSE, ascending-by-shadow-
         ;; index vector (built in the already-O(n) rebuild-shadow!), so the segment
         ;; never rebuilds an O(n) live/dying mask. Off-window dying slots are only an
@@ -2836,11 +2878,15 @@
                            ^int idx (if (pos? n)
                                       (math/max 0 (math/min raw (dec n)))
                                       (math/max 0 raw))
-                           tgt ((:frame to-src) env ctx idx)]
-                       (when tgt
-                         (let [^double from-slot (double (:off resting))
-                               ^double to-slot (double (:offset tgt))]
-                           {:from from-slot :to to-slot
+                           ;; a frozen-snapshot lookup answers nil off-window, nulling the set-point
+                           cache (.-cache rs)
+                           ^int rel (- idx (.-cacheFirst rs))
+                           to-slot (if (and (not indexed) (>= rel 0) (< rel (count cache)))
+                                     (:offset (nth cache rel))
+                                     (:offset ((:frame to-src) env ctx idx)))]
+                       (when to-slot
+                         (let [^double from-slot (double (:off resting))]
+                           {:from from-slot :to (double to-slot)
                             :screen (- from-slot (.-scrollOffset c))}))))
         _ (when fd/kDebugMode
             (fd/debugPrint (str "[coll morph] seg-anchor: resting=" resting
@@ -2898,10 +2944,18 @@
                             0.0))
     (.-leaving! rs leaving)
     (.-segGen! rs (.-curGen rs))
-    ;; (e) display THIS pass at `from` (t≈0). The target window is already
-    ;; materialised (above), so re-lay the attached children at the tween — uniform
-    ;; for both target kinds; continue passes go through indexed-layout!(seg-tween).
-    (from-relay! rs seg-tween c)))
+    ;; (e) display at `from` (t≈0); continue passes go through indexed-layout!(seg-tween)
+    (from-relay! rs seg-tween c)
+    ;; §2.3 :absorb, exactly-once: a produced capture rebase with no set-point to
+    ;; carry it would silently vanish (the far-morph bug as an assertion)
+    (when fd/kDebugMode
+      (let [^double produced (double (or (:rebase flow-cap) 0.0))
+            ^r/SliverGeometry g (.-geometry rs)]
+        (assert (nil? (.-scrollOffsetCorrection g))
+                "collection: a capture pass must not emit a scrollOffsetCorrection")
+        (assert (or (zero? produced) (some? seg-anchor))
+                (str "collection: capture produced rebase " produced
+                     " with no absorption channel (segAnchor nil)"))))))
 
 ;; ============================================================
 ;; Widget
