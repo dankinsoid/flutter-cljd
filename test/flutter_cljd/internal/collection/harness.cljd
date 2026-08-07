@@ -836,15 +836,24 @@
 
 (defn o9-bounded-state
   "O9 — retention stays proportional to the live window. Catches unbounded growth
-   across long episodes, which no single-frame assert can see."
+   across long episodes, which no single-frame assert can see.
+
+   `committed` is scoped to the cache BAND and pruned only BETWEEN segments
+   (render.cljd `commit-prune?`), so mid-segment it legitimately accumulates every
+   key the segment's passes touched — while the attached window can collapse to a
+   single child during a landing. Bounding it by `attached` there measured the
+   wrong thing; mid-segment it is bounded by the band instead."
   [rig]
   (let [e (engine rig)
         ^int n (count (children rig))
         ^int lim (+ (* 8 n) 64)
-        probes [[:cache-n (:cache-n e)]
-                [:committed-n (:committed-n e)]
-                [:checkpoints (count (:checkpoints e))]]
-        bad (filter (fn [[_ ^int c]] (> c lim)) probes)]
+        ^int com-lim (if (:tweening? e)
+                       (+ (* 8 (max n ^int (:cache-n e))) 64)
+                       lim)
+        probes [[:cache-n (:cache-n e) lim]
+                [:committed-n (:committed-n e) com-lim]
+                [:checkpoints (count (:checkpoints e)) lim]]
+        bad (filter (fn [p] (> ^int (nth p 1) ^int (nth p 2))) probes)]
     (if (seq bad) [(v :o9 {:why :unbounded :limit lim :counts (vec bad)})] [])))
 
 ;; --- driver ---

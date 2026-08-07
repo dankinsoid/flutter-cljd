@@ -184,13 +184,17 @@
 
 (defn- boundary-settle!
   "`jumpTo` past `maxScrollExtent` force-writes `pixels` there and only then lets
-   the spring walk it back, over several hundred ms. Those frames are the op's
-   own tail, not a finding — the wait is bounded, so an offset that never
-   re-enters the range still fails O5."
+   the spring walk it back. Those frames are the op's own tail, not a finding —
+   the wait is bounded, so an offset that never re-enters the range still fails O5.
+
+   150 frames (2.4 s), not 45: a jump past the end of an :approximate-item-size
+   collection lands on an ESTIMATED `maxScrollExtent` that keeps moving for ~25
+   frames as measured tail cells replace the estimate, and every move restarts the
+   boundary spring. The observed worst case converges at frame 68."
   [rig op]
   (when (contains? jump-ops (nth op 0))
     (loop [k 0]
-      (when (and (< k 45) (out-of-range? rig))
+      (when (and (< k 150) (out-of-range? rig))
         (await (h/pump! rig 16))
         (recur (inc k)))))
   nil)

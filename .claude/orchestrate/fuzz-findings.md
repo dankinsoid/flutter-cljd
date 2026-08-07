@@ -3,6 +3,22 @@
 **Task**: collection-arch-hardening, step 6. Producer: `test/flutter_cljd/internal/collection/fuzz_test.cljd`.
 Consumer: step 7 (turn NEW signatures into red tests), steps 8–13 (the fixes).
 
+**Step-7 triage (2026-08-07)**: every NEW signature now has a deterministic
+deftest in `test/flutter_cljd/internal/collection/fuzz_red_test.cljd`, which
+replays the shrunk vector through `fuzz-test/run-ops!` and regenerates the rig
+header from the seed. 6 stayed red (reproduced 3× each, `+2 -6` every run);
+NEW-6 and NEW-8 were reclassified as fuzzer/oracle miscalibration, recalibrated,
+and kept as GREEN tests guarding the recalibration. Default suite: 297 pass.
+
+**Root-cause consolidation for step 8/9** — the 8 NEW signatures are 6 roots:
+- **NEW-5 and NEW-7 are ONE root** (`keyed-tween-layout`'s nil→0 window fallback).
+- **NEW-1 is NOT known-A's root**: known-A/NEW-7 are about the set-point being
+  absent or the band being stale; NEW-1's set-point is present and correct, and
+  its *model* (rigid translation) is what loses the anchor.
+- **NEW-4 lives in the uncommitted `seed-cache!` WIP, not at HEAD** — step 5's
+  "the WIP is inert" holds only for the far-morph scenario; here it crashes.
+- NEW-2 and NEW-3 are wrap-tiling defects independent of the rebase work.
+
 ## Campaign
 
 | | |
@@ -70,11 +86,20 @@ being treated as an engine bug.**
   ```
   `before {:key 6 :intra 144.496 :index 6}` -> `after {:key 7 :intra 29.491 :index 7}`
 - Seed 207 (`:list` -> `:masonry` at ~6 viewports) slides 11 items: key 43 -> 54.
-- Cause guess: the segment set-point is sampled from `restingTop`, which a plain
-  drag leaves pointing at the leading-overscan child rather than the viewport-top
-  item — the same `anchor-before` (pre-`walk!` cache) vs `capture-resting-top!`
-  (post-layout children) split step 5 named, here without needing `restingTop` to
-  be nil. **Not covered by the step-5 reds**, which all require a ~50-viewport jump.
+- Status: **RED-TESTED** — `known-red-fuzz-morph-loses-anchor-without-jump`.
+- Cause guess (step 6) was WRONG: `restingTop` is correct here.
+- **CONFIRMED**: `segment-start!` builds `segAnchor` as `{:from old-offset :to
+  new-offset :screen (from − scrollOffset)}` and the segment shift is the rigid
+  `to − from` (render.cljd L2857-2881). That pins the anchor cell's TOP EDGE to a
+  fixed screen position, not the viewport-top item. Here the anchor is item 6 at
+  from 432 → to 516 with screen −144.5, and `pixels` follows exactly
+  (576.50 → 660.49) — but item 6's own main extent shrank 208 (grid row) → 109
+  (list cell), so its 144.5 px of already-consumed height no longer exists and the
+  viewport top lands inside item 7. Any morph that resizes a partially
+  scrolled-past anchor (intra > 0) reproduces this. The set-point is PRESENT and
+  correct: this is a defect of the set-point MODEL, a different root from
+  known-A/NEW-7, and step 8 must decide what the segment preserves (the anchor's
+  consumed fraction, or a re-picked top item) rather than its top edge.
 
 ### NEW-2 — wrap runs overlap after a backward drag
 - Oracle: `:o4` `overlap` + `wrap-run-pitch`. Seeds 222, 22, 11.
@@ -84,9 +109,18 @@ being treated as an engine bug.**
   ```
   `overlap pairs [[303 304] [303 305] [319 320] [319 321]]`, `wrap-run-pitch {:from 303 :to 304}`
 - Seed 11 reaches the same state in two ops from a jump: `[[:jump 2553.9976358413696] [:settle] [:drag -333.8862705230713]]`.
-- Cause guess: backward seam refinement re-lays a partial run using a cross
-  cursor that was not reset for the run it re-enters, so cells stack on the same
-  cross offset. Physically overlapping cells at rest — a paint-visible defect.
+- Status: **RED-TESTED** — `known-red-fuzz-wrap-runs-overlap-after-back-drag`.
+- **CONFIRMED**: observed children at rest — index 303 `{:offset 3444.45 :cross 0
+  :cross-size 128}` and index 304 `{:offset 3444.45 :cross 0 :cross-size 94}`,
+  with 305 at cross 100 (= 94 + spacing 6). Both 303 and 304 are in `checkpoints`,
+  i.e. both were recorded as renewal points (`:renewal-point?` = cross 0 = run
+  start). Root: `refine-seam-delta` (render.cljd L443-452) reconciles the backward
+  re-flow against the cache head on the **MAIN axis only** — it compares
+  `(:offset gm)` to `old-head` and ignores the `:cross` the same `:place` call
+  returns. A re-flow whose prefix ends with an OPEN run (`{:x 128 :y 3444 :h 96}`)
+  places the head at the same `y`, so `d` = 0, the seam is declared converged and
+  `stitch-prefix` keeps the stale head verbatim at cross 0. Wrap's flow state
+  carries a cross cursor that the seam protocol has no way to reconcile.
 
 ### NEW-3 — wrap run advance is short by one run's max main
 - Oracle: `:o4` `wrap-run-advance`. Seeds 240, 223.
@@ -95,10 +129,18 @@ being treated as an engine bug.**
   [[:drag 3357.876420021057] [:layout :wrap] [:settle]]
   ```
   `{:want 1960.84375 :from 1910.84375 :to 1954.84375}` — the next run starts 6 px
-  (exactly one `run-spacing`) too early, i.e. the run's tallest cell was not used.
-- Cause guess: after a morph the run-height accumulator is seeded from the frozen
-  segment snapshot's per-cell mains rather than the re-measured ones, so a run
-  whose tallest cell entered during the morph advances by the wrong max.
+  too early: `want − from` = 63 = 57 + `run-spacing` 6, `to − from` = 57, so the
+  advance is exactly the cell's own extent and the run gap is missing.
+- Status: **RED-TESTED** — `known-red-fuzz-wrap-run-advance-short-after-morph`.
+- **CONFIRMED**: the failing boundary sits in the above-window leading margin
+  (`cacheFirst` 38, first checkpoint 40) and the run is single-celled, i.e. the
+  `estimate-leading-step!` → `leading-step-entry` path (render.cljd L1784-1852).
+  Its advance is `adv = max(ext, flow-end(env, st') − head)`; for wrap, `:anchor`
+  seeds `{:x nil :y head :h 0}` and `:place` puts `i` INTO that same empty run, so
+  `st'` keeps `:y = head`, `flow-end` returns `head`, the second term is 0 and
+  `adv` collapses to `ext`. The cell is placed at `head − ext` instead of
+  `head − ext − run-spacing`. Not the morph's snapshot — the morph only matters
+  because it re-seeds the cache and forces the leading estimate to run.
 
 ### NEW-4 — `type 'Null' is not a subtype of type 'RenderBox' in type cast`
 - Oracle: `:o1` (hard cast failure inside layout). Seeds 5, 218.
@@ -109,10 +151,20 @@ being treated as an engine bug.**
    [:drag -474.3441581726074] [:layout :wrap]]
   ```
 - Both instances end on a `[:layout ...]` op that follows a `[:remove ...]`.
-- Cause guess: a layout pass dereferences a child the previous pass garbage-
-  collected (or one the removal took out of the shadow index space) and casts the
-  nil straight to `RenderBox` — a missing nil guard on a `childAfter`/`childBefore`
-  walk in the morph path. Highest-severity NEW: it is an outright crash.
+- Status: **RED-TESTED** — `known-red-fuzz-null-render-box-cast-in-morph-after-remove`.
+- **CONFIRMED, and it is the UNCOMMITTED WIP, not HEAD.** Stack:
+  `seed-cache! (render.dart:4221) ← flow-layout! ← segment-start! ← performLayout`.
+  render.dart:4221 is `(rs.firstChild as RenderBox)` = render.cljd **L1430**,
+  `^r/RenderBox fc2 (.-firstChild rs)` — a line that exists only in the working
+  tree's `seed-cache!` WIP. The two lines above it
+  (`(when (pos? lead) (.collectGarbage rs lead 0))`, L1428) destroy every attached
+  child whose index is below `restingTop.idx`; when the whole attached window is
+  above the resting anchor — which a backward `fling-catch` + drag produces —
+  `lead` equals the child count, `firstChild` becomes nil, and the non-nullable
+  cast on the next line throws before the `(if fc2 …)` / `(and fc2 …)` guards the
+  WIP itself wrote can run. Step 5 recorded the WIP as "inert"; that holds only
+  for the far-morph scenario. Fix shape: `^r/RenderBox?` plus re-checking
+  emptiness after the GC — but the WIP is superseded by step 9 anyway.
 
 ### NEW-5 — Flutter's own `childCount >= leadingGarbage + trailingGarbage` assert
 - Oracle: `:o1`, `sliver_multi_box_adaptor.dart:594`. Seeds 6, 138 (both `:masonry`).
@@ -121,10 +173,21 @@ being treated as an engine bug.**
   [[:drag 3345.6783771514893] [:cross 400.0] [:settle] [:cross 640.0]
    [:jump 26061.590909957886] [:to-top]]
   ```
-- Cause guess: the engine asks `collectGarbage` to drop more leading+trailing
-  children than are attached, i.e. the garbage counts are computed against a
-  window from a *different* cross-extent generation — the `to-top` after a
-  cross change re-anchors without recomputing the attached range.
+- Status: **RED-TESTED** — `known-red-fuzz-garbage-counts-exceed-child-count`.
+  **Same root as NEW-7.**
+- **CONFIRMED**: stack is `indexed_layout! → collectGarbage` — mid-segment the
+  engine runs `indexed-layout!` over `segTween` (render.cljd L259), and its
+  garbage counts come from `first-index` / `target-last` (L2504-2522).
+  `keyed-tween-layout` resolves both through the frozen snapshot with a nil
+  fallback of **0** (tween.cljd L352-357: `(int (or (to-first …) 0))`). After the
+  `to-top` the viewport sits entirely BELOW the frozen window: `frozen-frame-source`
+  answers `first-index(0)` = the snapshot base (73) but `last-index(850)` = nil →
+  0. The window is INVERTED (73 > 0), so `calculateLeadingGarbage(firstIndex: 73)`
+  counts indices 0..72 and `calculateTrailingGarbage(lastIndex: 0)` counts 1..98 —
+  the same children twice, 171 > childCount 99. Neither the base window nor
+  `widen-window-indices` can invert on its own; only the nil→0 fallback can.
+  The fix must distinguish "no opinion" from "index 0", and `indexed-layout!`
+  should refuse an inverted window regardless.
 
 ### NEW-6 — a jump past the end parks `pixels` outside the advertised range
 - Oracle: `:o5` `pixels-out-of-range`, 14 seeds (the single largest `:check` class).
@@ -135,11 +198,20 @@ being treated as an engine bug.**
   `{:pixels 18594.584 :max 18574.528 :min 0.0}` — still 20 px past `max` after the
   fuzzer's bounded 720 ms boundary wait (45 frames), so this is not the spring
   transient a forced `jumpTo` legitimately produces.
-- Cause guess: `maxScrollExtent` keeps shrinking by a few px per frame as the
-  estimate for the tail is replaced by measured cells, so the clamping ballistic
-  never reaches a fixed point — the position chases a moving boundary.
-- NOTE for step 7: assert this only AFTER a bounded wait; the first ~100 ms of a
-  past-the-end `jumpTo` is legitimately out of range.
+- Status: **RECLASSIFIED — fuzzer miscalibration, not an engine leak.** Green test
+  `fuzz-red-test/fuzz-jump-past-end-converges-into-range`; the fix is
+  `fuzz-test/boundary-settle!`'s bound, 45 → 150 frames.
+- **Evidence** (per-frame trace of the 1-op repro): `pixels` DOES converge, at
+  frame 68, exactly onto `max`. The first half of the flight is the estimate
+  collapsing — `maxScrollExtent` 23760 → 18335 over 18 frames as measured tail
+  cells replace the `:approximate-item-size 80` estimate, then back UP to 18573 at
+  frame 26 — and every dimension change restarts the boundary spring
+  (`IdleScrollActivity`/`BallisticScrollActivity.applyNewDimensions` →
+  `goBallistic`). Once the extent stops moving the spring converges
+  asymptotically over ~40 more frames. At the old 45-frame bound the sample was
+  18592.95, which is precisely the number the campaign reported. The extent's
+  ~29 % transient error at the far end of an estimated wrap is by design
+  (estimates outside the window), so nothing here is an engine defect.
 
 ### NEW-7 — a count change plus a far jump walks the entire dataset in one pass
 - Oracle: `:o9` `unbounded` on `cache-n`. Seeds 32, 122, +2.
@@ -149,11 +221,25 @@ being treated as an engine bug.**
   ```
   `cache-n 601` (the whole dataset) with `pass-materialized 601`, `cache-first 0`,
   `anchored0 true`, `checkpoints (600)`.
-- Cause guess: `update-render!` drops the checkpoints on a count change (known-B's
-  root) but leaves `anchoredTo0`, so the next far jump has no checkpoint to seed
-  from and walks from index 0 — O(n) per frame, the exact invariant the memory
-  note "cache is accelerator only" says must never be violated. Same root as
-  known-B, different symptom; worth one red test of its own.
+- Status: **RED-TESTED** — `known-red-fuzz-count-change-then-far-jump-walks-dataset`.
+  **Same root as NEW-5**, and NOT the same root as known-B.
+- Cause guess (step 6) was WRONG: `update-render!` DOES clear `anchoredTo0` on a
+  count change (render.cljd L971-975).
+- **CONFIRMED**: the `[:remove …]` is load-bearing because `:animate? true` makes
+  it OPEN A SEGMENT, not because of its checkpoint invalidation. Engine state
+  traced op by op: after the remove and after the far jump it is still
+  `{:cache-first 0 :cache-n 11 :anchored0 true :checkpoints (0..9) :tweening? true}`
+  — the jump moved `pixels` by 16 256 px and the band did not follow. Mid-segment
+  the window comes from `segTween`, i.e. `keyed-tween-layout`'s nil→0 fallback
+  (tween.cljd L352): with the viewport ABOVE the frozen snapshot `to-first`
+  returns nil → `first-index` 0, so the band stays pinned at the top for the whole
+  segment. `seed-cache!` cannot repair it either — its far-jump re-seed requires
+  `(nil? fc)` (L1360) and a non-empty cache short-circuits to nil (L1374). The
+  `[:layout :wrap]` then clears the cache, `seed-cache!` falls through to the
+  `(zero? idx)` from-0 seed, and the capture pass walks the 16 000 px gap:
+  `cache-n 600`, `pass-materialized 600`, `anchored0 true`.
+  (Letting the segment settle first repairs it: the next resting pass re-seeds to
+  `cache-first 178`. That is why only the jump→morph adjacency reproduces.)
 
 ### NEW-8 — `committed` outgrows the live window (suspect: oracle calibration)
 - Oracle: `:o9` `unbounded` on `committed-n`, 17 seeds — the largest bucket.
@@ -162,12 +248,19 @@ being treated as an engine bug.**
   [[:remove 489] [:drag 3047.6452589035034] [:insert 583 900004] [:to-top]]
   ```
   `committed-n 103` vs limit 72; seed 135 `172` vs `160`.
-- Every instance is mid-segment (`:tweening? true`, regime `:landing`/`:flying`)
-  and the overshoot is small (1.1–1.5x). O9's bound is `8 * attached + 64`, which
-  collapses when the window is nearly empty during a landing.
-- **Classify as PLAUSIBLE, not confirmed**: decide in step 7 whether the segment's
-  committed set is legitimately proportional to the morph span rather than to the
-  attached window, and if so re-calibrate O9 instead of writing a red test.
+- Status: **RECLASSIFIED — O9 miscalibration.** `harness/o9-bounded-state` now
+  bounds `committed-n` by `8 * max(attached, cache-n) + 64` while a segment runs;
+  `cache-n` and `checkpoints` keep the attached-window bound. Green test
+  `fuzz-red-test/fuzz-committed-stays-band-proportional-mid-segment`.
+- **Evidence**: `commit-pass!` upserts every attached child's rect and prunes to
+  the cache band ONLY when `commit-prune?` allows it — never mid-segment, so that
+  the segment's `from` capture and its entering/exiting/leaving participants
+  survive (render.cljd L838-875). Mid-segment retention is therefore proportional
+  to the BAND times the segment's pass count, not to the attached window, which a
+  landing collapses: the repro shows `committed-n 103` with **one** attached child
+  and `cache-n 55`. The oracle was measuring the wrong denominator; genuine
+  unbounded growth (the whole dataset) still fails, and NEW-7's `cache-n 600` is
+  unaffected.
 
 ---
 
@@ -186,6 +279,11 @@ being treated as an engine bug.**
 3. The shrinker's failure signature was the oracle id alone, so it happily
    converged onto a *different* bug with the same id (every assert is `:o1`).
    Fixed: the signature carries the violation's `:why` / exception head.
+4. (step 7) `boundary-settle!`'s 45-frame wait was shorter than a past-the-end
+   jump's boundary spring on an estimated extent — 14 false `:o5` seeds. Now 150.
+5. (step 7) O9 bounded `committed-n` by the ATTACHED window, which a landing
+   collapses to one child, while the engine scopes `committed` to the cache band
+   between segments — 17 false `:o9` seeds. Mid-segment the bound is now the band.
 
 ## Oracle notes for step 7
 

@@ -75,7 +75,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
 - [x] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
 - [x] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
-- [ ] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
+- [x] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
 - [ ] 8. Design pending-rebase structure (exactly-once protocol) — agent: Plan, model: fable
 - [ ] 9. Implement rebase unification (mechanism-by-mechanism, harness green between) — agent: general-purpose, model: opus
 - [ ] 10. Verify step-5 reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
@@ -290,3 +290,58 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - Next-step impact: step 7 has 8 NEW signatures with paste-ready vectors; NEW-4
   and NEW-5 are crash-class and should lead. NEW-1 widens step 8/9's scope: the
   anchor-capture defect is not gated on `restingTop` being nil.
+
+### 7. Triage fuzz findings → red tests
+- Status: done
+- Files changed: test/flutter_cljd/internal/collection/fuzz_red_test.cljd (new,
+  8 deftests), harness.cljd (O9 recalibration), fuzz_test.cljd
+  (`boundary-settle!` 45 → 150 frames), .claude/orchestrate/fuzz-findings.md.
+  Zero src/ changes; the uncommitted WIP on render.cljd left untouched/unstaged.
+- Suite: `-- -x "known-red || fuzz"` 297 pass (295 + the 2 reclassified greens);
+  `-- -t known-red` 11 fail (4 morph + 1 harness_test + 6 new);
+  `--plain-name fuzz-red-test` is `+2 -6`, identical across 3 runs.
+- Method: each red replays its shrunk vector through `fuzz-test/run-ops!` (the
+  driver that found it) with the rig header REGENERATED from the seed, so
+  :animate?/:approx/:layout0/:cross0 cannot drift from the generator.
+- Dispositions:
+  - NEW-1 red `known-red-fuzz-morph-loses-anchor-without-jump`
+  - NEW-2 red `known-red-fuzz-wrap-runs-overlap-after-back-drag`
+  - NEW-3 red `known-red-fuzz-wrap-run-advance-short-after-morph`
+  - NEW-4 red `known-red-fuzz-null-render-box-cast-in-morph-after-remove`
+  - NEW-5 red `known-red-fuzz-garbage-counts-exceed-child-count`
+  - NEW-6 reclassified (fuzzer wait too short) → green `fuzz-jump-past-end-converges-into-range`
+  - NEW-7 red `known-red-fuzz-count-change-then-far-jump-walks-dataset`
+  - NEW-8 reclassified (O9 denominator) → green `fuzz-committed-stays-band-proportional-mid-segment`
+- Confirmed diagnoses (full text + evidence in fuzz-findings.md):
+  - **NEW-5 and NEW-7 are ONE root**: `keyed-tween-layout`'s
+    `:first-index`/`:last-index` map "the frozen snapshot has no opinion at this
+    offset" to index 0 (tween.cljd L352-357). Viewport BELOW the snapshot ⇒
+    last-index 0 with first-index inside it ⇒ an inverted window whose two
+    garbage walks count the same children twice (NEW-5). Viewport ABOVE it ⇒
+    first-index 0 ⇒ the band stays pinned at the top for the whole segment while
+    `pixels` moves 16 000 px, and the next layout swap re-flows the whole gap in
+    one pass (NEW-7). NEW-7 is NOT known-B's root — `update-render!` does clear
+    `anchoredTo0` on a count change; the `[:remove]` matters only because it
+    opens a segment.
+  - **NEW-1 is NOT known-A's root**: `segAnchor` is present and correct, but the
+    segment shift is the rigid `to − from`, which pins the anchor cell's TOP EDGE
+    to a screen position. A morph that resizes a partially scrolled-past anchor
+    (grid 208 → list 109) therefore slides the viewport top into the next item.
+    Step 8 must decide what the set-point preserves, not only where it comes from.
+  - **NEW-4 is a defect of the uncommitted `seed-cache!` WIP, not of HEAD**: its
+    leading `collectGarbage` can destroy every attached child, and the next line
+    casts `.-firstChild` to a non-nullable `RenderBox` (render.cljd L1428-1430)
+    before its own nil guards run. Step 5's "the WIP is inert" holds only for the
+    far-morph scenario.
+  - NEW-2: `refine-seam-delta` reconciles the backward re-flow on the MAIN axis
+    only; a re-flow ending with an OPEN run yields d = 0, so `stitch-prefix`
+    keeps the stale head at cross 0 and two adjacent indices share a run line.
+  - NEW-3: `leading-step-entry`'s `adv = max(ext, flow-end(st') − head)` collapses
+    to `ext` for wrap (`:anchor` seeds an empty run at `head`, `:place` puts i
+    into it, so `flow-end` returns `head`) — the run gap is dropped.
+- Next-step impact: step 8's pending-rebase design gains two consumers beyond
+  step 5's three — (4) window queries must distinguish "no opinion" from index 0
+  and the window must be refused when inverted, and (5) a far jump taken WHILE a
+  segment runs must re-anchor the band instead of deferring to the frozen
+  snapshot. NEW-1 adds a design question to the set-point itself. NEW-2/NEW-3 are
+  wrap-tiling defects orthogonal to the rebase — schedule them separately.

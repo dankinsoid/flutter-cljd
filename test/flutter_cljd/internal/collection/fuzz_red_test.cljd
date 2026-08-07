@@ -1,0 +1,176 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.fuzz-red-test
+  "Deterministic reproductions of the NEW signatures the step-6 fuzz campaign
+   found (.claude/orchestrate/fuzz-findings.md). One deftest per signature class.
+
+   Every test replays its shrunk op vector through `fuzz-test/run-ops!` — the same
+   driver that found and shrank it, so the reproduction is exact: it applies the
+   bounded post-jump boundary wait O5 needs and the anchor guard `check!` cannot do
+   on its own. The rig header is REGENERATED from the seed rather than transcribed,
+   so :animate?/:approx/:layout0/:cross0 can never drift out of sync with the
+   generator.
+
+   Six are :known-red (real engine gaps) and excluded from the default run; two
+   (NEW-6, NEW-8) were reclassified in step 7 as oracle/fuzzer miscalibration and
+   are kept GREEN here so the recalibration itself stays covered.
+
+     clojure -M:cljd test -- -x \"known-red || fuzz\"   # green baseline
+     clojure -M:cljd test -- -t known-red              # the reds only
+
+   Confirmed diagnoses (step 7; the fixes belong to steps 8-11):
+
+   NEW-1 `segAnchor` translates the anchor slot rigidly by (:to − :from), pinning
+     the anchor's TOP EDGE to a fixed screen position rather than the viewport-top
+     item. When the anchor cell's own main extent shrinks across the morph (grid
+     208 -> list 109) while it is partly scrolled past, the top slides into the
+     next item. The set-point is PRESENT and correct here — this is a defect of
+     its model, not of its capture, so it is a different root from known-A/NEW-7.
+
+   NEW-2 `refine-seam-delta` reconciles a backward re-flow against the cache head
+     on the MAIN axis only. A re-flow ending with an OPEN run places the head at
+     the same main offset, so d = 0 declares the seam converged and `stitch-prefix`
+     keeps the stale head at cross 0 — two adjacent indices on one run line
+     (observed: 303 and 304 both at cross 0, offset 3444.45).
+
+   NEW-3 `leading-step-entry`'s advance is `max(ext, flow-end(after i) − head)`.
+     Wrap's :anchor seeds an EMPTY run at `head` and :place drops i into that same
+     run, so flow-end returns `head`, the advance collapses to the cell's own
+     extent, and the run gap is lost — the next run starts exactly one
+     :run-spacing early.
+
+   NEW-4 throws inside `seed-cache!`'s cross-layout re-anchor branch: its leading
+     collectGarbage can destroy EVERY attached child and the following
+     `^r/RenderBox (.-firstChild rs)` casts null before its own nil guards run.
+     That branch is the UNCOMMITTED WIP on render.cljd, not HEAD.
+
+   NEW-5 + NEW-7 SHARE ONE ROOT: `keyed-tween-layout`'s :first-index/:last-index
+     map \"the frozen snapshot has no opinion at this offset\" to index 0. Viewport
+     BELOW the snapshot (`to-top` mid-segment) ⇒ last-index 0 with first-index
+     still inside the snapshot, an INVERTED window whose two garbage walks count
+     the same children twice (NEW-5). Viewport ABOVE it (a far jump mid-segment) ⇒
+     first-index 0, so the band stays pinned at the top for the whole segment
+     while `pixels` moves 16 000 px; the following layout swap clears the cache and
+     the capture pass re-flows the entire gap in one pass (NEW-7)."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.internal.collection.fuzz-test :as fz]))
+
+;; --- replay plumbing ---
+
+(defn- profile-of
+  "The campaign's seed->profile split (fuzz-test §campaign)."
+  [^int seed]
+  (cond (< seed 100) :full
+        (< seed 200) :no-layout
+        :else :no-jump))
+
+(defn- header-for [^int seed]
+  (nth (fz/gen-episode seed (profile-of seed) fz/fuzz-items fz/episode-len) 0))
+
+(defn- run-seed!
+  "Replays `ops` on a fresh rig built from seed `seed`'s header."
+  [^ft/WidgetTester t ^int seed ops]
+  (await (fz/run-ops! t (header-for seed) ops)))
+
+(defn- fail-str [f]
+  (str "\n  header:  " (pr-str (dissoc (:header f) :seed :profile))
+       "\n  ops:     " (pr-str (:ops f))
+       "\n  failed:  op " (:op-index f) " " (pr-str (:op f))
+       " kind=" (:kind f) " oracles=" (pr-str (:oracles f))
+       "\n  viol:    " (pr-str (vec (take 3 (:violations f))))
+       "\n  anchor0: " (pr-str (:anchor-before f))
+       "\n  offset:  " (pr-str (:offset f)) " limits: " (pr-str (:limits f))
+       "\n  engine:  " (pr-str (:engine f))))
+
+;; --- the reds ---
+
+(deftest known-red-fuzz-morph-loses-anchor-without-jump
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 26
+                            [[:settle]
+                             [:drag 576.4958953857422]
+                             [:layout :list]]))]
+    (is (nil? f) (str "NEW-1 grid->list morph after a plain drag moved the "
+                      "viewport-top item (no far jump involved):" (fail-str f)))))
+
+(deftest known-red-fuzz-wrap-runs-overlap-after-back-drag
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 222
+                            [[:drag 4606.196022033691]
+                             [:fling -2428.6102771759033]
+                             [:drag -522.4222183227539]]))]
+    (is (nil? f) (str "NEW-2 wrap cells overlap at rest after a backward drag:"
+                      (fail-str f)))))
+
+(deftest known-red-fuzz-wrap-run-advance-short-after-morph
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 240
+                            [[:drag 3357.876420021057]
+                             [:layout :wrap]
+                             [:settle]]))]
+    (is (nil? f) (str "NEW-3 the run after a morph starts one run-spacing early:"
+                      (fail-str f)))))
+
+(deftest known-red-fuzz-null-render-box-cast-in-morph-after-remove
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 5
+                            [[:fling 4392.159795761108]
+                             [:drag 805.7088088989258]
+                             [:drag 788.5633134841919]
+                             [:fling 7113.964653015137]
+                             [:remove 284]
+                             [:fling-catch -4022.814464569092 78]
+                             [:drag -474.3441581726074]
+                             [:layout :wrap]]))]
+    (is (nil? f) (str "NEW-4 layout threw `type 'Null' is not a subtype of type "
+                      "'RenderBox'`:" (fail-str f)))))
+
+(deftest known-red-fuzz-garbage-counts-exceed-child-count
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 6
+                            [[:drag 3345.6783771514893]
+                             [:cross 400.0]
+                             [:settle]
+                             [:cross 640.0]
+                             [:jump 26061.590909957886]
+                             [:to-top]]))]
+    (is (nil? f) (str "NEW-5 collectGarbage asked to drop more children than are "
+                      "attached (sliver_multi_box_adaptor.dart):" (fail-str f)))))
+
+(deftest known-red-fuzz-count-change-then-far-jump-walks-dataset
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 32
+                            [[:remove 331]
+                             [:jump 16256.178617477417]
+                             [:layout :wrap]]))]
+    (is (nil? f) (str "NEW-7 one pass materialized the whole dataset after a "
+                      "mid-segment far jump:" (fail-str f)))))
+
+;; --- reclassified in step 7: green, and guarding the recalibrations ---
+
+;; NEW-6: `pixels` re-enters the range at frame 68, past the old 45-frame wait
+(deftest fuzz-jump-past-end-converges-into-range
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 121 [[:jump 27949.243783950806]]))]
+    (is (nil? f) (str "a past-the-end jump must re-enter [min,max] within the "
+                      "bounded boundary wait:" (fail-str f)))))
+
+;; NEW-8: mid-segment `committed` is band-scoped, not attached-window-scoped
+(deftest fuzz-committed-stays-band-proportional-mid-segment
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 134
+                            [[:remove 489]
+                             [:drag 3047.6452589035034]
+                             [:insert 583 900004]
+                             [:to-top]]))]
+    (is (nil? f) (str "mid-segment `committed` must stay proportional to the cache "
+                      "band:" (fail-str f)))))
