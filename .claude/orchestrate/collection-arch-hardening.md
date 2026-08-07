@@ -69,8 +69,8 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - (none)
 
 ## Checklist
-- [ ] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
-- [ ] 2. Design viewport harness API — agent: Plan, model: opus
+- [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
+- [x] 2. Design viewport harness API — agent: Plan, model: opus
 - [x] 3. Implement harness core — agent: general-purpose, model: opus
 - [ ] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
 - [ ] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
