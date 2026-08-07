@@ -42,7 +42,8 @@
     (.-crossAxisOffset! pd offset)))
 
 (declare flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
-         segment-start! update-velocity! overscan-extent sample-view-anchor!)
+         segment-start! update-velocity! overscan-extent sample-view-anchor!
+         segment-domain-exited? settle-segment!)
 
 ;; --- Render object ---
 
@@ -237,10 +238,19 @@
           (segment-start! this c)
 
           ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
+          ;; A frozen segment is valid only near the window it froze (§3.2).
           :else
-          (indexed-layout! this (.-segTween this) c)))
-      ;; viewAnchor epilogue: resting passes only — a segment holds the pre-segment truth
-      (when (nil? (.-tweenAnim this))
+          (let [seg (.-segTween this)]
+            (if (or (nil? seg) (segment-domain-exited? this seg c))
+              (do (settle-segment! this)
+                  (let [layout (.-layoutModel this)]
+                    (if (:geometry layout)
+                      (indexed-layout! this layout c)
+                      (flow-layout! this layout c))))
+              (indexed-layout! this seg c)))))
+      ;; segTween nil == a resting driver owned this pass; a live segment must keep
+      ;; the pre-segment truth
+      (when (nil? (.-segTween this))
         (sample-view-anchor! this c)
         (when fd/kDebugMode
           (let [sized? (loop [ch (.-firstChild this)]
@@ -1316,6 +1326,18 @@
   [^double ws ^double we ^double pr]
   (if (zero? pr) [ws we] [(+ ws pr) (+ we pr)]))
 
+;; @ai-generated(guided)
+(defn window-far-from-span?
+  "True when the window [ws, we) lies MORE THAN ONE window extent outside the
+   content span [head, tail). The shared 'this window is nowhere near what we
+   know' test: a stale geometry band (window-far-from-band?) and a frozen
+   segment's validity domain (§3.2) both use it. An infinite bound never
+   qualifies. Pure."
+  [^double head ^double tail ^double ws ^double we]
+  (let [^double w (- we ws)]
+    (or (> (- ws tail) w)        ;; span far above the window (jumped down)
+        (> (- head we) w))))     ;; span far below the window (jumped up)
+
 (defn window-far-from-band?
   "Geometric seeding decision — the cache is an accelerator, never the algorithm:
    per-pass work must stay O(window+overscan) regardless of cache contents. True
@@ -1329,11 +1351,9 @@
   [cache ^double ws ^double we]
   (boolean
    (when (seq cache)
-     (let [^double head (double (:offset (nth cache 0)))
-           ^double tail (double (:max-end (peek cache)))
-           ^double w (- we ws)]
-       (or (> (- ws tail) w)        ;; band far above the window (jumped down)
-           (> (- head we) w))))))   ;; band far below the window (jumped up)
+     (window-far-from-span? (double (:offset (nth cache 0)))
+                            (double (:max-end (peek cache)))
+                            ws we))))
 
 (defn- inverse-seed!
   "O(1) deep-window seed: inverts the monotone :approx-offset at `ws` to pick the
@@ -2531,10 +2551,18 @@
                          (int ((:last-index layout) env we-o)))
           ;; Union windowing (animating only): keep attached cells still
           ;; overlapping [ws, we] so a cell leaving/entering the new layout glides.
-          [^int first-index target-last]
+          [^int first-index target-last0']
           (if (.-tweenAnim rs)
             (widen-window! rs first-index0 target-last0 ws we)
-            [first-index0 target-last0])]
+            [first-index0 target-last0])
+          ;; the two garbage walks below must not overlap — Flutter asserts
+          ;; childCount >= leading + trailing (fuzz NEW-5)
+          _ (when (and fd/kDebugMode target-last0' (< (int target-last0') first-index))
+              (assert false
+                      (str "collection: layout " (:id layout) " answered an INVERTED "
+                           "window [" first-index " " target-last0' "] for offsets ["
+                           ws-o " " we-o "] — a frame source must clamp to its own edge")))
+          target-last (when target-last0' (math/max first-index (int target-last0')))]
       ;; GC by index range
       (if (.-firstChild rs)
         (let [^int leading (.calculateLeadingGarbage rs .firstIndex first-index)
@@ -2744,6 +2772,34 @@
       (let [^r/RenderBox ch child]
         (recur (.childAfter rs ch) (conj! ks (key-for rs (.indexOf rs ch)))))
       (persistent! ks))))
+
+;; @ai-generated(guided)
+(defn- segment-domain-exited?
+  "Has the live window left the segment's validity `:domain` (§3.2)? A frozen
+   segment describes only the neighbourhood of the window it froze and never
+   extrapolates: outside it the tween's frame source has no opinion, so the
+   materialization band stays pinned where the segment started while `pixels`
+   moves — and the next cache-dropping change then re-flows the whole gap in one
+   pass (fuzz NEW-7). Same one-window-extent criterion as a stale geometry band."
+  [^CollectionRenderSliver _rs seg-tween ^r/SliverConstraints c]
+  (boolean
+   (when-let [dom (:domain seg-tween)]
+     (let [^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+           ^double we (+ ws (.-remainingCacheExtent c))]
+       (window-far-from-span? (double (nth dom 0)) (double (nth dom 1)) ws we)))))
+
+;; @ai-generated(guided)
+(defn- settle-segment!
+  "Retires a segment in place, mid-flight: everything the frozen snapshot owns is
+   dropped so this pass dispatches to the resting drivers, whose far-jump seed is
+   O(window). segAnchor is dropped WITHOUT publishing its tail — the viewport is
+   no longer where the set-point was aiming. The host clock plays on; its
+   finish-segment! then finds nothing left to settle."
+  [^CollectionRenderSliver rs]
+  (.-segTween! rs nil)
+  (.-segAnchor! rs nil)
+  (.-segGen! rs (.-curGen rs))
+  (.-leaving! rs {}))
 
 ;; @ai-generated(guided)
 (defn- repick-view-anchor
@@ -2959,11 +3015,13 @@
                                          (math/max (int li) (int end-li))
                                          ws we end-ws end-we shadow->live))
                   {})
-        seg-tween (tw/keyed-tween-layout                                 ; (d)
-                   [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
-                   (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
-                   {:entering (.-entering rs) :exiting (.-exiting rs)
-                    :leaving leaving :collapse-axis collapse-axis})]
+        seg-tween (assoc (tw/keyed-tween-layout                          ; (d)
+                          [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
+                          (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
+                          {:entering (.-entering rs) :exiting (.-exiting rs)
+                           :leaving leaving :collapse-axis collapse-axis})
+                         ;; the span this frozen segment can answer for (§3.2)
+                         :domain [(math/min ws end-ws) (math/max we end-we)])]
     ;; consume the frozen resting layout — this segment has read the old sizes; a
     ;; later data-only segment must not re-read it (docs §7c).
     (.-prevLayout! rs nil)

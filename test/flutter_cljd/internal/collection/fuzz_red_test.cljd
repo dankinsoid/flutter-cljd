@@ -47,14 +47,17 @@
      must nil-check firstChild after collecting and skip a GC that would empty
      the window.
 
-   NEW-5 + NEW-7 SHARE ONE ROOT: `keyed-tween-layout`'s :first-index/:last-index
-     map \"the frozen snapshot has no opinion at this offset\" to index 0. Viewport
-     BELOW the snapshot (`to-top` mid-segment) ⇒ last-index 0 with first-index
-     still inside the snapshot, an INVERTED window whose two garbage walks count
-     the same children twice (NEW-5). Viewport ABOVE it (a far jump mid-segment) ⇒
-     first-index 0, so the band stays pinned at the top for the whole segment
-     while `pixels` moves 16 000 px; the following layout swap clears the cache and
-     the capture pass re-flows the entire gap in one pass (NEW-7)."
+   NEW-5 + NEW-7 (FIXED, stage 5) SHARED ONE ROOT: `keyed-tween-layout`'s
+     :first-index/:last-index mapped \"the frozen snapshot has no opinion at this
+     offset\" to index 0. Viewport BELOW the snapshot (`to-top` mid-segment) ⇒
+     last-index 0 with first-index still inside the snapshot, an INVERTED window
+     whose two garbage walks counted the same children twice (NEW-5). Viewport
+     ABOVE it (a far jump mid-segment) ⇒ first-index 0, so the band stayed pinned
+     at the top for the whole segment while `pixels` moved 16 000 px; the next
+     layout swap then re-flowed the entire gap in one pass (NEW-7). Both queries
+     clamp to the source's own edge, `indexed-layout!` refuses an inverted window,
+     and a segment whose validity `:domain` the viewport leaves settles in place
+     so the resting far-jump seed takes over."
   (:require
    [clojure.test :refer [deftest is]]
    ["package:flutter_test/flutter_test.dart" :as ft]
@@ -134,8 +137,8 @@
     (is (nil? f) (str "NEW-4 layout threw `type 'Null' is not a subtype of type "
                       "'RenderBox'`:" (fail-str f)))))
 
-(deftest known-red-fuzz-garbage-counts-exceed-child-count
-  :tags [:widget :known-red]
+(deftest fuzz-garbage-counts-stay-within-child-count
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 6
                             [[:drag 3345.6783771514893]
@@ -147,8 +150,8 @@
     (is (nil? f) (str "NEW-5 collectGarbage asked to drop more children than are "
                       "attached (sliver_multi_box_adaptor.dart):" (fail-str f)))))
 
-(deftest known-red-fuzz-count-change-then-far-jump-walks-dataset
-  :tags [:widget :known-red]
+(deftest fuzz-count-change-then-far-jump-stays-window-bounded
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 32
                             [[:remove 331]

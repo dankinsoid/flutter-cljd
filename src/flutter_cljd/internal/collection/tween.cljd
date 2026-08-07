@@ -46,6 +46,7 @@
      fills them in. Used for a flow endpoint and for the frozen `from` side (the
      positions captured off the render tree at tween start / retarget)."
   (:require
+   ["dart:core" :as dc]
    ["dart:ui" :as ui]
    [flutter-cljd.internal.collection.layout :as lay]))
 
@@ -291,7 +292,15 @@
    extent. `:leaving` is {key → frame}: a leave-slide `to` (docs §7b) that OVERRIDES
    the target frame — the cell lerps committed → that edge frame at constant size (a
    pure translation past the viewport edge), even when to-src has no opinion (or a
-   far-off exact frame) at its index."
+   far-off exact frame) at its index.
+
+   WINDOW CLAMPING: `to-src` answers nil for an offset outside its span, in the
+   direction each query scans — `first-index` past the end, `last-index` above the
+   start. Both clamp to that edge of the source. Mapping nil to index 0 instead
+   fabricates a window the source never described: it pins the materialization
+   band at the top while the viewport moves away, and pairs an in-snapshot
+   `first-index` with a `last-index` of 0 into an INVERTED window whose two
+   garbage walks count the same children twice (fuzz NEW-5 / NEW-7)."
   ([id to-src committed ^double from-extent key-of progress]
    (keyed-tween-layout id to-src committed from-extent key-of progress {}))
   ([id to-src committed ^double from-extent key-of progress
@@ -362,12 +371,17 @@
                    (assoc fr
                           :full-main-extent (if (= :cross collapse-axis) vm (double (or full vm)))
                           :full-cross-extent (if (= :cross collapse-axis) (double (or full vc)) vc))))
+     ;; nil = the offset is off the source's span; clamp to that edge, never 0
      :first-index (fn [env ^double off]
-                    (let [ctx (:ctx env)]
-                      (int (or (to-first env (:to-ctx ctx) off) 0))))
+                    (let [tctx (:to-ctx (:ctx env))]
+                      (int (or (to-first env tctx off)
+                               (to-last env tctx dc/double.infinity)
+                               0))))
      :last-index (fn [env ^double off]
-                   (let [ctx (:ctx env)]
-                     (int (or (to-last env (:to-ctx ctx) off) 0))))
+                   (let [tctx (:to-ctx (:ctx env))]
+                     (int (or (to-last env tctx off)
+                              (to-first env tctx dc/double.negativeInfinity)
+                              0))))
      :max-extent (fn [env ^int n]
                    (let [ctx (:ctx env)]
                      (lerp from-extent
