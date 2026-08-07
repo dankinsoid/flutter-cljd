@@ -56,6 +56,14 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   anchor-primary last, gated on harness equivalence. (by: user)
 - 2026-08-07: Active wrap→list bug: reproduce in harness first, no device run;
   rebase refactor closes it; then revert TEMP commit fb24f35. (by: user)
+- 2026-08-07: Harness design (.claude/orchestrate/harness-design.md, 501fe36):
+  widget-level attach through PUBLIC host via testWidgets; rig-atom + re-pumpWidget
+  (no stateful shim); introspection = allRenderObjects + Dart field reads, zero
+  render.cljd changes; RenderProxySliver probe for corrections; oracles O1-O9;
+  LCG-seeded fuzzer, 14 ops, paste-ready replay vector. (by: harness-design agent)
+- 2026-08-07: Fuzz dataset starts at 2200 items, drop to ~600 if baseline >60s;
+  no :fast alias for now; no debug counters in render.cljd without re-opening
+  the design. (by: coordinator)
 
 ## Open questions
 - (none)
@@ -87,3 +95,13 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   - Manual repro rig for the active bug: `example/src/repl.cljd` `ws2-preview` (~L1139-1241): 2200 items, Wrap → "Jump ~50vp" → List ⇒ "top element #1700, nothing above, clamps at 0".
   - Tests are plain clojure.test style; compiled artifacts in test/cljd-out (generated).
 - Next-step impact: design fork resolved toward testWidgets/widget-level harness; fake child manager route documented as fallback.
+
+### 2. Design viewport harness API
+- Status: done
+- Files changed: .claude/orchestrate/harness-design.md (commit 501fe36)
+- Key findings:
+  - Tree: Directionality → MediaQuery → Align → SizedBox(cross×main) → KeyedSubtree(cold-gen) → custom-scroll(:clamping) → sliver-collection; Align mandatory (pumpWidget tight constraints); rotation = SizedBox width change.
+  - Items {:id n}, sizes from id (not index), text-free. Every op = rig-atom write + re-pumpWidget so didUpdateWidget fires like in the app.
+  - CLI ns narrowing narrows COMPILATION only — use -t/-x/-N to narrow the run; helper ns must carry a smoke deftest; no deftest timeout ⇒ split fuzz tests + `--timeout 4x`.
+  - O8 (correction convergence) depends on RenderProxySliver probe; degrades to O1+O3 if unworkable.
+- Next-step impact: steps 3-6 implement strictly from harness-design.md.
