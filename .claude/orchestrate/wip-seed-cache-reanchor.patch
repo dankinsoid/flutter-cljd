@@ -1,0 +1,45 @@
+diff --git a/src/flutter_cljd/internal/collection/render.cljd b/src/flutter_cljd/internal/collection/render.cljd
+index f8a807b..3ab4856 100644
+--- a/src/flutter_cljd/internal/collection/render.cljd
++++ b/src/flutter_cljd/internal/collection/render.cljd
+@@ -1417,17 +1417,31 @@
+               (.-anchoredTo0! rs true))
+ 
+           (some? anchor-fn)
+-          (let [^double stale (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))
+-                approx-off (when (and cross-layout? approx-fn (pos? ^int idx))
+-                             (double (approx-fn env idx)))
+-                ^double off (reanchor-offset (boolean cross-layout?) (int idx) stale approx-off)]
+-            ;; a cross-layout re-anchor moved the survivor to the new-layout estimate;
+-            ;; record the shift so flow-layout! emits it as a scrollOffsetCorrection
+-            ;; and the visible child holds still (no jump) as the indicator updates.
++          ;; cross-layout: re-anchor on the visible top (restingTop), not firstChild, or restingTop strands outside the target window (seg-anchor nil → far morph snaps)
++          (let [rt (when cross-layout? (.-restingTop rs))
++                _ (when (and rt (.-firstChild rs))
++                    (let [^int rti (int (:idx rt))
++                          ^int lead (loop [ch (.-firstChild rs) ^int nn 0]
++                                      (if (and ch (< (.indexOf rs ^r/RenderBox ch) rti))
++                                        (recur (.childAfter rs ^r/RenderBox ch) (inc nn))
++                                        nn))]
++                      (when (pos? lead) (.collectGarbage rs lead 0))
++                      nil))
++                ^r/RenderBox fc2 (.-firstChild rs)
++                ^int a-idx (if fc2 (.indexOf rs fc2) (int idx))
++                ;; restingTop.off is the anchor's OLD (pre-morph) offset — the exact
++                ;; stale for a-idx when we re-anchored onto it; else firstChild's.
++                ^double stale (if (and rt fc2 (= a-idx (int (:idx rt))))
++                                (double (:off rt))
++                                (double (or (and fc2 (.childScrollOffset rs fc2)) 0.0)))
++                approx-off (when (and cross-layout? approx-fn (pos? a-idx))
++                             (double (approx-fn env a-idx)))
++                ^double off (reanchor-offset (boolean cross-layout?) a-idx stale approx-off)]
++            ;; shift holds the visible child still while the scroll indicator jumps
+             (when (not= off stale)
+               (.-reanchorShift! rs (- off stale)))
+-            (.-cacheFirst! rs idx)
+-            (.-baseState! rs (anchor-fn env idx off))
++            (.-cacheFirst! rs a-idx)
++            (.-baseState! rs (anchor-fn env a-idx off))
+             ;; dead-reckoned re-anchor above 0 — offsets are estimates again; a
+             ;; surviving anchoredTo0 here would be a stale truth claim (Phase D).
+             (.-anchoredTo0! rs false))
