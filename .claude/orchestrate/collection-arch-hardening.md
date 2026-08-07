@@ -73,7 +73,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 2. Design viewport harness API — agent: Plan, model: opus
 - [x] 3. Implement harness core — agent: general-purpose, model: opus
 - [x] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
-- [ ] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
+- [x] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
 - [ ] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
 - [ ] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
 - [ ] 8. Design pending-rebase structure (exactly-once protocol) — agent: Plan, model: fable
@@ -168,3 +168,76 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   distinct architectural finding (checkpoints/cache invalidation split) worth
   folding into step 9's rebase-unification scope, alongside the wrap→list
   far-morph bug step 5 targets.
+
+### 5. Red repro: far-scroll wrap→list morph
+- Status: done
+- Files changed: test/flutter_cljd/internal/collection/morph_red_test.cljd (new,
+  4 deftests, all `:tags [:widget :known-red]`). Zero src/ changes; zero harness
+  changes (no harness defect surfaced). The pre-existing uncommitted WIP on
+  `seed-cache!` (restingTop re-anchor) was left in place — **the repro includes
+  that WIP** and, per the diagnosis below, the WIP is inert in this scenario.
+- Suite: `-- -x known-red` 294 pass (unchanged); `-- -t known-red` 5 fail
+  (the 4 new + step 4's insert/remove anchor red). Reproduced 2× identically.
+- Reds added:
+  - `known-red-far-morph-wrap-to-list-animated` — the full recipe. Fails on the
+    settled oracle battery (O1: engine tripwire) and on O6 (anchor 1346 → 342).
+  - `known-red-far-morph-capture-extent-truncated` — mid-segment `scrollExtent`
+    falls below the content the same frame laid out.
+  - `known-red-resting-top-lost-after-far-jump` — root cause, engine-state level:
+    a drag leaves `restingTop` set, a far jump leaves it nil.
+  - `known-red-far-morph-wrap-to-list-not-animated` — plain layout swap at depth;
+    O6 only (anchor 1346 → 1340).
+- Reference numbers (deterministic, 2200 items, cross 400, wrap offset 30115,
+  wrap anchor {:idx 1346 :intra 31}):
+  - capture pass: `reanchorShift=88778.079`, `cacheFirst=1337`, `snap-base=1337`,
+    `snap-frames=13`, `snap-extent=119744.079`; true resting list total 196259.419.
+  - `resting=nil`, `seg-anchor=nil`; `pixels` stays 30115.0 for the whole segment.
+  - mid-segment `scrollExtent` 76616 / 101795 / 113259 / 117568 / 119046 against
+    `content-end` 118663 — 4 of 5 frames advertise less than they laid;
+    `maxScrollExtent` bottoms at 76016 (correct value 195659).
+  - first resting pass after the segment trips
+    `assert-materialization-bounded!`: "flow layout [:list 6.0] laid out 999
+    children in ONE pass — budget 92.98 for the 1265.4px band".
+- Confirmed diagnosis (hypothesis links (a)/(b)/(c) from the code map):
+  - **(c) CONFIRMED — dominant link, but for a different reason than hypothesized.**
+    `seg-anchor` is nil not because the slot's target frame is off the snapshot
+    window, but because `restingTop` is *itself* nil. `flow-layout!` samples it
+    from `anchor-before`, which reads `.-cache` **before this pass's `walk!`
+    refills it**; every re-seeding pass therefore records nil, and the last pass
+    of a far jump always re-seeds (`inverse-seed!` and `backfill-leading!`'s
+    top-underflow branch both do `(.-cache! rs [])`). Nothing re-lays while idle,
+    so nil survives until the next real drag. Empirically: after `scroll-by!`
+    restingTop = {:idx 1352 …}; after `jumpTo` + settle + extra pumps it stays
+    nil. That is exactly why the device recipe needs *jump then morph*.
+    Consequence: no set-point ⇒ no scroll correction for the whole segment ⇒
+    cells settle ~88 000 px below the viewport, which is the "top element #1700,
+    nothing above it" symptom.
+    Note the contrast: the indexed driver captures the anchor from the ATTACHED
+    CHILDREN post-layout (`capture-resting-top!`); the flow driver captures it
+    from the pre-walk cache. Same concept, two implementations, one of them lossy.
+  - **(b) CONFIRMED.** The capture pass ends on the reanchorShift correction-only
+    branch (`flow-layout!` L2401-2405) and `from-relay!` overwrites that geometry
+    — the first segment frame shows `offset` unchanged at 30115 with
+    `:reanchor-shift 88778.079` still sitting in the field. The rebase survives
+    only via the seg-anchor set-point, which (c) has already nulled.
+  - **(a) CONFIRMED with a caveat.** `live-only-flow-window`'s `shadow-ext` reads
+    `(.-scrollExtent g)` off that correction-only geometry ⇒ 0.0 ⇒ `:extent`
+    degenerates to `frames-main-extent` = the window end (119744) instead of the
+    list total (196259). Caveat for step 9/11: fixing the zero read is NOT
+    sufficient — the honest `shadow-ext` there is the OLD wrap total (49837),
+    still below the window end. The snapshot has no access to the TARGET
+    layout's `:max-extent`; that must be supplied explicitly.
+  - **New finding — the resting path is not healthy either.** Without `:animate`
+    the morph re-anchors on `firstChild` (index 1336 = the leading overscan head)
+    rather than the viewport-top item (1346), so content slides by the overscan:
+    anchor 1346 → 1340, intra 31 → 46. No clamp, no extent collapse, no tripwire,
+    O2/O3/O4/O5 all clean — a small, isolated defect, not the catastrophic one.
+    So the fix is NOT scoped to the segment protocol alone: `seed-cache!`'s
+    anchor choice is independently wrong. The uncommitted WIP targets precisely
+    this, and is inert here because the `restingTop` it reads is nil per (c).
+- Next-step impact: step 8's pending-rebase design must own three things the
+  current code splits: (1) a single anchor-capture point that is valid after ANY
+  pass (including re-seeding ones), (2) a rebase that survives `from-relay!`
+  instead of racing it, (3) a target-layout total extent carried into the frozen
+  segment snapshot. Step 6's fuzzer should include `[:jump …] [:layout …]` with
+  no intervening drag — the ordering that makes the anchor nil.

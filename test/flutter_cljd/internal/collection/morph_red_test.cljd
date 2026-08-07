@@ -1,0 +1,186 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.morph-red-test
+  "RED reproduction of the active far-scroll wrap->list morph bug (step 5 of
+   collection-arch-hardening).
+
+   Manual recipe this mirrors (example/src/repl.cljd ws2-preview): 2200 items,
+   :wrap, jump ~50 viewports deep, switch to :list with :animate on ⇒ on device
+   the top cell is item ~#1700 with nothing above it and the range clamps at 0.
+
+   The failure chain these reds pin (numbers from the reference run at
+   scrollOffset 30115, wrap anchor index 1346):
+
+   1. A far `jumpTo` leaves `restingTop` NIL. `flow-layout!` captures it from
+      `anchor-before`, which reads the geometry cache BEFORE this pass's `walk!`
+      refills it — and the last pass of a far jump always re-seeds (inverse-seed!
+      / the top-underflow branch of `backfill-leading!` both empty the cache), so
+      the capture sees nothing. Nothing re-lays while idle, so it stays nil.
+   2. With `restingTop` nil, `segment-start!` resolves `segAnchor` to nil: the
+      segment gets NO scroll set-point, so `pixels` never follows the cells to
+      their new-layout offsets. They settle ~88 000 px below the viewport.
+   3. The capture pass's `seed-cache!` still re-anchors (reanchorShift 88778.08),
+      but `from-relay!` overwrites that correction-only geometry — the rebase
+      reaches neither the viewport nor `live-only-flow-window`, whose
+      `shadow-ext` therefore reads 0 and truncates the frozen snapshot's
+      `:extent` to the window end (119 744 vs the true list total 196 259).
+
+   Without :animate the same morph takes the resting path, which is structurally
+   sound (no clamp, no extent collapse, no tripwire) but re-anchors on
+   `firstChild` rather than the viewport-top item, sliding the content by the
+   leading overscan: anchor key 1346 -> 1340. The uncommitted WIP in `seed-cache!`
+   targets exactly that and is inert here — the `restingTop` it wants to anchor
+   on is the nil from (1).
+
+   Every deftest here is tagged :known-red and excluded from the default run:
+
+     clojure -M:cljd test -- -x known-red     # green baseline
+     clojure -M:cljd test -- -t known-red     # the reds only"
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.internal.collection.harness :as h]))
+
+(def ^int deep-viewports 50)
+
+(defn- ^double deep-offset
+  "50 viewports down, or 85% of the range when the dataset is shorter."
+  [rig]
+  (let [^double main (:main @rig)
+        ^double max-off (:max (h/scroll-limits rig))
+        ^double want (* deep-viewports main)
+        ^double capped (* 0.85 max-off)]
+    (if (< want capped) want capped)))
+
+(defn- ^double content-end
+  "Furthest laid child edge — what `scrollExtent` must cover."
+  [rig]
+  (loop [cs (h/children rig) ^double m 0.0]
+    (if (empty? cs)
+      m
+      (let [^double e (:end (first cs))]
+        (recur (rest cs) (if (> e m) e m))))))
+
+(defn- deep-wrap-rig!
+  "A 2200-item :wrap rig settled ~50 viewports down — the state the manual
+   recipe starts the morph from."
+  [^ft/WidgetTester tester ^bool animate?]
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range h/default-item-count)
+                               :layout :wrap
+                               :cross 400.0
+                               :animate? animate?))]
+    (await (h/settle! rig))
+    (await (h/jump-to! rig (deep-offset rig)))
+    (await (h/settle! rig))
+    rig))
+
+(defn- morph-trace!
+  "Runs the whole recipe and collects every observation up front — `is` throws in
+   this cljd port, so a red must gather its evidence before the first assertion."
+  [^ft/WidgetTester tester ^bool animate?]
+  (let [rig (await (deep-wrap-rig! tester animate?))
+        before (h/top-anchor rig)
+        pre {:offset (h/offset rig)
+             :limits (h/scroll-limits rig)
+             :engine (h/engine rig)
+             :anchor before}]
+    (await (h/set-layout! rig :list))
+    (let [first-frame {:offset (h/offset rig)
+                       :tweening? (h/tweening? rig)
+                       :geometry (h/geometry rig)
+                       :engine (h/engine rig)}
+          mid (await (h/advance-segment! rig {:step :morph :animate? animate?}))]
+      (await (h/settle! rig))
+      (let [after (h/top-anchor rig)
+            settled (await (h/check! rig {:step :settled :animate? animate?}))
+            anchor-vs (h/o6-anchor-preserved rig before)
+            settled-report (h/report rig {:step :settled})]
+        (await (h/jump-to! rig 0.0))
+        (await (h/settle! rig))
+        (let [top (await (h/check! rig {:step :top :animate? animate?}))]
+          {:rig rig :pre pre :first-frame first-frame :before before :after after
+           :mid mid :settled settled :anchor-vs anchor-vs :top top
+           :settled-report settled-report})))))
+
+;; --- 1. the headline: an animated far morph loses the anchor entirely ---
+
+(deftest known-red-far-morph-wrap-to-list-animated
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [t (await (morph-trace! tester true))]
+    ;; observed: the O(window) tripwire fires — the settling pass walks the gap
+    (is (empty? (:settled t))
+        (str "oracles after the far morph settled: " (:settled t)
+             " pre=" (:pre t) " first-frame=" (:first-frame t)))
+    ;; observed: anchor key 1346 -> 342 — cells moved ~88 000 px, `pixels` did not
+    (is (empty? (:anchor-vs t))
+        (str "anchor survived the far morph: " (:anchor-vs t)
+             " before=" (:before t) " after=" (:after t)
+             " first-frame=" (:first-frame t)))
+    (is (empty? (:mid t)) (str "oracles mid-morph: " (:mid t)))
+    (is (empty? (:top t)) (str "oracles after jumping back to 0: " (:top t)))))
+
+;; --- 2. the sub-defect: the frozen capture snapshot's extent is truncated ---
+
+;; the capture pass's correction-only geometry reads scrollExtent 0 (see ns doc)
+(deftest known-red-far-morph-capture-extent-truncated
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (deep-wrap-rig! tester true))
+        ^double wrap-extent (:scroll-extent (h/geometry rig))
+        samples (do (await (h/set-layout! rig :list))
+                    (loop [i 0 acc []]
+                      (if (>= i 5)
+                        acc
+                        (do (await (h/pump! rig (quot h/segment-ms 5)))
+                            (recur (inc i)
+                                   (conj acc {:frame i
+                                              :scroll-extent (:scroll-extent (h/geometry rig))
+                                              :content-end (content-end rig)
+                                              :max (:max (h/scroll-limits rig))}))))))
+        bad (filter (fn [s]
+                      (< ^double (:scroll-extent s) (- ^double (:content-end s) h/eps-geom)))
+                    samples)]
+    (await (h/settle! rig))
+    (await (h/check! rig {:step :drain}))   ;; clears the deferred engine assert
+    (is (empty? bad)
+        (str "mid-segment scrollExtent must cover the laid content; wrap-extent="
+             wrap-extent " samples=" samples))))
+
+;; --- 3. the root cause: the segment set-point anchor is lost by a far jump ---
+
+;; only jump-then-morph reproduces: a drag repairs restingTop (see ns doc)
+(deftest known-red-resting-top-lost-after-far-jump
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range h/default-item-count)
+                               :layout :wrap
+                               :cross 400.0
+                               :animate? false))]
+    (await (h/settle! rig))
+    ;; control: a plain drag leaves the set-point anchor available
+    (await (h/scroll-by! rig 400.0))
+    (await (h/settle! rig))
+    (is (some? (:resting-top (h/engine rig)))
+        (str "drag records the segment set-point anchor: " (h/engine rig)))
+
+    (await (h/jump-to! rig (deep-offset rig)))
+    (await (h/settle! rig))
+    (is (some? (:resting-top (h/engine rig)))
+        (str "far jump keeps a set-point anchor for the next segment: "
+             (h/engine rig)))))
+
+;; --- 4. the same morph WITHOUT :animate — is the resting-path rebase healthy? ---
+
+;; the resting rebase anchors on firstChild, so content slides by the overscan
+(deftest known-red-far-morph-wrap-to-list-not-animated
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [t (await (morph-trace! tester false))]
+    (is (empty? (:anchor-vs t))
+        (str "anchor survived the plain (non-animated) far morph: " (:anchor-vs t)
+             " before=" (:before t) " after=" (:after t)))
+    (is (empty? (:settled t)) (str "oracles after the plain far morph: " (:settled t)))
+    (is (empty? (:mid t)) (str "oracles after the plain far morph settled: " (:mid t)))
+    (is (empty? (:top t)) (str "oracles after jumping back to 0: " (:top t)))))
