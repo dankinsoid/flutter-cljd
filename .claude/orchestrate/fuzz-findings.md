@@ -72,7 +72,12 @@ being treated as an engine bug.**
   ```
 - Excerpts: seed 16 `before {:key 383 :index 384} after {:key 382 :index 384}`;
   seed 10 `key 205 held, intra 86.006 -> -2.994`.
-- Same defect as `harness_test/known-red-insert-remove-above-window-anchor`.
+- Same defect as `harness_test/insert-remove-above-window-anchor`.
+- Status: **FIXED (step 9b stage 6)** — a count change drops the geometry cache
+  and the next `seed-cache!` re-anchors by `viewAnchor :key` on the surviving
+  reconciled child; `segment-start!` resolves its set-point slot the same way.
+  Green as `insert-remove-above-window-anchor` +
+  `fuzz-red-test/fuzz-insert-above-window-holds-anchor` (this vector).
 
 ---
 
@@ -86,7 +91,10 @@ being treated as an engine bug.**
   ```
   `before {:key 6 :intra 144.496 :index 6}` -> `after {:key 7 :intra 29.491 :index 7}`
 - Seed 207 (`:list` -> `:masonry` at ~6 viewports) slides 11 items: key 43 -> 54.
-- Status: **RED-TESTED** — `known-red-fuzz-morph-loses-anchor-without-jump`.
+- Status: **FIXED (step 9b stage 4)** — green as `fuzz-morph-holds-anchor-without-jump`.
+  The set-point lerps the anchor's EXTENT as well as its offset and preserves the
+  consumed fraction (`tw/point-desired`); O6 checks that fraction, since a
+  resizing anchor cannot hold the key and the absolute intra offset at once.
 - Cause guess (step 6) was WRONG: `restingTop` is correct here.
 - **CONFIRMED**: `segment-start!` builds `segAnchor` as `{:from old-offset :to
   new-offset :screen (from − scrollOffset)}` and the segment shift is the rigid
@@ -173,8 +181,11 @@ being treated as an engine bug.**
   [[:drag 3345.6783771514893] [:cross 400.0] [:settle] [:cross 640.0]
    [:jump 26061.590909957886] [:to-top]]
   ```
-- Status: **RED-TESTED** — `known-red-fuzz-garbage-counts-exceed-child-count`.
-  **Same root as NEW-7.**
+- Status: **FIXED (step 9b stage 5)** — green as
+  `fuzz-garbage-counts-stay-within-child-count`. **Same root as NEW-7.**
+  `keyed-tween-layout`'s window queries clamp a nil answer to the source's own
+  edge; `indexed-layout!` refuses an inverted window (debug assert / release
+  clamp).
 - **CONFIRMED**: stack is `indexed_layout! → collectGarbage` — mid-segment the
   engine runs `indexed-layout!` over `segTween` (render.cljd L259), and its
   garbage counts come from `first-index` / `target-last` (L2504-2522).
@@ -221,8 +232,11 @@ being treated as an engine bug.**
   ```
   `cache-n 601` (the whole dataset) with `pass-materialized 601`, `cache-first 0`,
   `anchored0 true`, `checkpoints (600)`.
-- Status: **RED-TESTED** — `known-red-fuzz-count-change-then-far-jump-walks-dataset`.
-  **Same root as NEW-5**, and NOT the same root as known-B.
+- Status: **FIXED (step 9b stage 5)** — green as
+  `fuzz-count-change-then-far-jump-stays-window-bounded`. **Same root as NEW-5**,
+  and NOT the same root as known-B. Beyond the window clamp, a segment now carries
+  a validity `:domain`; a window that leaves it settles the segment in place so
+  the resting far-jump inverse seed takes over (O(window)).
 - Cause guess (step 6) was WRONG: `update-render!` DOES clear `anchoredTo0` on a
   count change (render.cljd L971-975).
 - **CONFIRMED**: the `[:remove …]` is load-bearing because `:animate? true` makes

@@ -85,6 +85,35 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   indexed target keeps the exact to-src frame (never nil in range); the
   exiting-anchor re-pick ships with segAnchor v2 in 9b's stage 4 per the
   design's stage map. (by: step-9a)
+- 2026-08-08: rebase-design open Q2 (fraction set-point endpoint source) resolved
+  per its default: `tw/point-desired` lerps the FROZEN endpoint extents; the
+  segment tween is never read back, and the exiting-anchor re-pick covers the
+  leave-slide case the alternative was meant to. (by: step-9b)
+- 2026-08-08: rebase-design open Q1 (domain exit vs host clock) resolved per its
+  default: the engine settles silently and the host clock plays out; no callback,
+  no coupling. Step 10's re-campaign is the revisit trigger. (by: step-9b)
+- 2026-08-08: segAnchor v2 keeps a `:screen` residual
+  (`(from-off + frac·from-ext) − scrollOffset`). The design's identity
+  "desired(0) == the segment-start scrollOffset" holds only when `frac` is
+  unclamped AND the anchor was sampled at this pass's offset; the residual makes
+  it exact for a clamped frac and for a drag landing between the sample and the
+  segment start, preserving v1's drag composition. (by: step-9b)
+- 2026-08-08: the viewAnchor epilogue (and the exactly-once rebase assert) gate on
+  `segTween` nil, not `tweenAnim` nil — a domain-settled segment (§3.2) runs the
+  resting drivers while the host clock plays out, and without resampling there the
+  next segment starts from a pre-jump anchor whose capture rebase has no
+  absorption channel (stage 3's assert fired on exactly that). (by: step-9b)
+- 2026-08-08: §3.3's key re-anchor also applies to `segment-start!`'s set-point
+  slot, which the design did not enumerate: a count change that OPENS a segment
+  reaches segment-start! with a viewAnchor whose `:idx` is one behind, so the
+  set-point aimed the viewport at the neighbouring item's slot and re-created the
+  one-item slide the cache re-anchor had just prevented. (by: step-9b)
+- 2026-08-08: O6's intra check is now the consumed FRACTION, not the absolute
+  intra offset. Under a morph that resizes the anchor the two are incompatible,
+  and holding the pixel offset IS NEW-1; with an unchanged extent they coincide,
+  so no other scenario's strength changes. (by: step-9b)
+- 2026-08-08: `settle-segment!` omits the design's `clips := {}` — both drivers
+  clear `clips` at pass entry, so the write would be dead. (by: step-9b)
 
 ## Open questions
 - (none user-level; rebase-design's 5 technical open questions resolved by step-9
@@ -100,7 +129,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
 - [x] 8. Design pending-rebase structure (exactly-once protocol) — agent: general-purpose, model: fable
 - [x] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
-- [ ] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
+- [x] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
 - [ ] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
 - [ ] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
@@ -109,6 +138,59 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 9b. Rebase stages 4-6
+- Status: done (commits 2ae7abe, 04334dc, 4b0d614 — one per stage, bisectable)
+- Files changed: render.cljd, tween.cljd (src); harness.cljd (top-anchor
+  `:extent`/`:frac`, O6 fraction rule), tween_test.cljd, fuzz_red_test.cljd,
+  harness_test.cljd (flip re-tags + one new red-turned-green), docs
+  /CollectionRectAnimator.md (§7b set-point delta wording). TEMP fb24f35
+  instrumentation kept (step 10 reverts).
+- Suite: default `-x "known-red || fuzz"` 302 → **308** green after each stage
+  (+1 pure `point-desired` test, +4 un-tagged reds, +1 new known-B fuzz vector);
+  O7 (harness-smoke cold-vs-warm) green each stage; `-t known-red` 6 → **2**
+  (`+0 -4`: NEW-1, NEW-5, NEW-7, known-B — exactly the stage 4-6 targets; NEW-2
+  and NEW-3 remain, they are 9c's); `bin/check` clean at the end.
+- Stage 4 (fraction set-point): segAnchor v2
+  `{:from-off :from-ext :to-off :to-ext :frac :screen}`; `tw/point-desired` is the
+  ONE formula and `point-correction-delta`, `consume-seg-tail!`'s residual and the
+  leave-slide `shift` all route through it, so the 9a lockstep hazard is
+  structural now, not a convention. `to-ext` comes from the same place as
+  `to-off` (capture-placed cache entry for flow, `to-src` frame for indexed).
+  Exiting-anchor re-pick (`repick-view-anchor`) takes the first surviving attached
+  slot at/after the anchor, framed by its pre-segment committed rect. Flipped:
+  NEW-1 (`fuzz-morph-holds-anchor-without-jump`, verified 3x).
+  **O6 had to change with it**: `baseline-layout-morph-shallow-wrap-grid` and
+  `-grid-masonry` went red on `intra-drift` because the anchor RESIZES there
+  (wrap 109 → grid 128) and the fraction was preserved exactly — key and absolute
+  intra offset cannot both hold. O6 compares `frac-before × extent-after`.
+- Stage 5 (window sanity + domain): `keyed-tween-layout`'s window queries clamp a
+  nil answer to the source's own edge (`first-index` → its last index,
+  `last-index` → its base) instead of fabricating 0; `indexed-layout!` asserts
+  non-inversion in debug and clamps in release. `segment-start!` stamps `:domain`
+  = the union of the t=0 and t=1 window spans; the SEGMENT CONTINUE branch runs
+  `segment-domain-exited?` (the `window-far-from-span?` kernel factored out of
+  `window-far-from-band?`) and, on exit, `settle-segment!` drops
+  segTween/segAnchor/leaving, sets segGen := curGen and dispatches to the resting
+  drivers. Flipped: NEW-5, NEW-7 (both verified 3x).
+  En route: NEW-7 first moved from `cache-n 601` to a stage-3 absorption-assert
+  failure — the settled passes never resampled viewAnchor because the epilogue
+  gated on `tweenAnim`. Gate is `segTween` now (Decisions log).
+- Stage 6 (count change): `update-render!` drops cache + baseState and arms
+  `{:cause :count-change :seed :anchor}`; `seed-cache!` resolves the anchor via
+  `attached-index-of-key` (O(window)), GCs above it (NEW-4's guards intact) and
+  anchors at {new-index, viewAnchor `:off`} with no rebase — the offsets stay in
+  frame, only the estimate above the anchor is stale and the standard producers
+  repair it. `segment-start!` resolves its set-point slot the same way (see the
+  Decisions log — the design named only seed-cache!). Flipped: known-B
+  (`insert-remove-above-window-anchor`, key-moved + intra-drift, verified 3x) and
+  a new `fuzz-insert-above-window-holds-anchor` ratchet over known-B's own
+  campaign vector (seed 10).
+- Next-step impact: 9c (NEW-2/NEW-3) is untouched by all of this — both are seam
+  kernels. Step 10's re-campaign should exercise (a) the domain-exit path under
+  the `:no-layout` heavy-churn profile (design open Q3's count-change fallback is
+  still unverified), and (b) mid-segment count changes, the one path where the
+  cache drop + key re-anchor runs against tween-frame offsets.
 
 ### 9a. Rebase stages 0-3
 - Status: done (commits 07c9ea3, 640daa3, 6832572, a3c2276, e540dab — one per stage,
