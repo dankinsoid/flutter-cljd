@@ -166,6 +166,10 @@
   (await (.pumpWidget (tester rig) (rig-tree rig)))
   nil)
 
+;; monotone across the file: two rigs under one tester must never share a
+;; KeyedSubtree key, or the second reuses the first's state and render object
+(def ^:private rig-gen (atom 0))
+
 (defn make-rig
   "Creates and mounts a rig; returns the rig atom. MUST be awaited.
 
@@ -183,7 +187,7 @@
                    :main (double main)
                    :animate? animate?
                    :approx approx
-                   :cold-gen 0
+                   :cold-gen (swap! rig-gen inc)
                    :probe (when probe? (atom []))})]
     ;; retired controllers are disposed at teardown, never inline — their old
     ;; subtree is still attached during the frame that retires them.

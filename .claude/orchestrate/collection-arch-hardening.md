@@ -74,7 +74,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 3. Implement harness core — agent: general-purpose, model: opus
 - [x] 4. Green baseline scenario tests (scroll/jump/rotate/morph basics) — agent: general-purpose, model: sonnet
 - [x] 5. Red repro: far-scroll wrap→list morph + correction-only capture extent — agent: general-purpose, model: opus
-- [ ] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
+- [x] 6. Invariant fuzzer over random op sequences — agent: general-purpose, model: opus
 - [ ] 7. Triage fuzz findings → additional red tests — agent: general-purpose, model: sonnet
 - [ ] 8. Design pending-rebase structure (exactly-once protocol) — agent: Plan, model: fable
 - [ ] 9. Implement rebase unification (mechanism-by-mechanism, harness green between) — agent: general-purpose, model: opus
@@ -235,9 +235,58 @@ reproduced in the harness first (no device run) and closed by the rebase work.
     So the fix is NOT scoped to the segment protocol alone: `seed-cache!`'s
     anchor choice is independently wrong. The uncommitted WIP targets precisely
     this, and is inert here because the `restingTop` it reads is nil per (c).
-- Next-step impact: step 8's pending-rebase design must own three things the
+- Next-step impact (step 5): step 8's pending-rebase design must own three things the
   current code splits: (1) a single anchor-capture point that is valid after ANY
   pass (including re-seeding ones), (2) a rebase that survives `from-relay!`
   instead of racing it, (3) a target-layout total extent carried into the frozen
   segment snapshot. Step 6's fuzzer should include `[:jump …] [:layout …]` with
   no intervening drag — the ordering that makes the anchor nil.
+
+### 6. Invariant fuzzer over random op sequences
+- Status: done
+- Files changed: test/flutter_cljd/internal/collection/fuzz_test.cljd (new,
+  13 deftests), .claude/orchestrate/fuzz-findings.md (new),
+  test/flutter_cljd/internal/collection/harness.cljd (one fix, below).
+  Zero src/ changes; the uncommitted WIP on render.cljd left untouched/unstaged.
+- Suite: `-- -x "known-red || fuzz"` 295 pass (unchanged). NOTE: two `-x` flags
+  do NOT compose — the last wins; pass one boolean selector.
+- Campaign: 120 episodes (12 batches x 10 seeds, 3 weight profiles), 24 ops each,
+  600 items. 62 failing episodes, 15 raw oracle signatures, **10 distinct classes:
+  2 known + 8 NEW**. ~59 s of `flutter test` time. Shrinking (prefix cut + greedy
+  removal, <=24 replays) reduced most failures to 1–6 ops.
+- Design deviations (recorded in the ns docstring): three weight profiles
+  (`:full` = design §6.2 verbatim, plus `:no-layout` / `:no-jump` so the two known
+  bugs stop masking the rest of the op space); a batch keeps going after a failing
+  episode and reports every seed at once (`is` throws here); prefix binary search
+  dropped — `replay!` already reports the failing op index; `check!` cannot run O6,
+  so the fuzzer captures the anchor itself around layout swaps and strictly
+  above-window inserts/removes.
+- Headline NEW signatures (full list + shrunk vectors: fuzz-findings.md):
+  - NEW-4 `type 'Null' is not a subtype of type 'RenderBox'` — an outright crash
+    in a morph pass that follows a remove. Highest severity.
+  - NEW-5 Flutter's `childCount >= leadingGarbage + trailingGarbage` assert after
+    cross change + `to-top` on masonry.
+  - NEW-1 a morph loses the anchor with NO far jump (3 ops: settle, drag, layout)
+    — the step-5 reds all need a ~50-viewport jump, so this is uncovered.
+  - NEW-2/NEW-3 wrap tiling: runs physically overlap after a backward drag; run
+    advance short by one run's max main after a morph.
+  - NEW-7 count change + far jump walks the WHOLE dataset in one pass
+    (`cache-n 601`) — same root as known-B, violates the O(window) invariant.
+  - NEW-6 a jump past the end parks `pixels` ~20 px outside `maxScrollExtent` and
+    never converges (14 seeds, 1-op repro).
+  - NEW-8 (17 seeds) `committed-n` above O9's window-proportional bound —
+    flagged PLAUSIBLE; may be O9 miscalibration for a landing window.
+  - known-A reduced to TWO ops: `[[:jump 16572.2] [:layout :list]]`.
+- Harness fix (genuine defect): `make-rig` reused the previous rig's element
+  subtree — its `KeyedSubtree` key was always 0, so a second rig under one tester
+  inherited the first's `SliverCollectionState` and render-object cache. Step 4
+  worked around this by splitting deftests; a fuzzer cannot. Now seeded from a
+  monotone `rig-gen`. Two fuzzer-side attribution fixes are listed in
+  fuzz-findings.md §"Harness / fuzzer defects".
+- Method note for step 7: every reported signature was re-verified as the FIRST
+  episode of its own deftest (12/12 reproduced). Two candidates that failed that
+  check were deferred exceptions leaking from the previous episode — always
+  verify standalone before calling something an engine bug.
+- Next-step impact: step 7 has 8 NEW signatures with paste-ready vectors; NEW-4
+  and NEW-5 are crash-class and should lead. NEW-1 widens step 8/9's scope: the
+  anchor-capture defect is not gated on `restingTop` being nil.

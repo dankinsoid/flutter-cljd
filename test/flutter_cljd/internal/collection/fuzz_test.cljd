@@ -1,0 +1,446 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.collection.fuzz-test
+  "Invariant fuzzer over random op sequences for the collection viewport harness
+   (step 6 of collection-arch-hardening, spec: .claude/orchestrate/harness-design.md §6).
+
+   An episode = a seed -> a rig header + N fully parameterized ops. The PRNG is a
+   hand-rolled 32-bit LCG, so a seed reproduces an episode independently of the
+   Dart SDK's Random. No PRNG draw ever happens while ops are applied, which is
+   what makes both shrinking and paste-into-a-red-test work: the printed `ops`
+   vector is valid cljd data and `harness/replay!` consumes it verbatim.
+
+   After every op the whole oracle battery runs (`harness/check!`). Ops that must
+   not move content — a layout swap, an insert/remove strictly ABOVE the attached
+   window — additionally settle and run O6 (anchor preservation), which
+   `check!` cannot do on its own (it has no `before` to compare against).
+
+   Running (fuzz is EXCLUDED from the default suite):
+
+     clojure -M:cljd test -- -x \"known-red || fuzz\"    # default, green
+     clojure -M:cljd test -- -t fuzz --timeout 20x    # the campaign, ~60 s
+
+   Two `-x` flags do NOT compose — the last one wins; pass one boolean selector.
+   `--timeout 20x` is not optional either: a batch is 10 episodes x ~25 ops x a
+   full oracle pass, and every failing episode additionally pays for shrinking.
+
+   The campaign is RED on today's engine (see .claude/orchestrate/fuzz-findings.md);
+   step 7 turns its signatures into individual red tests.
+
+   Deviations from design §6, deliberate:
+   - Three weight profiles, not one. Two engine bugs are known-red and fire so
+     early in an episode that they mask everything downstream; `:no-layout` and
+     `:no-jump` starve their preconditions so the rest of the op space gets
+     explored. `:full` is the design's weight table verbatim.
+   - An episode is truncated at its first violation, but a BATCH keeps going and
+     reports every failing seed at once — `is` throws in this cljd port, so one
+     `is` at the end is the only way a deftest can report more than one failure.
+   - Shrinking skips design §6.4's prefix binary search: `replay!` already
+     reports the failing op index, so the shortest failing prefix is known for
+     free. Only greedy removal costs replays."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:core" :as dc]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.internal.collection.harness :as h]))
+
+;; --- campaign knobs ---
+
+(def ^int episode-len 24)
+
+;; 600, not the harness default of 2200: the fuzzer rebuilds the whole item
+;; vector on every data op, and 600 items still span ~20-90 viewports.
+(def ^int fuzz-items 600)
+
+(def ^double viewport-main 600.0)
+
+;; replays a single failing episode may spend on shrinking
+(def ^int shrink-budget 24)
+
+;; --- PRNG: 32-bit LCG (design §6.1) ---
+
+(def ^int lcg-mask 0xFFFFFFFF)
+
+(defn ^int lcg-step [^int s]
+  (bit-and (+ (* 1664525 s) 1013904223) lcg-mask))
+
+(defn rng [^int seed] (atom (bit-and seed lcg-mask)))
+
+(defn- ^int raw! [r]
+  (let [^int s (lcg-step @r)]
+    (reset! r s)
+    s))
+
+;; high 24 bits — an LCG's low bits cycle with a short period
+(defn- ^double unit! [r] (/ (double (bit-shift-right (raw! r) 8)) 16777216.0))
+
+(defn- ^int below! [r ^int n] (.toInt (* (unit! r) n)))
+
+(defn- pick! [r coll] (nth coll (below! r (count coll))))
+
+(defn- ^double between! [r ^double lo ^double hi] (+ lo (* (unit! r) (- hi lo))))
+
+(defn- ^double signed! [r ^double lo ^double hi]
+  (let [^double m (between! r lo hi)]
+    (if (< (unit! r) 0.5) m (- m))))
+
+;; --- op alphabet (design §6.2) ---
+
+(def base-weights
+  [[:drag-small 20] [:pump 12] [:fling 10] [:drag-large 8] [:insert 8]
+   [:remove 8] [:settle 8] [:layout 6] [:jump 6] [:rotate 4] [:cross 4]
+   [:to-top 4] [:fling-catch 3]])
+
+(def profiles
+  {:full      {}
+   :no-layout {:layout 0}
+   :no-jump   {:jump 0 :to-top 0}})
+
+(defn weights-for [profile]
+  (let [ov (get profiles profile {})]
+    (vec (remove (fn [p] (zero? ^int (nth p 1)))
+                 (map (fn [p] [(nth p 0) (int (get ov (nth p 0) (nth p 1)))])
+                      base-weights)))))
+
+(defn- pick-kind! [r ws]
+  (let [^int total (reduce (fn [^int a p] (+ a ^int (nth p 1))) 0 ws)]
+    (loop [xs (seq ws) ^int n (below! r total)]
+      (let [p (first xs)
+            ^int w (nth p 1)]
+        (if (or (< n w) (nil? (next xs)))
+          (nth p 0)
+          (recur (next xs) (- n w)))))))
+
+(def cross-choices [280.0 400.0 640.0 900.0])
+
+(defn- gen-op!
+  "`i` is the op's position in the episode — it seeds inserted ids, so every
+   inserted key is unique within an episode and never collides with 0..n-1."
+  [r ws ^int n ^int i]
+  (let [^double main viewport-main]
+    (case (pick-kind! r ws)
+      :drag-small  [:drag (signed! r (* 0.3 main) (* 1.5 main))]
+      :drag-large  [:drag (signed! r (* 2.0 main) (* 8.0 main))]
+      :pump        [:pump (+ 1 (below! r 5))]
+      :fling       [:fling (signed! r 800.0 8000.0)]
+      :settle      [:settle]
+      :insert      [:insert (below! r (inc n)) (+ 900000 i)]
+      :remove      [:remove (below! r n)]
+      :rotate      [:rotate (below! r n) (below! r n)]
+      :layout      [:layout (pick! r h/layout-kws)]
+      :cross       [:cross (pick! r cross-choices)]
+      :jump        [:jump (* (unit! r) 50.0 main)]
+      :to-top      (if (< (unit! r) 0.5) [:to-top] [:animate-top (+ 150 (below! r 450))])
+      :fling-catch [:fling-catch (signed! r 800.0 8000.0) (+ 30 (below! r 220))])))
+
+(defn gen-episode
+  "Everything a seed determines: `[header ops]`. `header` is exactly what
+   `harness/rig-from-header!` consumes (plus :seed/:profile for the report)."
+  [^int seed profile ^int items ^int len]
+  (let [r (rng seed)
+        header {:seed seed
+                :profile profile
+                :animate? (< (unit! r) 0.6)
+                :approx (pick! r [nil nil 80.0 120.0])
+                :layout0 (pick! r h/layout-kws)
+                :cross0 (pick! r cross-choices)
+                :items0 items}
+        ws (weights-for profile)
+        ops (loop [i 0 acc []]
+              (if (>= i len)
+                acc
+                (recur (inc i) (conj acc (gen-op! r ws items i)))))]
+    [header ops]))
+
+;; --- episode runner ---
+
+(defn- ^int window-min
+  "Lowest attached index, including leading overscan. 1e9 when nothing is
+   attached (then `top-anchor` is nil and no anchor guard runs anyway)."
+  [rig]
+  (reduce (fn [^int m c] (if (< ^int (:index c) m) ^int (:index c) m))
+          1000000000
+          (h/children rig)))
+
+(defn- ^bool anchor-guarded?
+  "Ops that must not move content. Only even positions are guarded: the guard
+   settles, and settling after EVERY layout swap would erase mid-segment
+   coverage — the state where ops interrupt a running morph."
+  [op ^int i ^int wmin]
+  (and (even? i)
+       (let [k (nth op 0)]
+         (case k
+           :layout true
+           :insert (< ^int (nth op 1) wmin)
+           :remove (< ^int (nth op 1) wmin)
+           false))))
+
+(def jump-ops #{:jump :to-top :animate-top})
+
+(defn- ^bool out-of-range? [rig]
+  (let [lim (h/scroll-limits rig)
+        ^double px (h/offset rig)]
+    (or (< px (- ^double (:min lim) h/eps-geom))
+        (> px (+ ^double (:max lim) h/eps-geom)))))
+
+(defn- boundary-settle!
+  "`jumpTo` past `maxScrollExtent` force-writes `pixels` there and only then lets
+   the spring walk it back, over several hundred ms. Those frames are the op's
+   own tail, not a finding — the wait is bounded, so an offset that never
+   re-enters the range still fails O5."
+  [rig op]
+  (when (contains? jump-ops (nth op 0))
+    (loop [k 0]
+      (when (and (< k 45) (out-of-range? rig))
+        (await (h/pump! rig 16))
+        (recur (inc k)))))
+  nil)
+
+(defn- oracles-of [vs] (vec (distinct (map (fn [x] (:oracle x)) vs))))
+
+(defn- fail
+  [rig kind ^int i op vs]
+  {:kind kind
+   :op-index i
+   :op op
+   :oracles (oracles-of vs)
+   :violations vs
+   :offset (h/offset rig)
+   :limits (h/scroll-limits rig)
+   :engine (h/engine rig)})
+
+(defn- step!
+  "Applies one op and runs the oracles. Returns nil or a failure map."
+  [rig op ^int i]
+  (let [rest? (h/at-rest? rig)
+        ^int wmin (window-min rig)
+        before (when rest? (h/top-anchor rig))
+        guard? (and (some? before) (anchor-guarded? op i wmin))]
+    (await (h/apply-op! rig op))
+    (await (boundary-settle! rig op))
+    (let [vs (await (h/check! rig {:op-index i :op op}))]
+      (cond
+        (seq vs) (fail rig :check i op vs)
+
+        (not guard?) nil
+
+        :else
+        (do
+          (await (h/settle! rig))
+          (let [vs2 (await (h/check! rig {:op-index i :op op :after :settle}))]
+            (if (seq vs2)
+              (fail rig :check i op vs2)
+              (let [o6 (h/o6-anchor-preserved rig before)]
+                (when (seq o6)
+                  (assoc (fail rig :o6 i op o6) :anchor-before before))))))))))
+
+(defn- quiesce!
+  "Leaves the rig idle and drains any exception those frames raised. A ticker
+   still active when its provider is disposed fails the whole file, and
+   `flutter_test` DEFERS exceptions — an undrained one would be handed to the
+   next episode's first `check!` and blamed on the wrong seed.
+
+   Returns the drained violations."
+  [rig]
+  (await (h/pump-n! rig 40 16))
+  (try
+    (when-not (h/at-rest? rig) (await (h/settle! rig)))
+    (catch dc/Object _e nil))
+  (h/o1-no-exception rig))
+
+(defn run-ops!
+  "Mounts a FRESH rig for `header` and applies `ops`, checking after each.
+   Returns nil, or the failure map with :header/:ops attached. This is both the
+   episode driver and the shrinker's predicate, so a shrunk vector is
+   reproducible by exactly the code that found it."
+  [^ft/WidgetTester t header ops]
+  (let [rig (await (h/rig-from-header! t header))]
+    (await (h/settle! rig))
+    (let [res (loop [i 0]
+                (if (>= i (count ops))
+                  nil
+                  (let [f (await (step! rig (nth ops i) i))]
+                    (if (some? f) f (recur (inc i))))))
+          drained (await (quiesce! rig))
+          res (or res
+                  (when (seq drained)
+                    (fail rig :teardown (dec (count ops)) [:quiesce] drained)))]
+      (when (some? res)
+        (assoc res :header header :ops ops)))))
+
+;; --- shrinking (design §6.4) ---
+
+(defn- ^dc/String viol-tag
+  "Oracle id plus its discriminator. The id alone is far too coarse: every engine
+   assert and every Flutter one arrive as :o1, and :o5 carries two unrelated
+   defects — shrinking on the id would happily converge onto a different bug."
+  [x]
+  (let [d (:detail x)
+        e (:exception d)]
+    (str (:oracle x) "/"
+         (cond
+           (some? (:why d)) (:why d)
+           (some? e) (let [^dc/String s e] (.substring s 0 (min 60 (count s))))
+           :else "?"))))
+
+(defn- fail-sig
+  "What `pred` must keep reproducing. Not the op index — shrinking may move it."
+  [f]
+  [(:kind f) (vec (sort (map viol-tag (:violations f))))])
+
+(defn shrink!
+  "Prefix cut (free — the failure index is known) then greedy left-to-right
+   removal, each candidate re-run on a fresh rig. Index-bearing ops clamp into
+   range after a removal, which `apply-op!` defines as legal.
+
+   Returns {:ops shrunk :replays n}."
+  [^ft/WidgetTester t f ^int budget]
+  (let [header (:header f)
+        sig (fail-sig f)]
+    (loop [ops (vec (take (inc ^int (:op-index f)) (:ops f)))
+           i 0
+           spent 0]
+      (if (or (>= ^int spent budget) (>= i (count ops)))
+        {:ops ops :replays spent}
+        (let [cand (into (subvec ops 0 i) (subvec ops (inc i)))
+              res (await (run-ops! t header cand))]
+          (if (and (some? res) (= sig (fail-sig res)))
+            ;; the drop stuck; re-cut to the (possibly earlier) new failure point
+            (recur (vec (take (inc ^int (:op-index res)) cand)) i (inc ^int spent))
+            (recur ops (inc i) (inc ^int spent))))))))
+
+;; --- batch driver ---
+
+(defn- run-episode! [^ft/WidgetTester t ^int seed profile]
+  (let [ep (gen-episode seed profile fuzz-items episode-len)
+        header (nth ep 0)
+        ops (nth ep 1)]
+    (try
+      (await (run-ops! t header ops))
+      (catch dc/Object e
+        {:kind :thrown :header header :ops ops :op-index (dec episode-len)
+         :oracles [:thrown] :error (str e)}))))
+
+(defn run-batch!
+  "Runs every seed, shrinks each failure, and returns the failure maps. A failing
+   episode does NOT stop the batch — one campaign run must surface every distinct
+   signature it can."
+  [^ft/WidgetTester t profile seeds]
+  (loop [ss (seq seeds) acc []]
+    (if (nil? ss)
+      acc
+      (let [f (await (run-episode! t (int (first ss)) profile))]
+        (if (nil? f)
+          (recur (next ss) acc)
+          (let [sh (if (= :thrown (:kind f))
+                     {:ops (:ops f) :replays 0}
+                     (await (shrink! t f shrink-budget)))]
+            (recur (next ss)
+                   (conj acc (assoc f
+                                    :shrunk (:ops sh)
+                                    :shrink-replays (:replays sh))))))))))
+
+;; --- reporting ---
+
+(defn- fail-str [f]
+  (let [header (:header f)]
+    (str "\n\nFUZZ FAIL seed=" (:seed header) " profile=" (:profile header)
+         " op=" (:op-index f) "/" (count (:ops f))
+         " kind=" (:kind f) " oracles=" (pr-str (:oracles f))
+         "\n  header:  " (pr-str (dissoc header :seed :profile))
+         "\n  shrunk:  " (pr-str (:shrunk f)) "  (replays " (:shrink-replays f) ")"
+         "\n  ops:     " (pr-str (:ops f))
+         "\n  op:      " (pr-str (:op f))
+         "\n  viol:    " (pr-str (vec (take 3 (:violations f))))
+         "\n  anchor0: " (pr-str (:anchor-before f))
+         "\n  offset:  " (pr-str (:offset f)) " limits: " (pr-str (:limits f))
+         "\n  engine:  " (pr-str (:engine f))
+         (if (some? (:error f)) (str "\n  error:   " (:error f)) ""))))
+
+(defn check-batch! [^ft/WidgetTester t profile seeds]
+  (let [fails (await (run-batch! t profile (vec seeds)))]
+    (is (empty? fails)
+        (str "fuzz " profile " seeds " (pr-str (vec seeds)) ": "
+             (count fails) " failing episode(s)"
+             (apply str (map fail-str fails))))))
+
+;; --- campaign ---
+
+;; split across deftests only for headroom: `deftest` has no timeout knob
+
+(defn seeds [^int lo ^int n] (vec (range lo (+ lo n))))
+
+(deftest fuzz-full-a
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 1 10))))
+
+(deftest fuzz-full-b
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 11 10))))
+
+(deftest fuzz-full-c
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 21 10))))
+
+(deftest fuzz-full-d
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 31 10))))
+
+(deftest fuzz-no-layout-a
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 101 10))))
+
+(deftest fuzz-no-layout-b
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 111 10))))
+
+(deftest fuzz-no-layout-c
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 121 10))))
+
+(deftest fuzz-no-layout-d
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 131 10))))
+
+(deftest fuzz-no-jump-a
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 201 10))))
+
+(deftest fuzz-no-jump-b
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 211 10))))
+
+(deftest fuzz-no-jump-c
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 221 10))))
+
+(deftest fuzz-no-jump-d
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 231 10))))
+
+;; the generator itself is pure — a compile-time regression here would silently
+;; change every seed's meaning
+(deftest fuzz-generator-is-deterministic
+  (let [a (gen-episode 42 :full fuzz-items episode-len)
+        b (gen-episode 42 :full fuzz-items episode-len)]
+    (is (= a b) "the same seed regenerates the same episode")
+    (is (= episode-len (count (nth a 1))) "episode length")
+    (is (not= (nth a 1) (nth (gen-episode 43 :full fuzz-items episode-len) 1))
+        "different seeds diverge")
+    (is (empty? (filter (fn [op] (= :layout (nth op 0)))
+                        (nth (gen-episode 7 :no-layout fuzz-items episode-len) 1)))
+        ":no-layout starves the morph op")
+    (is (empty? (filter (fn [op] (contains? #{:jump :to-top :animate-top} (nth op 0)))
+                        (nth (gen-episode 7 :no-jump fuzz-items episode-len) 1)))
+        ":no-jump starves the far-jump ops")))
