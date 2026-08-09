@@ -75,7 +75,7 @@
                            ;; seeded desired(0) = scroll-off at segment start so the animation delta composes
                            ;; with user drag (scrollOffset = drag + Σcorrections); telescopes exactly to to−from
    ^:mutable viewAnchor    ;; nil | {:idx :key :off :extent :frac} — viewport-top truth, sampled post-layout
-                           ;; each resting pass from attached children; non-nil while sized children exist
+                           ;; every pass from displayed frames (tweened mid-segment: shadow :idx, maybe dying :key)
    ^:mutable clips        ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at full but painted
                           ;; clipped to a lerped window (§8a enter/exit collapse); rebuilt each indexed pass.
                           ;; opacity = the collapse fraction for a faded enter/exit cell, else 1.0
@@ -248,10 +248,10 @@
                       (indexed-layout! this layout c)
                       (flow-layout! this layout c))))
               (indexed-layout! this seg c)))))
-      ;; segTween nil == a resting driver owned this pass; a live segment must keep
-      ;; the pre-segment truth
+      ;; mid-segment drags move the viewport; a pre-segment sample starves the
+      ;; next capture's absorption channel (NEW-9)
+      (sample-view-anchor! this c)
       (when (nil? (.-segTween this))
-        (sample-view-anchor! this c)
         (when fd/kDebugMode
           (let [sized? (loop [ch (.-firstChild this)]
                          (cond (nil? ch) false
@@ -3024,6 +3024,18 @@
                             :frac frac
                             :screen (- (+ from-off (* frac from-ext))
                                        (.-scrollOffset c))}))))
+        ;; §2.3 exactly-once: a produced rebase needs a channel — anchorless
+        ;; segments absorb it as a pure shift (desired telescopes to the rebase)
+        seg-anchor (or seg-anchor
+                       (let [^double rb (double (or (:rebase flow-cap) 0.0))
+                             cache (.-cache rs)]
+                         (when (and (not indexed) (not (zero? rb)) (seq cache))
+                           (let [e (nth cache 0)
+                                 ^double to-off (double (:offset e))
+                                 ^double to-ext (double (:extent e))]
+                             {:from-off (- to-off rb) :from-ext to-ext
+                              :to-off to-off :to-ext to-ext :frac 0.0
+                              :screen (- (- to-off rb) (.-scrollOffset c))}))))
         ;; §7b: leave-slide `to`s. The segment's scroll set-point moves the
         ;; window by (to − from) at t=1; a cell whose target index falls outside
         ;; the UNION of the current and end-of-segment window spans is leaving —

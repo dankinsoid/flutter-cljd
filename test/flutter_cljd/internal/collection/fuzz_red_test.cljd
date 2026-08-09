@@ -21,10 +21,15 @@
      clojure -M:cljd test -- -t known-red              # the reds only
 
    Step 10's re-campaign (220 episodes over four profiles) added NEW-9..NEW-13.
-   NEW-9 leads: 17 seeds across all four profiles reduce to three ops — a cache
-   invalidator (count or cross change), a drag, then a morph — after which the
-   capture pass produces a rebase while `segAnchor` is nil, so the stage-3
-   absorption contract has no channel to publish it through. NEW-10..NEW-13 are
+   NEW-9 (FIXED, step 10b) 17 seeds across all four profiles reduce to three ops —
+   a cache invalidator (count or cross change), a drag, then a morph. The
+   invalidator OPENS a segment; the drag moves the viewport mid-segment, where
+   viewAnchor was never resampled; the morph's capture then consumed a
+   pre-segment anchor whose slot lies outside the capture window, so `segAnchor`
+   resolved nil and the produced rebase was discarded. viewAnchor now samples
+   the displayed frame every pass (mid-segment included), and segment-start!
+   guarantees the absorption channel: an anchorless capture that produced a
+   rebase absorbs it as a pure shift over the first placed slot. NEW-10..NEW-13 are
    the residuals of signatures steps 9b/9c closed in their primary form:
    the set-point preserves the consumed fraction exactly and then applies it to
    the neighbouring item (NEW-10); known-B's re-anchor holds the INDEX again once
@@ -197,8 +202,8 @@
 
 ;; --- step-10 campaign-2 signatures ---
 
-(deftest known-red-fuzz-capture-rebase-has-no-absorption-channel
-  :tags [:widget :known-red]
+(deftest fuzz-capture-rebase-has-absorption-channel
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 256
                             [[:remove 222]
