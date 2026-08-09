@@ -31,9 +31,13 @@
    guarantees the absorption channel: an anchorless capture that produced a
    rebase absorbs it as a pure shift over the first placed slot. NEW-10..NEW-13 are
    the residuals of signatures steps 9b/9c closed in their primary form:
-   the set-point preserves the consumed fraction exactly and then applies it to
-   the neighbouring item (NEW-10); known-B's re-anchor holds the INDEX again once
-   a far jump precedes the insert (NEW-11); a rotation advertises a scrollExtent
+   the set-point holds the anchor's fraction point exactly, and O6 reported the
+   anchor's lower-index grid ROW-MATE as a moved key — an oracle expressiveness
+   gap for multi-column targets, recalibrated to check the before-key's own
+   child (NEW-10, reclassified); NEW-11 (reclassified with it) is the same gap
+   under an above-window insert — the set-point resolved the anchor BY KEY to
+   its shifted slot, whose grid row kept the old offset, and O6 misread the
+   regrouped row as \"index held\"; a rotation advertises a scrollExtent
    below the content of the same frame (NEW-12); and a morph following a far jump
    still caches most of the dataset without the count-change adjacency NEW-7
    needed (NEW-13).
@@ -212,8 +216,9 @@
     (is (nil? f) (str "NEW-9 the capture pass produced a rebase the segment has "
                       "nowhere to absorb (segAnchor nil):" (fail-str f)))))
 
-(deftest known-red-fuzz-morph-slides-anchor-one-item
-  :tags [:widget :known-red]
+;; NEW-10 was O6 reporting a lower-index row-mate as a moved key
+(deftest fuzz-morph-holds-anchor-across-row-grouping
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 241
                             [[:drag 770.4910182952881]
@@ -221,11 +226,12 @@
                              [:drag 739.6548843383789]
                              [:pump 1]
                              [:layout :grid]]))]
-    (is (nil? f) (str "NEW-10 a list->grid morph held the consumed FRACTION exactly "
-                      "but applied it to the neighbouring item:" (fail-str f)))))
+    (is (nil? f) (str "NEW-10 a list->grid morph must hold the anchor's fraction "
+                      "point at the viewport top:" (fail-str f)))))
 
-(deftest known-red-fuzz-insert-above-window-after-far-jump
-  :tags [:widget :known-red]
+;; NEW-11's "index held" was the anchor key's new slot landing in the same row
+(deftest fuzz-insert-above-window-after-far-jump-holds-anchor
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 16
                             [[:drag 601.3305759429932]
@@ -237,8 +243,8 @@
                              [:fling-catch -1939.0419006347656 65]
                              [:jump 17467.40162372589]
                              [:insert 74 900008]]))]
-    (is (nil? f) (str "NEW-11 known-B's shape survives a far jump: the re-anchor "
-                      "held the INDEX, not the key:" (fail-str f)))))
+    (is (nil? f) (str "NEW-11 an insert above the window after a far jump must "
+                      "hold the anchor's fraction point:" (fail-str f)))))
 
 (deftest known-red-fuzz-rotation-extent-covers-laid-content
   :tags [:widget :known-red]

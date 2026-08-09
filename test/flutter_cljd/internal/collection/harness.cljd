@@ -744,14 +744,20 @@
 
 (defn o6-anchor-preserved
   "O6 — for ops that must not move content (layout swap, insert/remove ABOVE the
-   window, :approx toggle, segment settle) the viewport-top item key and the
-   FRACTION of it consumed above the top survive. Cross-extent changes are
+   window, :approx toggle, segment settle) the content point at the before-key's
+   consumed FRACTION stays at the viewport top edge. Cross-extent changes are
    excluded by design.
 
    The invariant is the fraction, not the absolute intra offset: a morph that
    resizes the anchor cell (a wrap run becoming a grid row) cannot hold both, and
    holding the pixel offset is what pushes the top past a shrinking anchor into
-   the next item (fuzz NEW-1). With an unchanged extent the two coincide.
+   the next item (fuzz NEW-1).
+
+   Checked on the BEFORE key's own after-child, never on the reported top child:
+   in a multi-column target the viewport top is a SET of row-mates sharing one
+   span, and `top-anchor` reports the lowest index of them — a list anchor whose
+   grid row starts with a lower-index row-mate is a held anchor, not a moved one
+   (fuzz NEW-10: frac preserved to 1e-15, key reported one lower).
 
    `before` is a `top-anchor` captured at rest before the op."
   [rig before]
@@ -759,12 +765,25 @@
     (cond
       (nil? before) []
       (nil? after) [(v :o6 {:why :no-top-child :before before})]
-      (not= (:key before) (:key after))
-      [(v :o6 {:why :key-moved :before before :after after})]
-      (not (close? (* ^double (:frac before) ^double (:extent after))
-                   (:intra after) eps-equiv))
-      [(v :o6 {:why :intra-drift :before before :after after})]
-      :else [])))
+      :else
+      (let [^double so (scroll-offset rig)
+            items (:items @rig)
+            hit (first (filter (fn [c]
+                                 (let [^int i (:index c)]
+                                   (and (< i (count items))
+                                        (= (:id (nth items i)) (:key before)))))
+                               (children rig)))]
+        (cond
+          (nil? hit)
+          [(v :o6 {:why :key-moved :before before :after after})]
+
+          (not (close? (+ ^double (:offset hit)
+                          (* ^double (:frac before) ^double (:main-size hit)))
+                       so eps-equiv))
+          [(v :o6 {:why :intra-drift :before before :after after
+                   :anchor-child hit})]
+
+          :else [])))))
 
 (defn- shape-of
   "Pairwise offset differences + sizes + cross positions, keyed by index."
