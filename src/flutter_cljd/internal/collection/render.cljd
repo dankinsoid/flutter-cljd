@@ -45,6 +45,92 @@
          segment-start! update-velocity! overscan-extent sample-view-anchor!
          segment-domain-exited? settle-segment!)
 
+;; --- pass mode (rebase-design §2.3 / §6) ---
+
+;; @ai-generated(guided)
+(defn pass-mode
+  "Which of the four kinds of layout pass this is. Decided ONCE per performLayout
+   and stored for the pass, so every feature reads a capability off `pass-caps`
+   instead of re-deriving segment-ness from `tweenAnim`/`segTween` — the two are
+   NOT interchangeable (a domain-settled segment plays its clock out with no
+   segment model, and getting that gate wrong is a shipped bug class). Mirrors
+   the dispatch it feeds. Pure."
+  [^bool tween-anim? ^int cur-gen ^int seg-gen ^bool seg-tween? ^bool domain-exited?]
+  (cond
+    (not tween-anim?) :resting
+    (not= cur-gen seg-gen) :capture
+    (or (not seg-tween?) domain-exited?) :settled
+    :else :segment))
+
+;; @ai-generated(guided)
+(def pass-caps
+  "What each pass mode may do — the single owner of segment-ness gating.
+
+   Modes:
+     :resting  no segment machinery at all (`tweenAnim` nil).
+     :settled  the host clock still plays but the engine holds no segment model
+               (never built, or the window left the frozen `:domain`, §3.2): the
+               RESTING drivers run while the animation finishes silently.
+     :capture  `segment-start!`'s target-materialization pass. The emit arm is
+               statically unreachable here: the rebase leaves as a VALUE (§2.3
+               :value) because a correction would be overwritten by from-relay!.
+     :segment  a live pass over the frozen segment tween.
+
+   Capabilities:
+     :emit-rebase?      the pass may publish `passRebase` as a
+                        scrollOffsetCorrection (`emit-correction!`).
+     :refine?           above-anchor seam refinement (reflow-from-checkpoint!)
+                        may emit — mid-content churn that only a resting offset
+                        model can absorb; still subject to velocity suppression.
+     :origin-refine?    exact-landing (index 0 at offset 0) and top-underflow may
+                        emit. These reconcile the scroll BOUNDARY the motion is
+                        heading toward — one-shot, convergent and pixel-stable —
+                        so unlike :refine? they ignore ballistic suppression and
+                        close the gap above item 0 within the frame (#B).
+     :overscan?         directional overscan margins are resolved; otherwise the
+                        set-point + widen-window! own the window (scenario 6).
+     :prune-commit?     the committed map may be pruned geometrically — never
+                        while a segment can still reference a `from` rect.
+     :measure-feed?     attached sizes feed the engine-wide measured EMA. ON for
+                        :settled: aggregates are ENGINE truth, and a basis-less
+                        estimate starves the next capture (NEW-13).
+     :tripwire?         the O(window+overscan) materialization assert applies;
+                        a capture legitimately materializes a widened window.
+     :canonical-assert? no estimate-shaped cell may sit in the visible window.
+     :epilogue-asserts? viewAnchor non-nil + the exactly-once rebase assert.
+     :union-window?     keep attached cells that still overlap the window under
+                        their committed rect, so leave-slides glide out (§7b).
+     :set-point?        the segment set-point drives the scroll correction.
+     :seg-tail?         a lingering segAnchor's un-emitted tail is published."
+  {:resting {:emit-rebase? true  :refine? true  :origin-refine? true  :overscan? true
+             :prune-commit? true  :measure-feed? true  :tripwire? true
+             :canonical-assert? true  :epilogue-asserts? true
+             :union-window? false :set-point? false :seg-tail? true}
+   :settled {:emit-rebase? true  :refine? false :origin-refine? false :overscan? false
+             :prune-commit? false :measure-feed? true  :tripwire? true
+             :canonical-assert? false :epilogue-asserts? true
+             :union-window? true  :set-point? false :seg-tail? false}
+   :capture {:emit-rebase? false :refine? false :origin-refine? false :overscan? false
+             :prune-commit? false :measure-feed? false :tripwire? false
+             :canonical-assert? false :epilogue-asserts? false
+             :union-window? true  :set-point? false :seg-tail? false}
+   :segment {:emit-rebase? true  :refine? false :origin-refine? false :overscan? false
+             :prune-commit? false :measure-feed? false :tripwire? false
+             :canonical-assert? false :epilogue-asserts? false
+             :union-window? true  :set-point? true  :seg-tail? false}})
+
+;; @ai-generated(guided)
+(defn ^bool pass-allows?
+  "Capability lookup over `pass-caps`. A capability missing from the table is a
+   programming error, not a silent \"no\" — asserted in debug so a newly added
+   feature cannot inherit an accidental OFF. Pure."
+  [mode cap]
+  (let [caps (get pass-caps mode)]
+    (when fd/kDebugMode
+      (assert (and (some? caps) (contains? caps cap))
+              (str "collection: no capability " cap " for pass mode " mode)))
+    (boolean (get caps cap))))
+
 ;; --- Render object ---
 
 (deftype CollectionRenderSliver
@@ -113,6 +199,8 @@
    ^:mutable ^double overscanAhead ;; in performLayout and read by the drivers + commit-pass!. 0 when flying/disabled.
    ^:mutable ^int flyingRun ;; consecutive frames the EMA has held ≥ v-fast (0 = not fast) — the flying
                           ;; entry gate; a lone fast frame (desktop scroll notch/jump/glitch) never trips it.
+   ^:mutable passMode     ;; :resting | :settled | :capture | :segment — decided once per performLayout
+                          ;; (pass-mode) and read through pass-allows!; the ONE owner of segment-ness gating
    ^:mutable ^double passRebase ;; per-pass sum of every coordinate-frame delta produced (via rebase+!);
                           ;; reset each performLayout, consumed by exactly one arm at pass end
    ^:mutable pendingRebase ;; nil | {:cause :seed :delta :expect-ws (:consumed)} — the cross-pass seed
@@ -205,18 +293,26 @@
         (.-anchoredTo0! this false)
         (.-pendingRebase! this nil))
       (.-passRebase! this 0.0)
+      ;; the pass's mode is decided here, once, and every gate below (and in both
+      ;; drivers) reads a capability off it — never tweenAnim/segTween again
+      (let [seg (.-segTween this)]
+        (.-passMode! this
+          (pass-mode (some? (.-tweenAnim this)) (.-curGen this) (.-segGen this)
+                     (some? seg)
+                     (boolean (and (some? seg) (segment-domain-exited? this seg c))))))
       ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
       ;; frame's directional overscan window BEFORE dispatching. A playing segment
       ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
       ;; the window there, so the regime gate must not fight it (scenario 6).
       (let [prev-regime (.-curRegime this)]
         (update-velocity! this c)
-        (let [seg? (some? (.-tweenAnim this))
-              [^double behind ^double ahead] (if seg? [0.0 0.0]
-                                               (overscan-extent this c (.-curRegime this)))]
+        (let [[^double behind ^double ahead]
+              (if (pass-allows? (.-passMode this) :overscan?)
+                (overscan-extent this c (.-curRegime this))
+                [0.0 0.0])]
           (.-overscanBehind! this behind)
           (.-overscanAhead! this ahead))
-        (cond
+        (case (.-passMode this)
           ;; RESTING: no animation — run the plain target through its natural driver.
           ;; The approximate-placement (flying) path engages ONLY when the caller
           ;; opted in via :overscan {:flying true} (:fly? on the spec) AND the regime
@@ -224,7 +320,7 @@
           ;; (pixel-perfect; desktop pointer-scroll would otherwise misread as a
           ;; fling). `entry?` = first pass of a flying run, so flying-flow! drops the
           ;; real cache once instead of every pass.
-          (nil? (.-tweenAnim this))
+          :resting
           (let [layout (.-layoutModel this)
                 regime (.-curRegime this)
                 fly? (and (= :flying regime) (:fly? (.-overscanConfig this)) (:approx-offset layout))]
@@ -234,24 +330,23 @@
               :else (flow-layout! this layout c)))
 
           ;; SEGMENT START: host bumped gen — capture the target from the new tree.
-          (not= (.-curGen this) (.-segGen this))
+          :capture
           (segment-start! this c)
 
+          ;; the host clock plays on with no segment model left (§3.2)
+          :settled
+          (do (settle-segment! this)
+              (let [layout (.-layoutModel this)]
+                (if (:geometry layout)
+                  (indexed-layout! this layout c)
+                  (flow-layout! this layout c))))
+
           ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
-          ;; A frozen segment is valid only near the window it froze (§3.2).
-          :else
-          (let [seg (.-segTween this)]
-            (if (or (nil? seg) (segment-domain-exited? this seg c))
-              (do (settle-segment! this)
-                  (let [layout (.-layoutModel this)]
-                    (if (:geometry layout)
-                      (indexed-layout! this layout c)
-                      (flow-layout! this layout c))))
-              (indexed-layout! this seg c)))))
+          (indexed-layout! this (.-segTween this) c)))
       ;; mid-segment drags move the viewport; a pre-segment sample starves the
       ;; next capture's absorption channel (NEW-9)
       (sample-view-anchor! this c)
-      (when (nil? (.-segTween this))
+      (when (pass-allows? (.-passMode this) :epilogue-asserts?)
         (when fd/kDebugMode
           (let [sized? (loop [ch (.-firstChild this)]
                          (cond (nil? ch) false
@@ -282,7 +377,8 @@
             corrected? (some? (.-scrollOffsetCorrection g))]
         (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this))
                       (- ws (.-overscanBehind this)) (+ we (.-overscanAhead this))
-                      (commit-prune? (some? (.-tweenAnim this)) corrected?)))))
+                      (commit-prune? (pass-allows? (.-passMode this) :prune-commit?)
+                                     corrected?)))))
 
   (dispose [^CollectionRenderSliver this]
     (when-let [l (.-tweenListener this)]
@@ -426,28 +522,15 @@
 ;; (see refine-suppressed? in the phase-E section above).
 
 (defn refine-emit?
-  "The WS1.3 exclusivity + suppression gate in one place: refinement corrections
-   are emitted only on a RESTING flow pass — a playing segment freezes the offset
-   model at capture and emits only the segment set-point correction, so the two
-   are mutually exclusive per pass — and only while not suppressed by active
-   backward motion. This gates the ABOVE-ANCHOR seam refinement (reflow-from-
-   checkpoint!), which is mid-content churn a fast motion would race. Pure."
-  [^bool segment? ^bool suppressed?]
-  (and (not segment?) (not suppressed?)))
-
-(defn origin-refine-emit?
-  "Emission gate for the ORIGIN corrections — exact-landing (index 0 at offset 0)
-   and top-underflow (indices stranded at/above the coordinate origin). Unlike the
-   above-anchor seam refinement (refine-emit?), these reconcile the SCROLL BOUNDARY
-   the motion is heading toward: one-shot, convergent and pixel-stable (shift-
-   attached-from! / from-:init re-flow hold the visible children put), and Flutter
-   resolves the scrollOffsetCorrection within the same frame. So firing them during
-   a fast fling closes the boundary WITHIN the frame instead of leaving a gap above
-   item 0 until deceleration re-enables refinement (#B) — they are NOT gated by
-   ballistic/drag velocity. Only the WS1.3 segment exclusivity applies (a playing
-   segment freezes the offset model at capture). Pure."
-  [^bool segment?]
-  (not segment?))
+  "The WS1.3 exclusivity + suppression gate in one place. `allowed?` is the pass
+   mode's `:refine?` (a playing segment freezes the offset model at capture and
+   emits only the set-point correction, so the two are mutually exclusive per
+   pass); the second half defers while active backward motion would race the
+   correction. Gates the ABOVE-ANCHOR seam refinement (reflow-from-checkpoint!),
+   which is mid-content churn. The ORIGIN corrections use `:origin-refine?`
+   directly — they ignore suppression (see pass-caps). Pure."
+  [^bool allowed? ^bool suppressed?]
+  (and allowed? (not suppressed?)))
 
 ;; @ai-generated(guided)
 (defn refine-seam
@@ -897,14 +980,13 @@
              {} committed))
 
 (defn commit-prune?
-  "Phase D prune gate: the committed map is pruned geometrically only BETWEEN
-   segments — never mid-segment, so active participants (entering/exiting/
-   leaving keys and everything the segment's `from` capture references) survive
-   until the segment ends — and only on a pass that emitted no
-   scrollOffsetCorrection (offsets are mid-reconciliation then; the corrected
-   re-run prunes with coherent coordinates). Pure."
-  [^bool segment? ^bool corrected?]
-  (and (not segment?) (not corrected?)))
+  "Phase D prune gate. `allowed?` is the pass mode's `:prune-commit?` — the
+   committed map is pruned geometrically only on a pass no segment can still
+   reference a `from` rect from. It additionally requires a pass that emitted no
+   scrollOffsetCorrection: offsets are mid-reconciliation then, and the corrected
+   re-run prunes with coherent coordinates. Pure."
+  [^bool allowed? ^bool corrected?]
+  (and allowed? (not corrected?)))
 
 (defn- commit-pass!
   "Upserts committed[key] = this pass's content-space rect for every attached,
@@ -1299,6 +1381,20 @@
    tail) adds its delta here and continues working in the shifted frame."
   [^CollectionRenderSliver rs ^double d]
   (.-passRebase! rs (+ (.-passRebase rs) d)))
+
+;; @ai-generated(guided)
+(defn- emit-correction!
+  "The single place a driver writes correction geometry. Debug-asserts that the
+   pass mode allows emission, so the :capture arm is unreachable by construction
+   (§2.3): a capture correction is overwritten by from-relay! and the rebase it
+   carried vanishes — the far-morph bug. Complements segment-start!'s absorption
+   asserts from the other side."
+  [^CollectionRenderSliver rs ^double d]
+  (when fd/kDebugMode
+    (assert (pass-allows? (.-passMode rs) :emit-rebase?)
+            (str "collection: pass mode " (.-passMode rs)
+                 " must not emit a scrollOffsetCorrection (" d ")")))
+  (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection d)))
 
 ;; @ai-generated(guided)
 (defn- consume-seg-tail!
@@ -2318,11 +2414,8 @@
                               (pos? (.-scrollOffset c)))))
     (when reached
       (.setDidUnderflow mgr true))
-    ;; WS2 invariant tripwire (debug only, resting frames): no estimate-shaped cell
-    ;; may sit in the visible window. Segment-capture passes place a transient tween
-    ;; window, so the check is scoped to resting; flying-flow! is the sanctioned
-    ;; approximate path and keeps the cache empty, so it never reaches here.
-    (when (nil? (.-tweenAnim rs))
+    ;; flying-flow! keeps the cache empty, so the approximate path never lands here
+    (when (pass-allows? (.-passMode rs) :canonical-assert?)
       (assert-window-canonical! rs layout c))
     (.didFinishLayout mgr)))
 
@@ -2430,14 +2523,22 @@
                   (.didFinishLayout mgr))))))))))
 
 (defn- flow-layout!
-  "The resting flow driver. `mode` :resting emits the accumulated pass rebase as
-   a scrollOffsetCorrection; :capture (a segment's target-materialization pass)
-   NEVER writes correction geometry — it returns {:rebase :extent} as values, and
-   segment-start! absorbs the rebase into the set-point (§2.3 :absorb). A capture
-   correction would be overwritten by from-relay! and the delta silently lost."
-  ([rs layout c] (flow-layout! rs layout c :resting))
-  ([^CollectionRenderSliver rs layout ^r/SliverConstraints c mode]
-  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
+  "The flow driver, run under the pass mode the render object carries (pass-caps).
+   In :resting / :settled it emits the accumulated pass rebase as a
+   scrollOffsetCorrection and returns nil. In :capture — a segment's
+   target-materialization pass — the emit arm is unreachable and the pass returns
+   the design's :value arm instead:
+
+     {:rebase <double>   ;; the frame delta this pass produced, for the set-point
+      :extent <double>}  ;; the TARGET layout's honest total, for the frozen snapshot
+
+   Both are plain values over no mutable state, which is what lets segment-start!
+   absorb them (§2.3) — a capture correction would be overwritten by from-relay!
+   and the delta silently lost. Step 13 (anchor-primary) consumes this same shape:
+   the rebase is the frame delta the derived scroll offset must follow."
+  [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
+  (let [mode (.-passMode rs)
+        ^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
     (.setDidUnderflow mgr false)
     ;; §8a: flow children are never engine-clipped — clear any stale clip map
@@ -2445,7 +2546,7 @@
     (.-clips! rs {})
     ;; per-pass laid-child counter for the O(window+overscan) tripwire
     (.-passMaterialized! rs 0)
-    (when (nil? (.-tweenAnim rs))
+    (when (pass-allows? mode :seg-tail?)
       (consume-seg-tail! rs))
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
@@ -2467,32 +2568,19 @@
             [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-passRebase rs))
             ^double align-ws (+ ws (- ws-eff ws-o))
             anchor (anchor-before rs so)
-            ;; Phase C emission gate, phase-E suppression signal: refinement
-            ;; corrections are emitted only on a resting (no-segment) pass with no
-            ;; active upward drag/fling (velocity sensor) — mutually exclusive with
-            ;; the WS1.3 segment correction per pass.
-            seg? (some? (.-tweenAnim rs))
-            emit? (refine-emit? seg?
+            emit? (refine-emit? (pass-allows? mode :refine?)
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
                                                     (double (:suppress-v overscan-tunables))
                                                     (double (:v-fast overscan-tunables))))
-            ;; Origin corrections (exact landing at 0, top-underflow) are boundary
-            ;; reconciliations — pixel-stable and same-frame-convergent — so they
-            ;; fire even under ballistic suppression, only deferring mid-segment.
-            ;; Without this a fast up-fling leaves a gap above item 0 until it
-            ;; decelerates (#B).
-            origin-emit? (origin-refine-emit? seg?)]
+            origin-emit? (pass-allows? mode :origin-refine?)]
         (if-not (align-start! rs layout env align-ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr)
-              (when (= :capture mode) {:rebase 0.0 :extent 0.0}))
+              (when (identical? :capture mode) {:rebase 0.0 :extent 0.0}))
           (let [walked (walk! rs layout env we-eff)
                 ^int last-i (int (:last-i walked))
-                ;; §7b: this branch runs mid-segment only as the CAPTURE pass
-                ;; (segment-start!). Attached cells whose committed rect still
-                ;; overlaps the window are leave-slides — keep them past the
-                ;; walked window so they stay materialized and glide out.
-                ^int keep-last (if (.-tweenAnim rs)
+                ;; §7b: a leave-slide must stay materialized past the walked window
+                ^int keep-last (if (pass-allows? mode :union-window?)
                                  (let [[_ kl] (widen-window! rs last-i last-i ws we)]
                                    (int kl))
                                  last-i)]
@@ -2504,29 +2592,26 @@
             (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
             ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
             (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
-            ;; segTween, not tweenAnim: domain-settled passes must feed the EMA
-            ;; or the next capture's :approx-offset has no size basis (NEW-13)
-            (when (and (identical? :resting mode) (nil? (.-segTween rs)))
+            (when (pass-allows? mode :measure-feed?)
               (let [sample (update-measured-agg! rs env)]
                 ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change
-                (assert-materialization-bounded! rs layout (tripwire-env env sample)
-                                                 (- we-o ws-o))))
+                (when (pass-allows? mode :tripwire?)
+                  (assert-materialization-bounded! rs layout (tripwire-env env sample)
+                                                   (- we-o ws-o)))))
             ;; anchor-follow folds last: when any producer already ran, the cache
             ;; was dropped/replaced so anchor-delta reads nil — no double count
             (when-let [delta (anchor-delta rs anchor)]
               (rebase+! rs (double delta)))
-            (if (= :capture mode)
-              ;; :absorb — no correction geometry ever; the rebase and the target's
-              ;; honest total return as values for the set-point / frozen snapshot
+            (if (identical? :capture mode)
               (do (finish-flow-geometry! rs layout env c walked)
                   {:rebase (.-passRebase rs)
                    :extent (flow-total-extent layout env walked (.-anchoredTo0 rs))})
-              ;; the ONE emission site: the pass's accumulated rebase, or honest geometry
+              ;; the ONE flow emission site: the accumulated rebase, or honest geometry
               (let [^double pr (.-passRebase rs)]
                 (if (> (.abs pr) 1e-3)
-                  (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection pr))
+                  (do (emit-correction! rs pr)
                       (.didFinishLayout mgr))
-                  (finish-flow-geometry! rs layout env c walked)))))))))))
+                  (finish-flow-geometry! rs layout env c walked))))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -2546,7 +2631,7 @@
    segPrevDesired drifts from real pixels; accepted — the drift is bounded (≤ to−from)
    and reconciled by the resting-pass anchor-delta once the segment ends."
   [^CollectionRenderSliver rs ^r/SliverConstraints _c]
-  (when (and (.-tweenAnim rs) (.-segAnchor rs))
+  (when (and (pass-allows? (.-passMode rs) :set-point?) (.-segAnchor rs))
     (let [[corr ^double new-prev]
           (tw/point-correction-delta (.-segAnchor rs)
                                      (.-value ^a/Animation (.-tweenAnim rs))
@@ -2583,12 +2668,13 @@
           (persistent! m))))))
 
 (defn- indexed-layout! [^CollectionRenderSliver rs layout ^r/SliverConstraints c]
-  (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
+  (let [mode (.-passMode rs)
+        ^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
     (.didStartLayout mgr)
     (.setDidUnderflow mgr false)
     ;; §8a: fresh clip map each pass; a resting/non-collapsing frame leaves it {}.
     (.-clips! rs {})
-    (when (nil? (.-tweenAnim rs))
+    (when (pass-allows? mode :seg-tail?)
       (consume-seg-tail! rs))
     (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
           env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
@@ -2607,10 +2693,9 @@
                                 (math/max 0 fi)))
           target-last0 (when (.-isFinite we-o)
                          (int ((:last-index layout) env we-o)))
-          ;; Union windowing (animating only): keep attached cells still
-          ;; overlapping [ws, we] so a cell leaving/entering the new layout glides.
+          ;; §7b: a cell leaving/entering the new layout must glide, not pop
           [^int first-index target-last0']
-          (if (.-tweenAnim rs)
+          (if (pass-allows? mode :union-window?)
             (widen-window! rs first-index0 target-last0 ws we)
             [first-index0 target-last0])
           ;; the two garbage walks below must not overlap — Flutter asserts
@@ -2725,14 +2810,15 @@
                 _clips (compute-clips! rs env geo-fn)
                 ;; a flow layout arriving after indexed-only history must not
                 ;; start with a blind density (NEW-13)
-                _agg (when (nil? (.-segTween rs)) (update-measured-agg! rs env))
+                _agg (when (pass-allows? mode :measure-feed?) (update-measured-agg! rs env))
                 ;; mid-segment: the incremental set-point (docs §9); at rest: the
                 ;; pass rebase (e.g. a consumed segment tail) through the same exit
                 corr (or (seg-scroll-correction rs c)
-                         (let [^double pr (.-passRebase rs)]
-                           (when (> (.abs pr) 1e-3) pr)))]
+                         (when (pass-allows? mode :emit-rebase?)
+                           (let [^double pr (.-passRebase rs)]
+                             (when (> (.abs pr) 1e-3) pr))))]
             (if corr
-              (do (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection (double corr)))
+              (do (emit-correction! rs (double corr))
                   (.didFinishLayout mgr))
               (do
                 (.-geometry! rs
@@ -2922,11 +3008,9 @@
         ;; Materialise the target window FIRST (both kinds), so every cell that will
         ;; be on-screen — arrivals included — is attached and can be measured for its
         ;; OLD size (§7c). Flow lays it via flow-layout!; indexed via indexed-layout!
-        ;; on the plain target (widen-window! keeps leave-slides attached too). The
-        ;; segAnchor reset makes this pass' scroll-correction a no-op (segAnchor is
-        ;; rebuilt below); the first frame is then displayed by from-relay!.
-        ;; the flow capture runs in :capture mode (no correction geometry — §2.3
-        ;; :absorb) and returns the rebase + the target's honest total as values
+        ;; on the plain target (widen-window! keeps leave-slides attached too). Both
+        ;; run under the pass's :capture mode, so neither can emit a correction
+        ;; (§2.3) — the flow driver returns {:rebase :extent} as values instead.
         flow-cap (when-not indexed
                    ;; the walk-ahead covers the extent dying cells vacate, so the
                    ;; replacements below are materialized before the collapse plays
@@ -2940,12 +3024,11 @@
                                          0.0)
                          ^double ahead0 (.-overscanAhead rs)]
                      (.-overscanAhead! rs (+ ahead0 extra))
-                     (let [cap (flow-layout! rs layout c :capture)]
+                     (let [cap (flow-layout! rs layout c)]
                        (.-overscanAhead! rs ahead0)
                        cap)))
         pure-live-src (if indexed
-                        (do (.-segAnchor! rs nil)
-                            (indexed-layout! rs layout c)
+                        (do (indexed-layout! rs layout c)
                             (tw/indexed-frame-source layout))
                         (tw/frozen-frame-source
                          (live-only-flow-window rs layout c (double (:extent flow-cap)))))
@@ -3134,7 +3217,7 @@
                                      segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     0.0 nil 0 (or dyingSlots []))]
+                                     :resting 0.0 nil 0 (or dyingSlots []))]
       (set-tween-anim! rs tweenAnim)
       rs))
 

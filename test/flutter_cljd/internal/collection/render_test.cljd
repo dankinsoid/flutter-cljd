@@ -75,12 +75,16 @@
 (deftest commit-prune-only-between-segments
   (testing "a playing segment exempts everything — no prune mid-segment, so
             active participants and the `from` capture survive to segment end"
-    (is (false? (render/commit-prune? true false)))
-    (is (false? (render/commit-prune? true true))))
-  (testing "a correction pass defers to its coherent corrected re-run"
+    (is (false? (render/commit-prune? false false)))
     (is (false? (render/commit-prune? false true))))
+  (testing "a correction pass defers to its coherent corrected re-run"
+    (is (false? (render/commit-prune? true true))))
   (testing "a resting, correction-free pass prunes"
-    (is (true? (render/commit-prune? false false)))))
+    (is (true? (render/commit-prune? true false))))
+  (testing "only :resting carries the capability"
+    (is (true? (render/pass-allows? :resting :prune-commit?)))
+    (doseq [m [:settled :capture :segment]]
+      (is (false? (render/pass-allows? m :prune-commit?))))))
 
 ;; --- widen-window-indices ---
 
@@ -512,16 +516,49 @@
       (is (true? (render/refine-suppressed? 1 4000.0 sup vf)))    ; fast downward
       (is (true? (render/refine-suppressed? 0 5000.0 sup vf))))))  ; fast, sign not yet resolved
 
+;; --- pass mode: the single owner of segment-ness ---
+
+(deftest pass-mode-mirrors-the-dispatch
+  (testing "no tween-anim ⇒ resting, whatever segment state lingers"
+    (is (= :resting (render/pass-mode false 3 3 true false)))
+    (is (= :resting (render/pass-mode false 3 -1 false false))))
+  (testing "a bumped gen is the capture pass, even over a built tween"
+    (is (= :capture (render/pass-mode true 4 3 true false))))
+  (testing "no built tween, or a window outside the frozen :domain, settles"
+    (is (= :settled (render/pass-mode true 3 3 false false)))
+    (is (= :settled (render/pass-mode true 3 3 true true))))
+  (testing "otherwise the frozen segment drives the pass"
+    (is (= :segment (render/pass-mode true 3 3 true false)))))
+
+(deftest pass-caps-cover-every-mode
+  (let [caps (keys (get render/pass-caps :resting))]
+    (testing "every mode answers every capability — a missing row would read as OFF"
+      (doseq [m [:resting :settled :capture :segment] cap caps]
+        (is (contains? (get render/pass-caps m) cap))))
+    (testing "the capture boundary: no emission, no refinement, no measurement feed"
+      (doseq [cap [:emit-rebase? :refine? :origin-refine? :overscan? :prune-commit?
+                   :measure-feed? :tripwire? :canonical-assert? :epilogue-asserts?
+                   :set-point? :seg-tail?]]
+        (is (false? (render/pass-allows? :capture cap))))
+      (is (true? (render/pass-allows? :capture :union-window?))))
+    (testing "a settled pass is a resting pass for measurement and the rebase asserts"
+      (doseq [cap [:emit-rebase? :measure-feed? :tripwire? :epilogue-asserts?]]
+        (is (true? (render/pass-allows? :settled cap)))))
+    (testing "only a live segment drives the set-point"
+      (is (true? (render/pass-allows? :segment :set-point?)))
+      (doseq [m [:resting :settled :capture]]
+        (is (false? (render/pass-allows? m :set-point?)))))))
+
 (deftest refine-emission-exclusive-with-segment
   (testing "resting, still pass emits"
-    (is (true? (render/refine-emit? false false))))
+    (is (true? (render/refine-emit? true false))))
   (testing "a playing segment never emits refinement, even at rest —
             the WS1.3 segment correction owns the pass (mutual exclusivity)"
-    (is (false? (render/refine-emit? true false))))
+    (is (false? (render/refine-emit? false false))))
   (testing "suppressed resting pass defers"
-    (is (false? (render/refine-emit? false true))))
+    (is (false? (render/refine-emit? true true))))
   (testing "suppressed segment pass defers on both counts"
-    (is (false? (render/refine-emit? true true)))))
+    (is (false? (render/refine-emit? false true)))))
 
 ;; --- origin corrections fire while flinging (#B: gap above item 0 during a fast up-fling) ---
 (deftest origin-refine-emit-ignores-velocity
@@ -532,16 +569,16 @@
   ;; refinement they must NOT be deferred by ballistic velocity, or a gap opens
   ;; above item 0 during a fast up-fling and only closes at deceleration (#B).
   (testing "origin corrections emit regardless of velocity / direction"
-    (is (true? (render/origin-refine-emit? false))))    ; resting flow pass
+    (is (true? (render/pass-allows? :resting :origin-refine?))))
   (testing "a playing segment still owns the pass — origin corrections defer (WS1.3)"
-    (is (false? (render/origin-refine-emit? true))))
+    (doseq [m [:settled :capture :segment]]
+      (is (false? (render/pass-allows? m :origin-refine?)))))
   (testing "the split is real: at a fast up-fling SEAM refinement is suppressed but
             the origin correction still fires"
-    (let [seg? false
-          suppressed? (render/refine-suppressed? -1 4000.0 120.0 3200.0)]  ; fast up
+    (let [suppressed? (render/refine-suppressed? -1 4000.0 120.0 3200.0)]  ; fast up
       (is (true? suppressed?))
-      (is (false? (render/refine-emit? seg? suppressed?)))   ; seam refinement deferred
-      (is (true? (render/origin-refine-emit? seg?))))))       ; origin clamp still fires
+      (is (false? (render/refine-emit? (render/pass-allows? :resting :refine?) suppressed?)))
+      (is (true? (render/pass-allows? :resting :origin-refine?))))))
 
 ;; wrap fixture: cross-extent 200, items 90x40 ⇒ 2 per run, run pitch 40.
 ;; Truth: index i at offset 40*(i div 2), cross 90*(i mod 2).
@@ -1089,8 +1126,8 @@
         truth (tw/flow-run-entries wrapl drift-env (wrap-sized 0 8) ((:init wrapl) drift-env))
         ws 40.0]
     (testing "the driven flight really is the suppressed+origin-open regime"
-      (is (false? (render/refine-emit? false suppressed?)))
-      (is (true? (render/origin-refine-emit? false))))
+      (is (false? (render/refine-emit? (render/pass-allows? :resting :refine?) suppressed?)))
+      (is (true? (render/pass-allows? :resting :origin-refine?))))
     (testing "the frozen walk leaves index 0 at the constant negative residual —
               the whole leading-extent underestimate, carried down intact"
       (is (= -60.0 z0))     ; approx(6)=60 vs truth 120
@@ -1101,7 +1138,7 @@
     (testing "correction loop reaches fixpoint in <= 2 passes, emitting exactly once"
       (let [result
             (loop [^int pass 1 ^double z z0 emitted? false corrs []]
-              (case (render/landing-decision z (render/origin-refine-emit? false) emitted?)
+              (case (render/landing-decision z (render/pass-allows? :resting :origin-refine?) emitted?)
                 :converged {:passes pass :corrs corrs}
                 :emit
                 (let [^double corr (- z)

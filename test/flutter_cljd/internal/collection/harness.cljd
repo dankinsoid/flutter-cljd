@@ -439,6 +439,7 @@
      :cur-gen (.-curGen rs)                :seg-gen (.-segGen rs)
      :seg-anchor (.-segAnchor rs)          :view-anchor (.-viewAnchor rs)
      :tweening? (some? (.-tweenAnim rs))   :vel (.-velocityEMA rs)
+     :pass-mode (.-passMode rs)
      :pass-materialized (.-passMaterialized rs)
      :checkpoints (sort (keys (.-checkpoints rs)))
      :committed-n (count (.-committed rs))
