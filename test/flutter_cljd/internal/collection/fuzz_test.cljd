@@ -182,17 +182,25 @@
 (defn- ^bool anchor-guarded?
   "Ops that must not move content. Only even positions are guarded: the guard
    settles, and settling after EVERY layout swap would erase mid-segment
-   coverage — the state where ops interrupt a running morph."
-  [op ^int i ^int wmin]
+   coverage — the state where ops interrupt a running morph.
+
+   `end-pinned?` says `pixels` is resting ON `maxScrollExtent`. There an op that
+   SHRINKS the content — a removal, or a morph to a denser layout — drags the
+   viewport back with the collapsing range, so the top item legitimately changes
+   and O6 has nothing to say. An insert only grows the range, so it stays guarded
+   even at the end."
+  [op ^int i ^int wmin ^bool end-pinned?]
   (and (even? i)
        (let [k (nth op 0)]
          (case k
-           :layout true
+           :layout (not end-pinned?)
            :insert (< ^int (nth op 1) wmin)
-           :remove (< ^int (nth op 1) wmin)
+           :remove (and (not end-pinned?) (< ^int (nth op 1) wmin))
            false))))
 
-(def jump-ops #{:jump :to-top :animate-top})
+(defn- ^bool end-pinned? [rig]
+  (let [lim (h/scroll-limits rig)]
+    (>= ^double (h/offset rig) (- ^double (:max lim) h/eps-geom))))
 
 (defn- ^bool out-of-range? [rig]
   (let [lim (h/scroll-limits rig)
@@ -205,16 +213,20 @@
    the spring walk it back. Those frames are the op's own tail, not a finding —
    the wait is bounded, so an offset that never re-enters the range still fails O5.
 
+   Runs after EVERY op, not only the jumps: a drag that ends past a boundary is
+   released into the same ballistic settle, `fling`/`fling-catch` pump a fixed 8
+   frames that need not cover it, and any op that moves `maxScrollExtent` — a
+   count change, a rotation, a morph — restarts the spring under a resting offset.
+
    150 frames (2.4 s), not 45: a jump past the end of an :approximate-item-size
    collection lands on an ESTIMATED `maxScrollExtent` that keeps moving for ~25
    frames as measured tail cells replace the estimate, and every move restarts the
    boundary spring. The observed worst case converges at frame 68."
-  [rig op]
-  (when (contains? jump-ops (nth op 0))
-    (loop [k 0]
-      (when (and (< k 150) (out-of-range? rig))
-        (await (h/pump! rig 16))
-        (recur (inc k)))))
+  [rig]
+  (loop [k 0]
+    (when (and (< k 150) (out-of-range? rig))
+      (await (h/pump! rig 16))
+      (recur (inc k))))
   nil)
 
 (defn- oracles-of [vs] (vec (distinct (map (fn [x] (:oracle x)) vs))))
@@ -236,9 +248,9 @@
   (let [rest? (h/at-rest? rig)
         ^int wmin (window-min rig)
         before (when rest? (h/top-anchor rig))
-        guard? (and (some? before) (anchor-guarded? op i wmin))]
+        guard? (and (some? before) (anchor-guarded? op i wmin (end-pinned? rig)))]
     (await (h/apply-op! rig op))
-    (await (boundary-settle! rig op))
+    (await (boundary-settle! rig))
     (let [vs (await (h/check! rig {:op-index i :op op}))]
       (cond
         (seq vs) (fail rig :check i op vs)

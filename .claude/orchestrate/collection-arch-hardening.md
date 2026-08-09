@@ -120,6 +120,15 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   no correction to force a re-run, so the pass would end with the window unplaced.
   The repair is the re-anchor ALIGNMENT (`:run-start`), which keeps the retained
   head's run and leaves the leading margin approximate. (by: step-9c)
+- 2026-08-09: rebase-design open Q3 (count-change fallback when the anchor's child
+  does NOT survive) resolved by measurement, not argument: the `:churn` profile —
+  layouts starved, `:animate?` forced, `:remove-anchor` deleting the item the key
+  re-anchor looks for — produced no churn-only signature in 40 episodes. Not a
+  distinct defect class. (by: step-10)
+- 2026-08-09: O9's mid-segment `cache-n` bound is left miscalibrated on purpose.
+  Every candidate denominator that admits a landing's collapsed attached window
+  also admits NEW-13's `pass-materialized 403`; the honest fix is a separate
+  per-pass WORK probe, deferred as oracle design. (by: step-10)
 - 2026-08-09: layouts gain an optional `:run-start (fn [env state] double)` — the
   next independent run's main offset. `:flow-end` answers where the next CHILD may
   land, which inside an open run is the run's own start, so it cannot express the
@@ -128,8 +137,11 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   masonry keeps the fallback. (by: step-9c)
 
 ## Open questions
-- (none user-level; rebase-design's 5 technical open questions resolved by step-9
-  implementers per the design doc's own leanings, recorded in Decisions log)
+- **Step 11 is blocked on step 10's NEW-9** (17 seeds, all four profiles, 3-op
+  repro): the capture pass produces a rebase while `segAnchor` is nil, so stage
+  2/3's exactly-once absorption contract does not hold. Capture-mode's
+  "rebase returned as a value" presumes that channel. Decide: close NEW-9 first,
+  or re-design step 11 around a possibly-absent channel. (raised by: step-10)
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -143,13 +155,82 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
 - [x] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
 - [x] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
-- [ ] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
+- [x] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
 - [ ] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 10. Fuzz re-campaign + verification + TEMP cleanup
+- Status: done (commits f609581, 1586454, + this step's test/doc commits)
+- Files changed: render.cljd (TEMP revert only — no engine fix); fuzz_test.cljd
+  (`:churn` profile, `:remove-anchor` op kind, 10 new batch deftests, two oracle
+  recalibrations), harness.cljd (`remove-anchor!` + its `apply-op!` arm),
+  fuzz_red_test.cljd (5 new reds + `:churn` in `profile-of`), render_test.cljd
+  (masonry leading-gap red), fuzz-findings.md (Campaign 2 section).
+- Suite: default `-x "known-red || fuzz"` **312** green (unchanged — every new
+  test is tagged). `-t known-red` **0 → 6**, all six added by this step.
+  `bin/check` clean. Campaign runtime 74 s of `flutter test`.
+- **Campaign 2**: 220 episodes (22 batches x 10 seeds) over four profiles —
+  `:full` 1-60, `:no-layout` 101-160, `:no-jump` 201-260 (campaign-1 ranges kept
+  as ratchets, plus 20 fresh seeds each) and the new `:churn` 301-340.
+  55 failing episodes raw, **43** after two fuzzer recalibrations, in **7**
+  classes. Campaign 1 was 62/120. known-A, known-B's plain form and NEW-1..NEW-5,
+  NEW-7 did NOT return; 9c's `:no-jump` `:o4 wrap-run-pitch` watch item did not
+  reappear either.
+- **STOP-worthy — NEW-9, `capture produced rebase N with no absorption channel
+  (segAnchor nil)`.** 17 seeds, ALL FOUR profiles, reduced by six independent
+  seeds to the same three ops: a cache invalidator (count or cross change) → a
+  motion op → a morph. This is stage 2/3's OWN exactly-once contract failing, so
+  the invariant step 9 was built to establish does not hold. `viewAnchor` being
+  non-nil (9a stage 1) does not make `segAnchor` RESOLVABLE: traced state has
+  `viewAnchor {:idx 242}` against `cacheFirst 250`, so the frozen `to` lookup
+  answers nil and the rebase is discarded — step 5's link (c) in a new dress. In
+  release the assert compiles out and the content simply does not follow.
+  **Blocks step 11**: capture-mode returns the rebase as a VALUE, which presumes
+  the channel this class proves absent. Not fixed here (step 10 is verification).
+- Other engine classes, red-tested, each verified standalone first:
+  NEW-10 (`:o6`, 4 seeds) a morph preserves the consumed fraction to 1e-15 and
+  applies it to the anchor's NEIGHBOUR — 9b's set-point is right, its slot
+  resolution is off by one. NEW-11 (`:o6`, seed 16) known-B's shape returns when
+  a far jump precedes the above-window insert; the re-anchor holds the index, not
+  the key. NEW-12 (`:o5`, 6 seeds) a cross change advertises a scrollExtent below
+  the content of the same frame — stage 3 closed this for the flow capture path
+  only. NEW-13 (`:o9`, 5 seeds) a morph after a far jump caches ~370-403 of 600
+  items with `pass-materialized` equal to it — NEW-7 minus the count-change
+  adjacency its diagnosis relied on, so the stage-5 `:domain` settle misses it.
+  Recorded without reds (single seed, long vector): `:o4 hole` seed 110,
+  `:o6 intra-drift` seed 55, a Flutter `sliver.dart` assert at seed 251.
+- Oracle miscalibrations fixed (both fuzzer-side, both traced before changing):
+  (1) `boundary-settle!` ran only after jump ops, so a drag/fling released past a
+  boundary was sampled mid-spring — 10 false `:o5`; it now runs after every op.
+  (2) the O6 anchor guard fired on removals taken with `pixels` resting ON
+  `maxScrollExtent`, where the shrinking range legitimately drags the viewport —
+  3 false `:o6`; `:remove`/`:layout` are unguarded there, `:insert` still guarded.
+  **Left alone deliberately**: O9's mid-segment `cache-n` denominator is
+  `8*attached+64` with attached collapsed to 1 by a landing — the same problem
+  step 7 fixed for `committed-n` — but every candidate loosening also masks
+  NEW-13's genuine `pass-materialized 403`. The fix is a separate per-pass WORK
+  probe, which is oracle design; recorded in fuzz-findings.md.
+- **rebase-design open Q3 answered (negative)**: the `:churn` profile — layout
+  starved, `:animate?` forced, `:remove-anchor` deleting the very item the key
+  re-anchor looks for — produced 6 failures in 40 episodes and NOT ONE
+  churn-only signature. The count-change fallback when the anchor's child does
+  not survive is not a distinct defect class; mid-segment count changes surface
+  NEW-9, the same class every other profile does.
+- 9c's latent masonry gap is now pinned: `known-red-leading-step-masonry-backs-off
+  -by-the-run-gap` (pure kernel test) — masonry has no `:run-start` and its
+  `:flow-end` answers the head, so `leading-step-entry` returns offset 950.0 where
+  944.0 is correct, dropping `:main-axis-spacing`. No harness oracle covers it:
+  the estimated cell only TOUCHES the head, so O4 sees neither overlap nor hole.
+- Next-step impact: step 11 must not start on NEW-9's premise. Either NEW-9 is
+  closed first (a segAnchor resolution that cannot answer nil while a rebase is
+  outstanding, or an absorption arm that does not need one), or step 11's
+  rebase-as-value contract is re-designed around a channel that may be missing.
+  NEW-10/11/13 all point at the same seam — slot/key resolution against a cache
+  the same pass re-seeded — and are worth fixing as one group rather than singly.
 
 ### 9c. Wrap kernel fixes NEW-2/NEW-3
 - Status: done (commits f3d8d54, 7899ef3 — one per fix, bisectable)

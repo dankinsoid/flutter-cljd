@@ -294,6 +294,145 @@ being treated as an engine bug.**
 
 ---
 
+---
+
+# Campaign 2 (step 10, 2026-08-09) — post-rebase re-campaign
+
+Run after rebase stages 0-9 (9a/9b/9c) and the TEMP-instrumentation revert.
+
+| | |
+|---|---|
+| Episodes | **220** (22 `deftest` batches x 10 seeds) |
+| Profiles | `:full` 1-60, `:no-layout` 101-160, `:no-jump` 201-260, **`:churn` 301-340** |
+| Failing episodes | 55 raw → **43** after two fuzzer recalibrations (campaign 1: 62/120) |
+| Distinct classes | **7** (5 red-tested as NEW-9..NEW-13, 2 singletons recorded only) |
+| Runtime | 74 s of `flutter test`, ~4 min wall incl. the ClojureDart recompile |
+
+**Campaign-1 signatures that did NOT return**: known-A, known-B's plain form,
+NEW-1..NEW-5, NEW-7. Their ratchet tests stay green and their campaign-1 seeds
+now run to completion. The `:no-jump` `:o4 wrap-run-pitch` shape 9c flagged as a
+watch item did **not** reappear — the frozen seam's loose leading margin is
+inside the oracle's tolerance.
+
+**`:churn` profile** (new): `:layout` starved and `:animate?` forced on, so a
+count change is the only segment opener and the next one lands mid-segment. Its
+`:remove-anchor` op deletes the item the key re-anchor looks for. 6 of its 40
+episodes failed, all reproducing classes the other profiles also produce — no
+churn-only signature, which answers rebase-design open Q3 in the negative: the
+count-change fallback when the anchor's child does not survive did not produce a
+class of its own.
+
+## NEW-9 — the capture pass produces a rebase with no absorption channel
+
+- Oracle: `:o1`, the stage-3 absorption assert
+  (`capture produced rebase N with no absorption channel (segAnchor nil)`).
+- **17 seeds, all four profiles** — the single largest class, and the only one
+  whose tripwire did not exist before step 9a.
+- Shrunk to **3 ops** by six independent seeds, one shape:
+  ```clojure
+  [[:remove 222] [:drag 1211.795711517334] [:layout :list]]     ; seed 256
+  [[:cross 900.0] [:drag 897.3258590698242] [:layout :wrap]]    ; seed 250
+  [[:insert 467 900005] [:fling 6780.926990509033] [:layout :list]] ; seed 228
+  ```
+  A cache invalidator (count change or cross change) → a motion op → a morph.
+- Red: `known-red-fuzz-capture-rebase-has-no-absorption-channel` (seed 256;
+  reproduced standalone 3/3 across three seeds).
+- **Classification: STOP-worthy.** The assert is 9a stage-2/3's own exactly-once
+  contract, so the invariant step 9 set out to establish does not hold. The
+  underlying condition (a produced rebase that `segAnchor` cannot carry) is
+  step 5's link (c) in a new dress — 9a made `viewAnchor` non-nil while children
+  exist, but a non-nil `viewAnchor` does not guarantee a RESOLVABLE `segAnchor`:
+  traced state shows `viewAnchor {:idx 242}` against `cacheFirst 250`, i.e. the
+  anchor index is outside the capture pass's own re-seeded cache, so the frozen
+  `to` lookup answers nil. In release the assert is compiled out and the rebase
+  is silently discarded — the far-morph symptom class.
+- Not fixed here (step 10 is verification only). It blocks step 11: the
+  capture-mode design returns the rebase as a VALUE, which presumes a channel.
+
+## NEW-10 — a morph holds the fraction exactly and applies it to the next item
+
+- Oracle: `:o6` `key-moved`. Seeds 241, 207, 52, 235.
+- Shrunk (seed 241, `:no-jump`, `:list` -> `:grid`) — 5 ops:
+  ```clojure
+  [[:drag 770.4910182952881] [:fling 1578.5015106201172]
+   [:drag 739.6548843383789] [:pump 1] [:layout :grid]]
+  ```
+  `before {:key 22 :frac 0.6774226815552667}` -> `after {:key 21 :frac 0.6774226815552665}`
+- The consumed fraction is preserved to 1e-15 — 9b's stage-4 set-point works —
+  but it is applied to the anchor's NEIGHBOUR, so the slot resolution is off by
+  one. Distinct from NEW-1, whose fraction was not preserved at all.
+- Red: `known-red-fuzz-morph-slides-anchor-one-item`.
+
+## NEW-11 — known-B's shape returns when a far jump precedes the insert
+
+- Oracle: `:o6` `key-moved`. Seed 16 (known-B's own campaign-1 seed).
+- Shrunk — the `[:jump 17467.40162372589] [:insert 74 900008]` adjacency is
+  load-bearing; the same insert without the jump is green (9b's ratchet).
+  `before {:key 383 :index 384}` -> `after {:key 382 :index 384}`, intra
+  identical: the re-anchor held the INDEX, not the key.
+- Red: `known-red-fuzz-insert-above-window-after-far-jump`.
+
+## NEW-12 — a rotation advertises a scrollExtent below the content it laid
+
+- Oracle: `:o5` `extent-below-content`. Seeds 4, 17, 23, 38, 140, 322.
+- Shrunk (seed 4, `:full`) — 4 ops:
+  ```clojure
+  [[:cross 400.0] [:jump 17421.205043792725] [:drag 3253.394079208374] [:cross 640.0]]
+  ```
+  `scroll-extent 27192.0` vs `last-end 32392.0`; seed 38 is worse (19288 vs 46048).
+- Same oracle as step 5's `far-morph-capture-extent-truncated`, which stage 3
+  closed for the flow capture path. The cross-change path still under-advertises.
+- Red: `known-red-fuzz-rotation-extent-covers-laid-content`.
+
+## NEW-13 — a morph after a far jump still caches most of the dataset
+
+- Oracle: `:o9` `unbounded` on `cache-n`. Seeds 37, 222, 220, 2, 29.
+- Shrunk (seed 37, `:full`) — 5 ops:
+  ```clojure
+  [[:remove 45] [:layout :list] [:jump 20821.444988250732] [:layout :wrap] [:remove 131]]
+  ```
+  `cache-n 370-403` against a limit of 72, with `pass-materialized` equal to it —
+  genuine per-pass work, not retention.
+- NEW-7's shape minus the count-change adjacency its diagnosis relied on, so the
+  stage-5 `:domain` settle does not cover it.
+- Red: `known-red-fuzz-morph-after-far-jump-stays-window-bounded`.
+
+## Recorded, not red-tested (single seed, long vector)
+
+- `:o4 hole` at seed 110 (`:no-layout`, 9 ops, ends on a drag after a far jump).
+- `:o6 intra-drift` at seed 55 (`:full`, 7 ops, ends on an above-window insert).
+- Flutter's `sliver.dart` assert at seed 251 (`:no-jump`, masonry, 8 drags) —
+  NEW-5's neighbourhood, but a different assert line.
+
+## Open calibration question — O9's mid-segment `cache-n` denominator
+
+4 of the 9 `:o9` failures are `committed-n` 3-11 % over its bound and 4 more are
+`cache-n` over a limit of 72, i.e. `8 * attached + 64` with **one** attached
+child: mid-segment a landing collapses the attached window, which is exactly the
+denominator problem step 7 fixed for `committed-n` and not for `cache-n`.
+Loosening it was rejected here — every candidate denominator
+(`max(attached, cache-n)`, `max(attached, pass-materialized)`, `committed-n`)
+also masks seed 37's genuine `pass-materialized 403`. The strengthening move is
+to give O9 a separate per-pass WORK probe on `pass-materialized` and let the
+retention bounds relax; that is oracle design, deferred out of step 10.
+
+## Fuzzer recalibrations (step 10)
+
+6. `boundary-settle!` ran only after the jump ops, so a drag or fling released
+   past a boundary — and any op that MOVES `maxScrollExtent` under a resting
+   offset — was sampled mid-spring. 10 false `:o5 pixels-out-of-range` seeds;
+   two were traced converging exactly onto the boundary (seed 123 −525 → 0.0,
+   seed 23 8740 → 8578 = max). The bounded wait now runs after every op.
+7. The O6 anchor guard fired on count changes taken with `pixels` resting ON
+   `maxScrollExtent`, where a REMOVAL shrinks the range and drags the viewport
+   with it — the top item legitimately changes (seed 105: max 18334.84 → 18033.84,
+   `pixels` clamped with it). 3 false `:o6` seeds. `:remove` and `:layout` are
+   now unguarded at the end of the range; `:insert` stays guarded, since growth
+   never forces a clamp. Coverage note: a bottom-pinned anchor is now unguarded
+   for those two ops, which is why seed 146's genuine engine miss (insert above
+   the window at `pixels == max`, index held) is recorded here rather than caught
+   by the guard.
+
 ## Harness / fuzzer defects found and fixed
 
 1. `make-rig` reused the previous rig's element subtree (`KeyedSubtree` key was

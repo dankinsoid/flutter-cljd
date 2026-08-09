@@ -20,6 +20,19 @@
      clojure -M:cljd test -- -x \"known-red || fuzz\"   # green baseline
      clojure -M:cljd test -- -t known-red              # the reds only
 
+   Step 10's re-campaign (220 episodes over four profiles) added NEW-9..NEW-13.
+   NEW-9 leads: 17 seeds across all four profiles reduce to three ops — a cache
+   invalidator (count or cross change), a drag, then a morph — after which the
+   capture pass produces a rebase while `segAnchor` is nil, so the stage-3
+   absorption contract has no channel to publish it through. NEW-10..NEW-13 are
+   the residuals of signatures steps 9b/9c closed in their primary form:
+   the set-point preserves the consumed fraction exactly and then applies it to
+   the neighbouring item (NEW-10); known-B's re-anchor holds the INDEX again once
+   a far jump precedes the insert (NEW-11); a rotation advertises a scrollExtent
+   below the content of the same frame (NEW-12); and a morph following a far jump
+   still caches most of the dataset without the count-change adjacency NEW-7
+   needed (NEW-13).
+
    Confirmed diagnoses (step 7; the fixes belong to steps 8-11):
 
    NEW-1 (FIXED, stage 4) `segAnchor` translated the anchor slot rigidly by
@@ -71,7 +84,8 @@
   [^int seed]
   (cond (< seed 100) :full
         (< seed 200) :no-layout
-        :else :no-jump))
+        (< seed 300) :no-jump
+        :else :churn))
 
 (defn- header-for [^int seed]
   (nth (fz/gen-episode seed (profile-of seed) fz/fuzz-items fz/episode-len) 0))
@@ -180,6 +194,69 @@
                              [:insert 2 900010]]))]
     (is (nil? f) (str "known-B an insert above the window slid the content under "
                       "the viewport top:" (fail-str f)))))
+
+;; --- step-10 campaign-2 signatures ---
+
+(deftest known-red-fuzz-capture-rebase-has-no-absorption-channel
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 256
+                            [[:remove 222]
+                             [:drag 1211.795711517334]
+                             [:layout :list]]))]
+    (is (nil? f) (str "NEW-9 the capture pass produced a rebase the segment has "
+                      "nowhere to absorb (segAnchor nil):" (fail-str f)))))
+
+(deftest known-red-fuzz-morph-slides-anchor-one-item
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 241
+                            [[:drag 770.4910182952881]
+                             [:fling 1578.5015106201172]
+                             [:drag 739.6548843383789]
+                             [:pump 1]
+                             [:layout :grid]]))]
+    (is (nil? f) (str "NEW-10 a list->grid morph held the consumed FRACTION exactly "
+                      "but applied it to the neighbouring item:" (fail-str f)))))
+
+(deftest known-red-fuzz-insert-above-window-after-far-jump
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 16
+                            [[:drag 601.3305759429932]
+                             [:pump 4]
+                             [:insert 33 900002]
+                             [:settle]
+                             [:pump 1]
+                             [:settle]
+                             [:fling-catch -1939.0419006347656 65]
+                             [:jump 17467.40162372589]
+                             [:insert 74 900008]]))]
+    (is (nil? f) (str "NEW-11 known-B's shape survives a far jump: the re-anchor "
+                      "held the INDEX, not the key:" (fail-str f)))))
+
+(deftest known-red-fuzz-rotation-extent-covers-laid-content
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 4
+                            [[:cross 400.0]
+                             [:jump 17421.205043792725]
+                             [:drag 3253.394079208374]
+                             [:cross 640.0]]))]
+    (is (nil? f) (str "NEW-12 the frame advertised a scrollExtent below the content "
+                      "it had just laid out:" (fail-str f)))))
+
+(deftest known-red-fuzz-morph-after-far-jump-stays-window-bounded
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 37
+                            [[:remove 45]
+                             [:layout :list]
+                             [:jump 20821.444988250732]
+                             [:layout :wrap]
+                             [:remove 131]]))]
+    (is (nil? f) (str "NEW-13 NEW-7's shape without the count change adjacency: one "
+                      "pass cached most of the dataset:" (fail-str f)))))
 
 ;; --- reclassified in step 7: green, and guarding the recalibrations ---
 
