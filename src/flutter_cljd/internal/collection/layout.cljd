@@ -324,6 +324,10 @@
                  (assoc heights col (+ off (size-main env size) rsp))]))
      :flow-end (fn [_env heights]
                  (reduce (fn [^double a ^double b] (if (< b a) b a)) heights))
+     ;; :anchor levels the columns, so the next independent run line is the
+     ;; furthest column end (heights already carry the trailing gap)
+     :run-start (fn [_env heights]
+                  (reduce (fn [^double a ^double b] (if (> b a) b a)) heights))
      :anchor (fn [_env _i ^double offset] (vec (repeat n offset)))
      ;; No :renewal-point? — a column pack has no cheap exact boundary, so the
      ;; engine falls back to periodic full-:state checkpoints (docs §2.1).

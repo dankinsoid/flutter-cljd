@@ -616,12 +616,16 @@
                                    ((:anchor gapped) wrap-env 4 80.0))]
         (is (= 46.0 (:align-delta (render/refine-seam gapped wrap-env 5 (ui/Size 90 40)
                                                       (:state (peek e)) 80.0 0.0))))))
-    (testing "a layout without run structure reports no alignment"
+    (testing "masonry aligns on its run line — the furthest column end"
       (let [ml (lay/masonry-layout {:cross-axis-count 2})
             menv {:axis :vertical :cross-extent 200.0 :item-count 12}
             mseed ((:anchor ml) menv 4 80.0)]
-        (is (nil? (:align-delta (render/refine-seam ml menv 5 (ui/Size 90 40)
-                                                    mseed 80.0 0.0))))))))
+        ;; level columns at the head are already aligned
+        (is (= 0.0 (:align-delta (render/refine-seam ml menv 5 (ui/Size 90 40)
+                                                     mseed 80.0 0.0))))
+        ;; an uneven prefix must clear its TALLEST column before the head's line
+        (is (= 40.0 (:align-delta (render/refine-seam ml menv 5 (ui/Size 90 40)
+                                                      [120.0 80.0] 80.0 0.0))))))))
 
 (deftest refinement-telescopes-to-true-residual
   ;; A window estimated 170px below truth converges in two refinement steps:
@@ -935,9 +939,8 @@
         (is (= (:offset e) (:offset (nth walk 0))))
         (is (= head (:offset (nth walk 1))))))))
 
-(deftest known-red-leading-step-masonry-backs-off-by-the-run-gap
-  :tags [:known-red]
-  ;; masonry has no :run-start, and its :flow-end answers `head` (NEW-3's shape)
+(deftest leading-step-masonry-backs-off-by-the-run-gap
+  ;; masonry's :flow-end answers `head` (NEW-3's shape); :run-start carries the gap
   (let [rsp 6.0
         env {:axis :vertical :cross-extent 300.0 :item-count 2200}
         masonry (lay/masonry-layout {:cross-axis-count 2
@@ -947,9 +950,8 @@
         ext 50.0
         size (ui/Size 150.0 ext)
         e (render/leading-step-entry masonry env 41 head size ext 1200.0)]
-    (testing ":anchor seeds every column at `head`, so :place fills column 0 and
-              :flow-end still answers `head`; adv collapses to `ext` and the cell
-              packs flush against the head, dropping :main-axis-spacing"
+    (testing ":run-start (furthest column end) carries the main-axis gap the
+              :flow-end back-off dropped"
       (is (= (- head ext rsp) (:offset e))))
     (testing "the cell must end exactly one main-axis gap above the head — the
               only cell it touches is the head, so O4 sees neither overlap nor hole
