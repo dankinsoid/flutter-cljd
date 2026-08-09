@@ -136,12 +136,54 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   alignment). Defined for wrap; list's `:flow-end` already is its run start and
   masonry keeps the fallback. (by: step-9c)
 
+- 2026-08-09: NEW-9's durable rule (step 10b): (a) viewAnchor samples the
+  DISPLAYED frame after EVERY pass, mid-segment included — the "pre-segment
+  truth" gate is wrong the moment the user scrolls during a live segment, and
+  the displayed frame is the same frame `committed` records, so the anchor and
+  the next segment's `from` capture stay coherent; (b) the :absorb arm is
+  TOTAL: when no anchor resolves, a produced capture rebase is absorbed as a
+  pure shift over the first placed slot (desired telescopes to exactly the
+  rebase). The emit-from-capture alternative was rejected — a correction would
+  rebase scrollOffset while the tween's `from` side stays in the old frame;
+  forcing the capture window to cover a stale anchor slot would re-open the
+  O(gap) walk. (by: step-10b)
+- 2026-08-09: O6's subject is the BEFORE key's own child, never the reported
+  top child: in a multi-column target the viewport top is a SET of row-mates
+  sharing one span, and `top-anchor` reports its lowest index. Both campaign-2
+  :o6 key-moved classes (NEW-10, NEW-11) were the engine holding the anchor's
+  fraction point exactly while O6 compared representative keys. (by: step-10b)
+- 2026-08-09: O5's extent-below-content bounds its content scan to children
+  starting within pixels + 2 viewports: a far-moving segment pre-materializes
+  its END window at target offsets past the lerping extent by design (NEW-12's
+  cross-change segment was healthy — the set-point followed the anchor row into
+  the re-packed grid). At rest the horizon covers the whole retained band, so
+  the step-5 truncation class keeps its oracle. (by: step-10b)
+- 2026-08-09: the measured aggregates are ENGINE-level truth, not a flow-driver
+  cache: indexed resting passes feed them too, and the gate is `segTween` nil
+  (9b's lesson) — a domain-settled pass under a playing clock must feed the EMA
+  or the next capture's `:approx-offset` has no size basis. A basis-less
+  estimate (`:avg-main` absent) is rejected by the cross-layout re-anchor:
+  spacing-only arithmetic is not an estimate (NEW-13 link 2). (by: step-10b)
+- 2026-08-09: the far-window seed is decided by GEOMETRY alone, never by what
+  happens to be attached: pre-gc! can only drop a prefix, so cacheless
+  leftovers (kept leave-slides past the band) survive it and must not veto the
+  inverse seed — cache is an accelerator, never the algorithm (NEW-13 link 3).
+  (by: step-10b)
+- 2026-08-09: masonry defines `:run-start` = max(heights) — per the contract's
+  own words ("what :anchor would be seeded with there"), the level-column
+  anchor's next run line is the furthest column end. Fixes the leading-step
+  run-gap drop and gives refine-seam's cross-stale arm the alignment repair 9c
+  left degraded for masonry. (by: step-10b)
+
 ## Open questions
-- **Step 11 is blocked on step 10's NEW-9** (17 seeds, all four profiles, 3-op
-  repro): the capture pass produces a rebase while `segAnchor` is nil, so stage
-  2/3's exactly-once absorption contract does not hold. Capture-mode's
-  "rebase returned as a value" presumes that channel. Decide: close NEW-9 first,
-  or re-design step 11 around a possibly-absent channel. (raised by: step-10)
+- ~~Step 11 is blocked on step 10's NEW-9~~ **RESOLVED (step 10b)**: NEW-9 is
+  closed; the absorption channel exists whenever a capture produces a rebase
+  (anchor resolution first, pure-shift fallback second), so capture-mode's
+  "rebase returned as a value" premise holds. Campaign-3 shows 0 recurrence.
+- Residual campaign-3 classes (fuzz-findings.md §Campaign 3) are the next
+  triage set: the o6 above-window count-change family (7 seeds, the largest
+  un-triaged engine family), two o5 remove-op extent seeds, and the
+  deliberately-open O9 denominator. None block step 11. (raised by: step-10b)
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -156,12 +198,65 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
 - [x] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
 - [x] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
+- [x] 10b. Close campaign-2 defects (NEW-9..NEW-13 + masonry kernel) — agent: general-purpose, model: fable
 - [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
 - [ ] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 10b. Campaign-2 defect closure
+- Status: done (commits ae01352, a2365e1, dcd3896, 0e22b24, 93ccf4a — one per
+  defect; NEW-10 and NEW-11 share one commit, one shared root: the O6
+  representative-key gap).
+- Files changed: render.cljd (viewAnchor every-pass sampling, total :absorb
+  fallback, EMA gate + indexed feed, basis-less estimate guard, geometric far
+  seed), layout.cljd (masonry `:run-start`), harness.cljd (O6 before-key check,
+  O5 horizon), fuzz_red_test.cljd (5 flips + docstring), render_test.cljd
+  (masonry flip, refine-seam masonry alignment pins), fuzz-findings.md
+  (per-class dispositions + Campaign 3), this plan.
+- Suite: default `-x "known-red || fuzz"` 312 → **318** green after the final
+  commit (each intermediate commit green: 313/315/316/317/318); O7 in-suite
+  each run; `-t known-red` 6 → **0** (empty — every campaign-2 red closed);
+  every flip verified 3x standalone; `bin/check` clean.
+- **NEW-9 (engine, FIXED)** — the exactly-once breach was anchor STALENESS, not
+  resolution: the cache invalidator opens a segment, the motion op drags the
+  viewport mid-segment where the §2.1 gate froze viewAnchor, and the morph's
+  capture consumed an anchor ~1200px behind the window (traced: va {:idx 0}
+  against capture 20..32, rebase 840.5 discarded). Rule in the Decisions log:
+  displayed-frame sampling every pass + a total :absorb arm (pure-shift
+  fallback). Fixing staleness at the source also repairs the OTHER viewAnchor
+  consumer (seed-cache!'s cross-layout re-anchor aims at the anchor slot).
+- **NEW-13 (engine, FIXED, root ≠ NEW-9)** — a three-link starvation chain
+  (EMA gate on tweenAnim; indexed passes never feeding aggregates → wrap
+  estimate degenerating to 30px for index 234, trusted by the re-anchor;
+  attachment vetoing the far-window inverse seed). Each link is its own
+  standing-principle violation; details in fuzz-findings.md.
+- **NEW-10 + NEW-11 (oracle, RECLASSIFIED)** — traced healthy: the set-point
+  resolved the anchor's own slot (by key after the count change) and held its
+  fraction point to 1e-15; the "moved"/"index held" keys were lower-index
+  row-mates of the anchor in the re-packed grid row. O6 now checks the
+  before-key's own child (strict subset of the old failure set — no masking).
+- **NEW-12 (oracle, RECLASSIFIED)** — the cross-change segment was following
+  the anchor row correctly; O5 counted the segment's designed end-window
+  arrivals as under-advertised content. Horizon-bounded now; the guard test
+  settles to verify the honest resting total.
+- **Masonry kernel (FIXED)** — `:run-start` = max(heights); the refine-seam
+  test's nil-alignment pin became value assertions (uneven prefix aligns its
+  tallest column above the head's line).
+- **Campaign-3 recurrence run**: full 220 episodes. Fixed classes: 0
+  recurrence (NEW-9 0/17; 241/207, 16, 4/140, 37/29 all clean). 16 failing
+  batches / 20 distinct seeds remain (campaign-2: 43 episodes), all
+  pre-existing shapes: the deliberately-open O9 denominator (window-scale
+  cache-n/committed-n mid-segment), the o6 above-window count-change family
+  (seed-55/146 shape, 7 seeds — largest un-triaged engine family), two o5
+  remove-op extent seeds, boundary-spring o5 singles, seed-251's sliver.dart
+  assert. Recorded in fuzz-findings.md §Campaign 3.
+- Next-step impact: **step 11 is unblocked** — the rebase-as-value premise
+  holds (channel guaranteed). The o6 count-change family is the natural next
+  triage before/with step 12's anchor-primary design, whose key re-anchor is
+  exactly the machinery those seeds stress.
 
 ### 10. Fuzz re-campaign + verification + TEMP cleanup
 - Status: done (commits f609581, 1586454, + this step's test/doc commits)

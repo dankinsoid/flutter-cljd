@@ -322,6 +322,11 @@ churn-only signature, which answers rebase-design open Q3 in the negative: the
 count-change fallback when the anchor's child does not survive did not produce a
 class of its own.
 
+**Step-10b dispositions (2026-08-09)**: NEW-9 and NEW-13 FIXED (engine),
+NEW-10/NEW-11/NEW-12 RECLASSIFIED (oracle expressiveness, engine traced healthy),
+the masonry kernel red FIXED (`:run-start`). Per-class notes below; residual
+campaign-3 classes at the end of this file.
+
 ## NEW-9 — the capture pass produces a rebase with no absorption channel
 
 - Oracle: `:o1`, the stage-3 absorption assert
@@ -348,6 +353,16 @@ class of its own.
   is silently discarded — the far-morph symptom class.
 - Not fixed here (step 10 is verification only). It blocks step 11: the
   capture-mode design returns the rebase as a VALUE, which presumes a channel.
+- **FIXED (step 10b, ae01352)** — traced: the invalidator OPENS a segment, the
+  motion op drags the viewport mid-segment where viewAnchor was never resampled
+  (the §2.1 "pre-segment truth" gate), and the morph's capture consumed an
+  anchor 1211px stale (`{:idx 0}` vs capture window 20..32). Two-part rule:
+  viewAnchor samples the DISPLAYED frame after every pass (mid-segment
+  included — the same frame `committed` records), and segment-start!'s :absorb
+  arm is total: an anchorless capture that produced a rebase absorbs it as a
+  pure shift over the first placed slot (desired telescopes to the rebase).
+  Green as `fuzz-capture-rebase-has-absorption-channel`; campaign-3: the o1
+  class is gone (0 of 17 seeds).
 
 ## NEW-10 — a morph holds the fraction exactly and applies it to the next item
 
@@ -362,6 +377,17 @@ class of its own.
   but it is applied to the anchor's NEIGHBOUR, so the slot resolution is off by
   one. Distinct from NEW-1, whose fraction was not preserved at all.
 - Red: `known-red-fuzz-morph-slides-anchor-one-item`.
+- **RECLASSIFIED (step 10b, a2365e1) — O6 expressiveness, engine healthy.**
+  Traced: the set-point resolved item 22's OWN grid frame (to-off 1512, row
+  [21,22,23]) and held its fraction point exactly; the reported key 21 is a
+  lower-index ROW-MATE at the same offset — in a multi-column target the
+  viewport top is a SET, and `top-anchor` reports its lowest index. O6 now
+  locates the before-key's own child and verifies ITS fraction point at the top
+  edge (identical strength when the key stays the reported top; a genuine slide
+  still fails as intra-drift). Green as
+  `fuzz-morph-holds-anchor-across-row-grouping`. Seeds 241/207 clean in
+  campaign-3; 52/235 turned out to be different shapes bucketed by :why —
+  above-window count-change slides, see the residuals section.
 
 ## NEW-11 — known-B's shape returns when a far jump precedes the insert
 
@@ -371,6 +397,12 @@ class of its own.
   `before {:key 383 :index 384}` -> `after {:key 382 :index 384}`, intra
   identical: the re-anchor held the INDEX, not the key.
 - Red: `known-red-fuzz-insert-above-window-after-far-jump`.
+- **RECLASSIFIED (step 10b, a2365e1) — same O6 gap as NEW-10.** Traced:
+  segment-start! resolved the anchor BY KEY to its shifted slot (383 → index
+  385) whose 3-column grid row kept the old offset — the regrouped row (a lower
+  id joining it) was misread as "index held". The anchor id's fraction point
+  held exactly. Green as `fuzz-insert-above-window-after-far-jump-holds-anchor`;
+  seed 16 clean in campaign-3.
 
 ## NEW-12 — a rotation advertises a scrollExtent below the content it laid
 
@@ -383,6 +415,17 @@ class of its own.
 - Same oracle as step 5's `far-morph-capture-extent-truncated`, which stage 3
   closed for the flow capture path. The cross-change path still under-advertises.
 - Red: `known-red-fuzz-rotation-extent-covers-laid-content`.
+- **RECLASSIFIED (step 10b, 0e22b24) — O5 counting designed transients.**
+  Traced (seed 4): a LIVE cross-change segment correctly following the anchor
+  row into the re-packed grid (20672 → 32832); `last-end` came from the
+  segment's END-window arrivals pre-materialized at target offsets ~12k past
+  the lerping extent (nil `from` ⇒ they sit at `to` — designed). O5's
+  extent-below-content clause now bounds the content check to children starting
+  within pixels + 2 viewports (rest strength unchanged, incl. the step-5
+  truncation class); the guard test appends [:settle] so the honest resting
+  total is verified. Green as `fuzz-rotation-extent-covers-reachable-content`.
+  Seeds 4/140 clean in campaign-3; 23/322 fail at REMOVE ops inside the
+  horizon — a different producer, see the residuals section.
 
 ## NEW-13 — a morph after a far jump still caches most of the dataset
 
@@ -396,6 +439,22 @@ class of its own.
 - NEW-7's shape minus the count-change adjacency its diagnosis relied on, so the
   stage-5 `:domain` settle does not cover it.
 - Red: `known-red-fuzz-morph-after-far-jump-stays-window-bounded`.
+- **FIXED (step 10b, dcd3896) — a three-link starvation chain, no shared root
+  with NEW-9.** (1) `update-measured-agg!` gated on tweenAnim, so the
+  domain-settled resting passes under a playing clock never fed the EMA (9b's
+  segTween-gate lesson reapplied; the materialization tripwire was silenced by
+  the same gate). (2) indexed resting passes never fed it either, so a flow
+  layout after indexed-only history started blind: wrap's `:approx-offset`
+  degenerated to pure run-spacing (approx(234) = 30px) and the cross-layout
+  re-anchor trusted it (rebase −20757, domain spanning the whole content);
+  `seed-cache!` now rejects a basis-less estimate and the indexed driver feeds
+  the aggregates. (3) the far-window seed required nothing attached, but
+  pre-gc! only drops a prefix, so cacheless mid-segment leftovers vetoed the
+  inverse seed and the settle pass walked the 20k gap (234 children) — geometry
+  now decides the far seed regardless of attachment. Green as
+  `fuzz-morph-after-far-jump-stays-window-bounded`; seeds 37/29 clean in
+  campaign-3; 220/222/2's remaining o9s are window-scale cache-n 90-151
+  mid-segment — the documented O9 denominator, not this class.
 
 ## Recorded, not red-tested (single seed, long vector)
 
@@ -453,6 +512,40 @@ retention bounds relax; that is oracle design, deferred out of step 10.
 5. (step 7) O9 bounded `committed-n` by the ATTACHED window, which a landing
    collapses to one child, while the engine scopes `committed` to the cache band
    between segments — 17 false `:o9` seeds. Mid-segment the bound is now the band.
+
+# Campaign 3 (step 10b, 2026-08-09) — post-fix recurrence run
+
+Full `-t fuzz` rerun (220 episodes, same seeds) after the step-10b fixes.
+**16 failing batches, 20 distinct failing seeds** (campaign 2: 43 episodes).
+
+**Fixed-class recurrence: none.**
+- NEW-9's o1 absorption class: **0 of 17 seeds** — gone.
+- NEW-10 (241, 207), NEW-11 (16), NEW-12's cross-change shape (4, 140),
+  NEW-13's dataset walks (37, 29): all clean.
+- Masonry kernel: pure test, green.
+
+**Residual classes** (all pre-existing shapes, none introduced — the
+recalibrated O6's failure set is a strict subset of the old one's, and the o6
+seeds fail at count-change ops through paths 10b barely touched):
+- `:o9 cache-n` 90-151 vs limit 72, all `tweening? true` with band-tracking
+  cacheFirst (seeds 220, 222, 2): the documented mid-segment `cache-n`
+  denominator problem — deliberately-open oracle calibration (per-pass WORK
+  probe), NOT dataset walks.
+- `:o9 committed-n` 3-20% over (122, 135, 137; 38 at 388/184): the same
+  deferred O9 calibration family.
+- `:o6 intra-drift` at ABOVE-WINDOW inserts/removes (151, 111, 17, 205, 52,
+  55, 34): the recorded seed-55/seed-146 family — the count-change re-anchor
+  under estimates drifts the anchor's fraction point (52/55 identical shape:
+  `[:remove 90]`, key 100 → 103). Campaign-2 bucketed some of these under
+  NEW-10's :key-moved; the sharper O6 exposes their true why. The largest
+  un-triaged engine family left.
+- `:o5 extent-below-content` at REMOVE ops within the horizon (23, 322):
+  a remove-segment extent producer distinct from NEW-12's cross-change shape.
+- `:o5 pixels-out-of-range` mid-flight (337, 133, 135, 137) and the seed-251
+  `sliver.dart` assert: unchanged singles/boundary-spring shapes.
+
+Next triage owner: the o6 count-change family and the two o5 removes are new
+shrink targets; the o9s wait on the O9 work-probe redesign.
 
 ## Oracle notes for step 7
 
