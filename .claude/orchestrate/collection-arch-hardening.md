@@ -175,6 +175,27 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   run-gap drop and gives refine-seam's cross-stale arm the alignment repair 9c
   left degraded for masonry. (by: step-10b)
 
+- 2026-08-09: the pass mode is a FOUR-value axis, not the design's three: the
+  `tweenAnim`-vs-`segTween` split the engine had been re-deriving at every gate
+  IS the `:settled` mode (§3.2's domain-settled pass — resting drivers running
+  while the host clock plays out). Naming it retires the bug class 9b stage 5
+  hit; the alternative (three modes plus a residual boolean) would have kept
+  exactly the re-derivation step 11 exists to remove. (by: step-11)
+- 2026-08-09: `:settled` deliberately keeps today's answers rather than the
+  "natural" ones: refinement / origin corrections / overscan / commit prune stay
+  OFF there, even though its emission arm is live and no set-point competes with
+  it. Turning them on is a behavior change, not a consolidation, and step 11 is
+  a consolidation; the table now makes the choice visible in one place instead
+  of implying it from `tweenAnim`. Candidate for step 12/13 to revisit — a
+  jump-to-top taken during a segment defers its exact landing until the clock
+  ends. (by: step-11)
+- 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
+  it iff no PREVIOUS segment tween happened to still be around — an accident of
+  the `segTween` gate, and the opposite of the flow capture. A capture
+  materializes a widened, transient window at frames that may never display;
+  10b's "aggregates are ENGINE truth" is about DISPLAYED resting truth, which
+  the surrounding resting passes supply for the same cells. (by: step-11)
+
 ## Open questions
 - ~~Step 11 is blocked on step 10's NEW-9~~ **RESOLVED (step 10b)**: NEW-9 is
   closed; the absorption channel exists whenever a capture produces a rebase
@@ -199,12 +220,63 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
 - [x] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [x] 10b. Close campaign-2 defects (NEW-9..NEW-13 + masonry kernel) — agent: general-purpose, model: fable
-- [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
+- [x] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
 - [ ] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 11. Capture-mode boundary (pass mode + capability table)
+- Status: done (commit 97b1815 — one commit; the mode, the capability table and
+  the emission assert are one indivisible consolidation, and every intermediate
+  split would have left the engine deriving segment-ness two ways at once).
+- Files changed: render.cljd (`pass-mode`, `pass-caps`, `pass-allows?`,
+  `emit-correction!`, `passMode` field, 17 call sites; `origin-refine-emit?`
+  deleted, `refine-emit?`/`commit-prune?` take the capability),
+  render_test.cljd (+2 pure deftests, polarity flips), harness.cljd
+  (`:pass-mode` in the engine map), this plan.
+- Suite: default `-x "known-red || fuzz"` 318 → **320** green (+2 pure tests);
+  O7 in-suite; `-t known-red` **still empty**; `bin/check` clean.
+- **The mode**: `:resting | :settled | :capture | :segment`, decided ONCE per
+  `performLayout` from (tween-anim?, curGen vs segGen, segTween?, domain-exited?)
+  — the dispatch cond, lifted into a pure kernel — and stored on the render
+  object. `pass-caps` gives each mode 12 named capabilities (`:emit-rebase?`
+  `:refine?` `:origin-refine?` `:overscan?` `:prune-commit?` `:measure-feed?`
+  `:tripwire?` `:canonical-assert?` `:epilogue-asserts?` `:union-window?`
+  `:set-point?` `:seg-tail?`); `pass-allows?` debug-asserts that a capability
+  HAS a row, so a new feature cannot inherit an accidental OFF.
+- **17 sites consolidated**: performLayout's overscan gate / dispatch / epilogue
+  asserts / prune gate; flow-layout!'s seg-tail, refine + origin-refine, union
+  window, EMA, tripwire, value-vs-emit arm; finish-flow-geometry!'s canonical
+  assert; seg-scroll-correction; indexed-layout!'s seg-tail, union window, EMA,
+  correction exit; segment-start!'s two capture calls. No engine code reads
+  `tweenAnim`/`segTween` as a GATE any more — the six remaining reads are state
+  ownership (listener swap, tween value, settle/clear).
+- **Boundary asserts**: `emit-correction!` is the single correction-writing path
+  and debug-asserts `:emit-rebase?`, so the emit arm is structurally unreachable
+  in `:capture` — the complement of 9a's absorption asserts, which fire from the
+  other side (a produced rebase with no channel). `flow-layout!` loses its `mode`
+  argument (the pass carries it) and keeps `{:rebase :extent}` as the design's
+  `:value` arm, documented at the definition as step 13's input.
+- Latent divergences found (2), both logged in the Decisions log: (1) the
+  indexed capture's EMA feed depended on whether a previous segment tween was
+  still around — FIXED (capture never feeds, matching the flow capture);
+  (2) `:settled` defers refinement / origin corrections / overscan / commit
+  prune although its emission arm is live and no set-point competes — PRESERVED
+  as-is (a behavior change, not a consolidation) and handed to step 12/13.
+- **Fuzz: byte-identical to the pre-change commit over all four profiles**, 220
+  episodes (`:full` a-f, `:churn` a-d, `:no-layout` a-f, `:no-jump` a-f): the
+  same 20 failing seeds, at the same op indices, with the same oracles
+  (`:full` 2/17/23/34/38/52/55, `:churn` 322/337, `:no-layout`
+  111/122/133/135/137/151, `:no-jump` 205/220/222/235/251). Campaign-3's
+  residual set, unchanged — the consolidation neither fixed nor broke anything.
+- Next-step impact: step 12's anchor-primary design gets the mode axis as its
+  staging surface — an anchor-primary driver is a new capability column, not a
+  new set of `tweenAnim` checks — and `{:rebase :extent}` as the already-pure
+  capture interface. The `:settled` divergence is the first thing to decide
+  there, since anchor-primary makes "the offset model is frozen" mean something
+  different.
 
 ### 10b. Campaign-2 defect closure
 - Status: done (commits ae01352, a2365e1, dcd3896, 0e22b24, 93ccf4a — one per
