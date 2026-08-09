@@ -115,6 +115,18 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - 2026-08-08: `settle-segment!` omits the design's `clips := {}` — both drivers
   clear `clips` at pass entry, so the write would be dead. (by: step-9b)
 
+- 2026-08-09: the wrap seam's cross mismatch is NOT repairable by dropping the
+  stale entries: `backfill-leading!` runs AFTER `walk!`, and a cross-only seam has
+  no correction to force a re-run, so the pass would end with the window unplaced.
+  The repair is the re-anchor ALIGNMENT (`:run-start`), which keeps the retained
+  head's run and leaves the leading margin approximate. (by: step-9c)
+- 2026-08-09: layouts gain an optional `:run-start (fn [env state] double)` — the
+  next independent run's main offset. `:flow-end` answers where the next CHILD may
+  land, which inside an open run is the run's own start, so it cannot express the
+  inter-run gap that BACKWARD reasoning needs (leading dead-reckon, seam
+  alignment). Defined for wrap; list's `:flow-end` already is its run start and
+  masonry keeps the fallback. (by: step-9c)
+
 ## Open questions
 - (none user-level; rebase-design's 5 technical open questions resolved by step-9
   implementers per the design doc's own leanings, recorded in Decisions log)
@@ -130,7 +142,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 8. Design pending-rebase structure (exactly-once protocol) — agent: general-purpose, model: fable
 - [x] 9a. Rebase stages 0-3: WIP preserve+revert, viewAnchor, transport, no-emit capture — agent: general-purpose, model: fable
 - [x] 9b. Rebase stages 4-6: fraction set-point, window sanity/domain, count-change — agent: general-purpose, model: opus
-- [ ] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
+- [x] 9c. Wrap kernel fixes NEW-2/NEW-3 (design stages 8-9) — agent: general-purpose, model: opus
 - [ ] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [ ] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
@@ -138,6 +150,45 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
+
+### 9c. Wrap kernel fixes NEW-2/NEW-3
+- Status: done (commits f3d8d54, 7899ef3 — one per fix, bisectable)
+- Files changed: render.cljd (`refine-seam`, `reflow-from-checkpoint!`,
+  `leading-step-entry`), layout.cljd (`:run-start` hook + contract docstring);
+  render_test.cljd (+2 pure tests, `refine-seam-delta` call sites), fuzz_red_test.cljd
+  (both reds un-tagged + ns docstring). TEMP fb24f35 instrumentation kept (step 10
+  reverts).
+- Suite: default `-x "known-red || fuzz"` 308 → **310** (stage 8) → **312**
+  (stage 9), green after each; `-t known-red` 2 → 1 → **0** (no tests match — the
+  known-red set is empty for the first time); both flips verified 3x standalone;
+  `bin/check` clean at the end.
+- Stage 8 (NEW-2, seam cross): `refine-seam` (was `refine-seam-delta`) returns
+  `{:delta :cross-stale? :align-delta}`. **The design's fix shape was half the
+  story**: the fuzz vector's overlap is produced by the FROZEN re-anchor, not by
+  the stitch. `emit?` is false under the fast drag, so the seam re-anchors the
+  prefix at `:anchor(lo, first-offset − d)` with `d` = where `:place` puts the
+  head — and when the prefix's last run is OPEN that lands the prefix's run start
+  ON the retained head's run (traced cf=304: d=−143.54, 303 re-anchored onto the
+  head's 3572.45). So the branch order is: converged → stitch; resting with a real
+  main delta → adopt/emit (its re-run re-walks the window canonically, cross
+  included); cross-stale → re-anchor by `:align-delta` (the next RUN start), which
+  keeps the head's run line free with no correction; else today's main re-anchor.
+  Dropping the stale entries instead is NOT viable: `backfill-leading!` runs after
+  `walk!`, and with no correction to force a re-run the pass would end with the
+  window unplaced (verified by tracing the repro).
+- Stage 9 (NEW-3, leading run advance): `leading-step-entry`'s back-off reads
+  `(:run-start layout)` and keeps `:flow-end` as the fallback, so the cell lands one
+  run PITCH above the head instead of flush against it.
+- Not done (out of scope, latent): masonry's leading step drops
+  `:main-axis-spacing` the same way — it has no run structure, hence no
+  `:run-start`, and no oracle covers it. `refine-seam`'s cross check does fire for
+  masonry, where it degrades to today's behavior (no `:run-start` ⇒ the stale seam
+  is kept) rather than to a wrong alignment.
+- Next-step impact: step 10's re-campaign should re-run the `:no-jump` profile
+  (both vectors came from it) and watch `:o4` `wrap-run-pitch` — the frozen
+  alignment deliberately leaves the leading margin one run gap "loose", which is a
+  legal approximate margin but a new shape for the oracle. `-t known-red` is empty,
+  so any new red is a genuine regression, not a leftover.
 
 ### 9b. Rebase stages 4-6
 - Status: done (commits 2ae7abe, 04334dc, 4b0d614 — one per stage, bisectable)

@@ -117,7 +117,11 @@ being treated as an engine bug.**
   ```
   `overlap pairs [[303 304] [303 305] [319 320] [319 321]]`, `wrap-run-pitch {:from 303 :to 304}`
 - Seed 11 reaches the same state in two ops from a jump: `[[:jump 2553.9976358413696] [:settle] [:drag -333.8862705230713]]`.
-- Status: **RED-TESTED** — `known-red-fuzz-wrap-runs-overlap-after-back-drag`.
+- Status: **FIXED (step 9c stage 8)** — green as
+  `fuzz-wrap-runs-stay-disjoint-after-back-drag`. `refine-seam` reports the cross
+  mismatch alongside the main delta, and a cross-stale seam re-anchors on the
+  layout's new `:run-start` (a FRESH run at the head) instead of on where `:place`
+  puts the head. See the step-9c amendment below.
 - **CONFIRMED**: observed children at rest — index 303 `{:offset 3444.45 :cross 0
   :cross-size 128}` and index 304 `{:offset 3444.45 :cross 0 :cross-size 94}`,
   with 305 at cross 100 (= 94 + spacing 6). Both 303 and 304 are in `checkpoints`,
@@ -129,6 +133,16 @@ being treated as an engine bug.**
   places the head at the same `y`, so `d` = 0, the seam is declared converged and
   `stitch-prefix` keeps the stale head verbatim at cross 0. Wrap's flow state
   carries a cross cursor that the seam protocol has no way to reconcile.
+- **Step-9c amendment**: in this vector the dominant producer is not the stitch
+  but the FROZEN (velocity-suppressed) re-anchor. The drag is fast, so `emit?` is
+  false and the branch re-seeds the prefix at `:anchor(lo, first-offset − d)` with
+  `d` measured from where `:place` puts the HEAD. When the prefix's last run is
+  OPEN, that alignment drops the prefix's run start exactly onto the retained
+  head's run — traced at cf=304: `d` = −143.54, and the re-anchored prefix put 303
+  at the head's own 3572.45. Aligning on the next RUN start instead leaves a
+  `:run-spacing` gap above the head, needs no correction and no in-window churn,
+  and keeps the leading margin approximate as designed. The pure-stitch shape
+  (`d` = 0 with a stale cross) is real too and takes the same branch.
 
 ### NEW-3 — wrap run advance is short by one run's max main
 - Oracle: `:o4` `wrap-run-advance`. Seeds 240, 223.
@@ -139,7 +153,9 @@ being treated as an engine bug.**
   `{:want 1960.84375 :from 1910.84375 :to 1954.84375}` — the next run starts 6 px
   too early: `want − from` = 63 = 57 + `run-spacing` 6, `to − from` = 57, so the
   advance is exactly the cell's own extent and the run gap is missing.
-- Status: **RED-TESTED** — `known-red-fuzz-wrap-run-advance-short-after-morph`.
+- Status: **FIXED (step 9c stage 9)** — green as
+  `fuzz-wrap-run-advance-keeps-the-run-gap`. `leading-step-entry` backs off by the
+  run PITCH (`:run-start`, `:flow-end` only as the fallback).
 - **CONFIRMED**: the failing boundary sits in the above-window leading margin
   (`cacheFirst` 38, first checkpoint 40) and the run is single-celled, i.e. the
   `estimate-leading-step!` → `leading-step-entry` path (render.cljd L1784-1852).
