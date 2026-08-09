@@ -38,9 +38,18 @@
    under an above-window insert — the set-point resolved the anchor BY KEY to
    its shifted slot, whose grid row kept the old offset, and O6 misread the
    regrouped row as \"index held\"; a rotation advertises a scrollExtent
-   below the content of the same frame (NEW-12); and a morph following a far jump
-   still caches most of the dataset without the count-change adjacency NEW-7
-   needed (NEW-13).
+   below the content of the same frame (NEW-12); NEW-13 (FIXED, step 10b) was a
+   three-link starvation chain, none shared with NEW-9: (1) the measured-EMA
+   update gated on tweenAnim, so domain-settled passes under a playing clock
+   never fed it (9b's segTween-gate lesson, reapplied), (2) indexed resting
+   passes never fed it at all, so a flow layout after indexed-only history
+   started blind and wrap's :approx-offset degenerated to pure run-spacing
+   (30px for index 234), which the cross-layout re-anchor trusted, and (3) the
+   far-window seed required nothing attached, but pre-gc! can only drop a
+   prefix, so mid-segment leave-slide leftovers with no cache entry vetoed the
+   inverse seed and the pass walked the 20k gap. Geometry now decides the far
+   seed regardless of attachment, both drivers feed the EMA, and a basis-less
+   estimate is rejected.
 
    Confirmed diagnoses (step 7; the fixes belong to steps 8-11):
 
@@ -257,8 +266,8 @@
     (is (nil? f) (str "NEW-12 the frame advertised a scrollExtent below the content "
                       "it had just laid out:" (fail-str f)))))
 
-(deftest known-red-fuzz-morph-after-far-jump-stays-window-bounded
-  :tags [:widget :known-red]
+(deftest fuzz-morph-after-far-jump-stays-window-bounded
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 37
                             [[:remove 45]

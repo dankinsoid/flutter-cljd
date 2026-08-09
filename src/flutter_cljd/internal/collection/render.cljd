@@ -1467,20 +1467,20 @@
         pending (.-pendingRebase rs)]
     (.-pendingRebase! rs nil)
     (cond
-      ;; FAR JUMP over a live band: seed by geometry.
-      (and (nil? fc) (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we))
-      (cond
-        ;; jumped to the scroll top: the exact from-0 seed IS O(window) there;
-        ;; keeping the deep band would make backfill walk the whole gap to 0.
-        (<= ws 0.5) (seed-at-0! rs layout env)
-        approx-fn (case (inverse-seed! rs layout env ws)
-                    :at-top (seed-at-0! rs layout env)
-                    ;; :degenerate keeps the band (walking the gap is the best
-                    ;; available move — and a live band implies a measured
-                    ;; density, so this practically cannot occur); :seeded done.
-                    nil)
-        ;; no :approx-offset — the window can't be placed O(1); keep the band
-        :else nil)
+      ;; FAR JUMP over a live band: geometry decides, never attachment —
+      ;; pre-gc! only drops a prefix, so cacheless leftovers survive it (NEW-13)
+      (and (seq (.-cache rs)) (window-far-from-band? (.-cache rs) ws we)
+           (or (<= ws 0.5) approx-fn))
+      (do
+        (when fc (.collectGarbage rs (count-attached rs) 0))
+        (if (<= ws 0.5)
+          ;; jumped to the scroll top: the exact from-0 seed IS O(window) there;
+          ;; keeping the deep band would make backfill walk the whole gap to 0.
+          (seed-at-0! rs layout env)
+          (case (inverse-seed! rs layout env ws)
+            :at-top (seed-at-0! rs layout env)
+            ;; :degenerate keeps the band — nothing better exists to walk from
+            nil)))
 
       (seq (.-cache rs)) nil   ;; band serves the window — nothing to re-seed
 
@@ -1549,7 +1549,10 @@
                                 (double (:off va))
                                 (double (or (when fc2 (.childScrollOffset rs ^r/RenderBox fc2))
                                             0.0)))
-                approx-off (when (and cross-layout? approx-fn (pos? a-idx))
+                ;; no seed and no measurement ⇒ the estimate is spacing-only
+                ;; garbage (NEW-13's 30px-for-index-234) — keep the stale offset
+                approx-off (when (and cross-layout? approx-fn (pos? a-idx)
+                                      (some? (:avg-main env)))
                              (double (approx-fn env a-idx)))
                 ^double off (reanchor-offset (boolean cross-layout?) a-idx stale approx-off)]
             ;; the shift is emitted as a scrollOffsetCorrection so the visible child holds still
@@ -2501,8 +2504,9 @@
             (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
             ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
             (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
-            ;; measured aggregates track the live window on resting passes (§1.1)
-            (when (nil? (.-tweenAnim rs))
+            ;; segTween, not tweenAnim: domain-settled passes must feed the EMA
+            ;; or the next capture's :approx-offset has no size basis (NEW-13)
+            (when (and (identical? :resting mode) (nil? (.-segTween rs)))
               (let [sample (update-measured-agg! rs env)]
                 ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change
                 (assert-materialization-bounded! rs layout (tripwire-env env sample)
@@ -2719,6 +2723,9 @@
                 (.calculateCacheOffset rs c .from leading-off .to trail-end)
                 ;; §8a: record each animating cell's paint-clip window (shared helper).
                 _clips (compute-clips! rs env geo-fn)
+                ;; a flow layout arriving after indexed-only history must not
+                ;; start with a blind density (NEW-13)
+                _agg (when (nil? (.-segTween rs)) (update-measured-agg! rs env))
                 ;; mid-segment: the incremental set-point (docs §9); at rest: the
                 ;; pass rebase (e.g. a consumed segment tail) through the same exit
                 corr (or (seg-scroll-correction rs c)
