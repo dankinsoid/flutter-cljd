@@ -493,6 +493,20 @@
          :extent ext
          :frac (if (pos? ext) (/ intra ext) 0.0)}))))
 
+(defn remove-anchor!
+  "Removes the item the viewport top currently sits on — the count change whose
+   key the engine's re-anchor can no longer find (rebase-design open Q3).
+
+   Carries no index, so it stays a legal replay op: the state a given op prefix
+   produces is deterministic. Mid-segment the child index space also carries dying
+   slots, so the hit is approximate there — still a legal data op, and mid-segment
+   is exactly where the count-change re-anchor has to hold."
+  [rig]
+  (let [top (top-anchor rig)]
+    (when (some? top)
+      (await (remove-at! rig (int (:index top))))))
+  nil)
+
 ;; --- oracles ---
 
 (defn- v [oracle detail] {:oracle oracle :detail detail})
@@ -953,6 +967,7 @@
       :settle      (await (settle! rig))
       :insert      (await (insert! rig (int a) (int b)))
       :remove      (await (remove-at! rig (int a)))
+      :remove-anchor (await (remove-anchor! rig))
       :rotate      (await (rotate! rig (int a) (int b)))
       :layout      (await (set-layout! rig a))
       :cross       (await (set-cross! rig (double a)))

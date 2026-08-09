@@ -27,10 +27,18 @@
    step 7 turns its signatures into individual red tests.
 
    Deviations from design §6, deliberate:
-   - Three weight profiles, not one. Two engine bugs are known-red and fire so
-     early in an episode that they mask everything downstream; `:no-layout` and
+   - Four weight profiles, not one. Two engine bugs were known-red and fired so
+     early in an episode that they masked everything downstream; `:no-layout` and
      `:no-jump` starve their preconditions so the rest of the op space gets
      explored. `:full` is the design's weight table verbatim.
+   - `:churn` (step 10) is the data-mutation profile. With `:layout` starved and
+     `:animate?` forced on, a count change is the ONLY thing that opens a segment,
+     and `:settle` is rare enough that the next count change lands mid-segment —
+     the one path where the cache drop and the key re-anchor run against
+     tween-frame offsets rather than resting ones. Its `:remove-anchor` op deletes
+     the very item the re-anchor keys on, which is rebase-design open Q3's
+     unverified fallback; the far-jump ops stay in so a churning window can also
+     leave the segment's validity `:domain`.
    - An episode is truncated at its first violation, but a BATCH keeps going and
      reports every failing seed at once — `is` throws in this cljd port, so one
      `is` at the end is the only way a deftest can report more than one failure.
@@ -85,15 +93,21 @@
 
 ;; --- op alphabet (design §6.2) ---
 
+;; a 0 weight is dropped, so step 6's seeds keep their exact op stream
 (def base-weights
   [[:drag-small 20] [:pump 12] [:fling 10] [:drag-large 8] [:insert 8]
    [:remove 8] [:settle 8] [:layout 6] [:jump 6] [:rotate 4] [:cross 4]
-   [:to-top 4] [:fling-catch 3]])
+   [:to-top 4] [:fling-catch 3] [:remove-anchor 0]])
 
 (def profiles
   {:full      {}
    :no-layout {:layout 0}
-   :no-jump   {:jump 0 :to-top 0}})
+   :no-jump   {:jump 0 :to-top 0}
+   ;; count changes are the only segment opener here, so they race each other
+   :churn     {:layout 0 :drag-large 0 :fling-catch 0
+               :insert 16 :remove 12 :remove-anchor 12 :rotate 8
+               :pump 8 :drag-small 8 :settle 4 :fling 3
+               :jump 5 :to-top 3 :cross 2}})
 
 (defn weights-for [profile]
   (let [ov (get profiles profile {})]
@@ -125,6 +139,8 @@
       :settle      [:settle]
       :insert      [:insert (below! r (inc n)) (+ 900000 i)]
       :remove      [:remove (below! r n)]
+      ;; resolved against the live rig — carries no index, so replay stays exact
+      :remove-anchor [:remove-anchor]
       :rotate      [:rotate (below! r n) (below! r n)]
       :layout      [:layout (pick! r h/layout-kws)]
       :cross       [:cross (pick! r cross-choices)]
@@ -137,13 +153,15 @@
    `harness/rig-from-header!` consumes (plus :seed/:profile for the report)."
   [^int seed profile ^int items ^int len]
   (let [r (rng seed)
-        header {:seed seed
-                :profile profile
-                :animate? (< (unit! r) 0.6)
-                :approx (pick! r [nil nil 80.0 120.0])
-                :layout0 (pick! r h/layout-kws)
-                :cross0 (pick! r cross-choices)
-                :items0 items}
+        drawn {:seed seed
+               :profile profile
+               :animate? (< (unit! r) 0.6)
+               :approx (pick! r [nil nil 80.0 120.0])
+               :layout0 (pick! r h/layout-kws)
+               :cross0 (pick! r cross-choices)
+               :items0 items}
+        ;; overridden AFTER the draw so the op stream stays seed-identical
+        header (if (= :churn profile) (assoc drawn :animate? true) drawn)
         ws (weights-for profile)
         ops (loop [i 0 acc []]
               (if (>= i len)
@@ -433,6 +451,57 @@
   :runner (ft/testWidgets [tester])
   (await (check-batch! tester :no-jump (seeds 231 10))))
 
+;; step-10 re-campaign: fresh seed ranges over the same three profiles
+(deftest fuzz-full-e
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 41 10))))
+
+(deftest fuzz-full-f
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :full (seeds 51 10))))
+
+(deftest fuzz-no-layout-e
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 141 10))))
+
+(deftest fuzz-no-layout-f
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-layout (seeds 151 10))))
+
+(deftest fuzz-no-jump-e
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 241 10))))
+
+(deftest fuzz-no-jump-f
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :no-jump (seeds 251 10))))
+
+(deftest fuzz-churn-a
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :churn (seeds 301 10))))
+
+(deftest fuzz-churn-b
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :churn (seeds 311 10))))
+
+(deftest fuzz-churn-c
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :churn (seeds 321 10))))
+
+(deftest fuzz-churn-d
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :churn (seeds 331 10))))
+
 ;; the generator itself is pure — a compile-time regression here would silently
 ;; change every seed's meaning
 (deftest fuzz-generator-is-deterministic
@@ -447,4 +516,15 @@
         ":no-layout starves the morph op")
     (is (empty? (filter (fn [op] (contains? #{:jump :to-top :animate-top} (nth op 0)))
                         (nth (gen-episode 7 :no-jump fuzz-items episode-len) 1)))
-        ":no-jump starves the far-jump ops")))
+        ":no-jump starves the far-jump ops")
+    (let [churn (gen-episode 7 :churn fuzz-items episode-len)]
+      (is (true? (:animate? (nth churn 0)))
+          ":churn forces the animated host — without a segment there is no race")
+      (is (empty? (filter (fn [op] (= :layout (nth op 0))) (nth churn 1)))
+          ":churn starves the morph op, so only count changes open segments")
+      (is (seq (filter (fn [op] (contains? #{:insert :remove :remove-anchor :rotate}
+                                           (nth op 0)))
+                       (nth churn 1)))
+          ":churn actually churns"))
+    (is (= 13 (count (weights-for :full)))
+        "a 0-weight kind is dropped, so :full is still step 6's 13-kind table")))

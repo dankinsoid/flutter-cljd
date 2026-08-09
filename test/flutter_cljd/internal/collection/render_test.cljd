@@ -935,6 +935,27 @@
         (is (= (:offset e) (:offset (nth walk 0))))
         (is (= head (:offset (nth walk 1))))))))
 
+(deftest known-red-leading-step-masonry-backs-off-by-the-run-gap
+  :tags [:known-red]
+  ;; masonry has no :run-start, and its :flow-end answers `head` (NEW-3's shape)
+  (let [rsp 6.0
+        env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        masonry (lay/masonry-layout {:cross-axis-count 2
+                                     :cross-axis-spacing 0
+                                     :main-axis-spacing rsp})
+        head 1000.0
+        ext 50.0
+        size (ui/Size 150.0 ext)
+        e (render/leading-step-entry masonry env 41 head size ext 1200.0)]
+    (testing ":anchor seeds every column at `head`, so :place fills column 0 and
+              :flow-end still answers `head`; adv collapses to `ext` and the cell
+              packs flush against the head, dropping :main-axis-spacing"
+      (is (= (- head ext rsp) (:offset e))))
+    (testing "the cell must end exactly one main-axis gap above the head — the
+              only cell it touches is the head, so O4 sees neither overlap nor hole
+              and no harness oracle covers this"
+      (is (= (- head rsp) (:end e))))))
+
 ;; --- above-window backfill snaps to a renewal point (#A: single-left-column) ---
 
 (deftest synth-renewal-checkpoint-lands-on-run-start
