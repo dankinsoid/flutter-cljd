@@ -905,10 +905,7 @@
       (is (= head (:offset (nth walk 1)))))))
 
 (deftest leading-step-wrap-preserves-run-height-pack
-  ;; wrap's leading margin is accepted-approximate: a lone off-screen child can't
-  ;; know its run, so it packs one run height (ext) above the head with cross 0 —
-  ;; unchanged from before. The fix only ADDS the layout's main gap, which wrap
-  ;; advances cross-wise (0 on main within a run), so the wrap pack is untouched.
+  ;; a lone off-screen child can't know its run, so it packs one run height.
   (let [env {:axis :vertical :cross-extent 300.0 :item-count 2200}
         wrap (lay/wrap-layout {:spacing 0 :run-spacing 0})
         head 1000.0
@@ -918,6 +915,25 @@
     (is (= (- head ext) (:offset e)))                       ; head - run height
     (is (= 0.0 (:cross e)))
     (is (true? (:canon e)))))
+
+(deftest leading-step-wrap-backs-off-by-the-run-gap
+  ;; NEW-3: the step lands its own run, so the back-off is the run PITCH.
+  (let [env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        rsp 6.0
+        wrap (lay/wrap-layout {:spacing 0 :run-spacing rsp})
+        head 1000.0
+        ext 50.0
+        size (ui/Size 100.0 ext)
+        e (render/leading-step-entry wrap env 41 head size ext 1200.0)]
+    (is (= (- head ext rsp) (:offset e)))
+    (testing "the cell ends exactly one run gap above the head"
+      (is (= (- head rsp) (:end e))))
+    (testing "a forward walk from the step's base-state lands the head back at head"
+      (let [walk (tw/flow-run-entries wrap env
+                                      [[41 size ext] [42 (ui/Size 300.0 ext) ext]]
+                                      (:base-state e))]
+        (is (= (:offset e) (:offset (nth walk 0))))
+        (is (= head (:offset (nth walk 1))))))))
 
 ;; --- above-window backfill snaps to a renewal point (#A: single-left-column) ---
 

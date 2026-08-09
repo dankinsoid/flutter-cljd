@@ -1912,11 +1912,11 @@
 (defn leading-step-entry
   "Canonical single-child leading dead-reckon used by estimate-leading-step! when
    NO checkpoint covers the region above the cache. Places index `i` (= cf-1) as an
-   independent run through the layout's :anchor + :place, so its :cross and the
-   inter-run MAIN gap are the layout's own — list's :spacing, wrap's :run-spacing —
-   NOT the old size-only `head - ext` pack that dropped the gap and let walk!'s
-   extent-only reuse leak a no-spacing offset into the visible window (the
-   wrap→jump→list no-spacing bug). `head` is cache[0]'s offset (index cf), `size`/
+   independent run through the layout's :anchor + :place, backing it off `head` by
+   the layout's own run pitch (:run-start, else :flow-end) so the inter-run gap —
+   list's :spacing, wrap's :run-spacing — survives; a size-only `head - ext` pack
+   drops it, and walk!'s extent-only reuse then leaks the no-gap offset into the
+   visible window. `head` is cache[0]'s offset (index cf), `size`/
    `ext` the measured Size and main paint extent of i, `head-max-end` cache[0]'s
    :max-end. The absolute base stays approximate (a lone off-screen child can't know
    its run) but the geometry SHAPE is canonical — spacing/cross via :place. Returns
@@ -1930,14 +1930,12 @@
   (let [place-fn (:place layout)
         anchor-fn (:anchor layout)
         init-fn (:init layout)
-        flow-end-fn (:flow-end layout)
-        ;; seed i as a fresh run whose children 0..i-1 ended at `head`, place it,
-        ;; and read how far MAIN advances to the next index — list: ext + :spacing;
-        ;; wrap/masonry: same-run advance is 0 on main, so fall back to run height.
+        ;; :flow-end is the run i just opened, so it cannot carry the run gap
+        advance-fn (or (:run-start layout) (:flow-end layout))
         seed (if anchor-fn (anchor-fn env i head) (init-fn env))
         [gm st'] (place-fn env i size seed)
-        ^double adv (if flow-end-fn
-                      (math/max ext (- (double (flow-end-fn env st')) head))
+        ^double adv (if advance-fn
+                      (math/max ext (- (double (advance-fn env st')) head))
                       ext)
         ^double noff (- head adv)
         ^double cross (double (or (:cross gm) 0.0))

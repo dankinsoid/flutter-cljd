@@ -36,11 +36,11 @@
      `refine-seam` reports the cross mismatch and the layout's new `:run-start`
      hook gives the alignment that leaves the head's run free.
 
-   NEW-3 `leading-step-entry`'s advance is `max(ext, flow-end(after i) − head)`.
-     Wrap's :anchor seeds an EMPTY run at `head` and :place drops i into that same
-     run, so flow-end returns `head`, the advance collapses to the cell's own
-     extent, and the run gap is lost — the next run starts exactly one
-     :run-spacing early.
+   NEW-3 (FIXED, stage 9) `leading-step-entry`'s advance was
+     `max(ext, flow-end(after i) − head)`. Wrap's :anchor seeds an EMPTY run at
+     `head` and :place drops i into that same run, so flow-end returned `head`,
+     the advance collapsed to the cell's own extent and the run gap was lost. The
+     back-off reads the layout's `:run-start` (run pitch) instead.
 
    NEW-4 threw inside a seed-cache! cross-layout re-anchor WIP whose leading
      collectGarbage could destroy EVERY attached child before a non-nullable
@@ -113,8 +113,8 @@
     (is (nil? f) (str "NEW-2 wrap cells overlap at rest after a backward drag:"
                       (fail-str f)))))
 
-(deftest known-red-fuzz-wrap-run-advance-short-after-morph
-  :tags [:widget :known-red]
+(deftest fuzz-wrap-run-advance-keeps-the-run-gap
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 240
                             [[:drag 3357.876420021057]
