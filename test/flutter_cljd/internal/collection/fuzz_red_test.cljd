@@ -37,8 +37,12 @@
    child (NEW-10, reclassified); NEW-11 (reclassified with it) is the same gap
    under an above-window insert — the set-point resolved the anchor BY KEY to
    its shifted slot, whose grid row kept the old offset, and O6 misread the
-   regrouped row as \"index held\"; a rotation advertises a scrollExtent
-   below the content of the same frame (NEW-12); NEW-13 (FIXED, step 10b) was a
+   regrouped row as \"index held\"; NEW-12 (reclassified, step 10b) was O5's
+   extent-below-content clause counting a live cross-change segment's END-window
+   arrivals — cells pre-materialized at target offsets past the lerped extent by
+   design — as under-advertised content; the clause now bounds the check to the
+   reachable neighbourhood and the guard test settles to verify the honest
+   resting total; NEW-13 (FIXED, step 10b) was a
    three-link starvation chain, none shared with NEW-9: (1) the measured-EMA
    update gated on tweenAnim, so domain-settled passes under a playing clock
    never fed it (9b's segTween-gate lesson, reapplied), (2) indexed resting
@@ -255,16 +259,20 @@
     (is (nil? f) (str "NEW-11 an insert above the window after a far jump must "
                       "hold the anchor's fraction point:" (fail-str f)))))
 
-(deftest known-red-fuzz-rotation-extent-covers-laid-content
-  :tags [:widget :known-red]
+;; NEW-12 was O5 counting the segment's end-window arrivals as content; the
+;; trailing settle re-checks the honest extent at rest
+(deftest fuzz-rotation-extent-covers-reachable-content
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 4
                             [[:cross 400.0]
                              [:jump 17421.205043792725]
                              [:drag 3253.394079208374]
-                             [:cross 640.0]]))]
-    (is (nil? f) (str "NEW-12 the frame advertised a scrollExtent below the content "
-                      "it had just laid out:" (fail-str f)))))
+                             [:cross 640.0]
+                             [:settle]]))]
+    (is (nil? f) (str "NEW-12 a cross-change segment must keep the advertised "
+                      "scrollExtent over the reachable content, and settle to the "
+                      "honest total:" (fail-str f)))))
 
 (deftest fuzz-morph-after-far-jump-stays-window-bounded
   :tags [:widget]

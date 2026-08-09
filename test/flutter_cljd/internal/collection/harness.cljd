@@ -728,13 +728,21 @@
       (let [^double se (:scroll-extent g)
             ^double mpe (:max-paint-extent g)
             ^double pe (:paint-extent g)
-            ^double last-end (reduce (fn [^double m c] (max m ^double (:end c))) 0.0 cs)]
+            ;; a segment's end-window arrivals sit at target offsets past the
+            ;; lerped extent by design (NEW-12) — bound to the neighbourhood
+            ^double horizon (+ px (* 2.0 ^double (:viewport lim)))
+            ^double last-end (reduce (fn [^double m c]
+                                       (if (< ^double (:offset c) horizon)
+                                         (max m ^double (:end c))
+                                         m))
+                                     0.0 cs)]
         (cond-> []
           (or (.-isNaN se) (.-isInfinite se))
           (conj (v :o5 {:why :extent-not-finite :scroll-extent se}))
 
           (and (seq cs) (< se (- last-end eps-geom)))
-          (conj (v :o5 {:why :extent-below-content :scroll-extent se :last-end last-end}))
+          (conj (v :o5 {:why :extent-below-content :scroll-extent se
+                        :last-end last-end :horizon horizon}))
 
           (< mpe (- pe eps-geom))
           (conj (v :o5 {:why :max-paint-below-paint :max mpe :paint pe}))
