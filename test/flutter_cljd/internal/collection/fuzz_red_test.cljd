@@ -29,11 +29,12 @@
      item. The set-point now lerps the anchor's extent too and preserves the
      consumed FRACTION (`tw/point-desired`).
 
-   NEW-2 `refine-seam-delta` reconciles a backward re-flow against the cache head
-     on the MAIN axis only. A re-flow ending with an OPEN run places the head at
-     the same main offset, so d = 0 declares the seam converged and `stitch-prefix`
-     keeps the stale head at cross 0 — two adjacent indices on one run line
-     (observed: 303 and 304 both at cross 0, offset 3444.45).
+   NEW-2 (FIXED, stage 8) the seam was reconciled on the MAIN axis only, and the
+     frozen re-anchor aligned the prefix on where :place puts the HEAD. When the
+     prefix ends with an OPEN run that alignment drops the prefix's last run onto
+     the retained head's run (observed: 303 and 304 both at cross 0, one offset).
+     `refine-seam` reports the cross mismatch and the layout's new `:run-start`
+     hook gives the alignment that leaves the head's run free.
 
    NEW-3 `leading-step-entry`'s advance is `max(ext, flow-end(after i) − head)`.
      Wrap's :anchor seeds an EMPTY run at `head` and :place drops i into that same
@@ -102,8 +103,8 @@
     (is (nil? f) (str "NEW-1 grid->list morph after a plain drag moved the "
                       "viewport-top item (no far jump involved):" (fail-str f)))))
 
-(deftest known-red-fuzz-wrap-runs-overlap-after-back-drag
-  :tags [:widget :known-red]
+(deftest fuzz-wrap-runs-stay-disjoint-after-back-drag
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 222
                             [[:drag 4606.196022033691]
@@ -201,3 +202,4 @@
                              [:to-top]]))]
     (is (nil? f) (str "mid-segment `committed` must stay proportional to the cache "
                       "band:" (fail-str f)))))
+

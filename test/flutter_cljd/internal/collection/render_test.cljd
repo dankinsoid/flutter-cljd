@@ -553,6 +553,12 @@
   [^int from ^int to]
   (mapv (fn [^int i] [i (ui/Size 90 40) 40.0]) (range from to)))
 
+(defn- ^double seam-delta
+  "refine-seam's MAIN component at a seam whose cached head starts a run (cross 0)
+   — the shape every case below re-flows into."
+  [layout env ^int cf size end-state ^double old-head]
+  (double (:delta (render/refine-seam layout env cf size end-state old-head 0.0))))
+
 (deftest refine-seam-delta-accounting
   ;; checkpoint at k=4 (run start, truth offset 80); re-flow [4,5]; head cf=6
   ;; truly belongs at 120 but the estimated cache placed it at 290 (error +170).
@@ -563,15 +569,59 @@
       (is (= 80.0 (:offset (nth entries 0))))
       (is (= 90.0 (:cross (nth entries 1)))))
     (testing "seam delta = true head offset − estimated head offset"
-      (is (= -170.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+      (is (= -170.0 (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                               end-state 290.0))))
     (testing "emit-once: after the correction reconciles the head, delta is 0"
       ;; head shifted by the emitted −170 ⇒ old-head 120 ⇒ converged
-      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+      (is (= 0.0 (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                            end-state 120.0))))
     (testing "sub-pixel disagreement is treated as converged (no correction churn)"
-      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+      (is (= 0.0 (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                            end-state 120.0005))))))
+
+(deftest refine-seam-flags-cross-only-mismatch
+  ;; NEW-2: an open-run prefix packs the head beside its last cell, not below it.
+  (let [;; prefix = index 4 alone: run start at 80, run left open (x = 90)
+        entries (tw/flow-run-entries wrapl wrap-env (wrap-sized 4 5)
+                                     ((:anchor wrapl) wrap-env 4 80.0))
+        end-state (:state (peek entries))
+        stale (render/refine-seam wrapl wrap-env 5 (ui/Size 90 40) end-state 80.0 0.0)]
+    (testing "the head's main offset agrees while its run membership does not"
+      (is (= 0.0 (:delta stale)))
+      (is (true? (:cross-stale? stale))))
+    (testing "keeping that head is exactly the overlap — same offset AND cross as
+              the re-flowed cell above it"
+      (is (= 80.0 (:offset (nth entries 0))))
+      (is (= 0.0 (:cross (nth entries 0)))))
+    (testing "a head the re-flow agrees with on both axes is converged"
+      (let [ok (render/refine-seam wrapl wrap-env 5 (ui/Size 90 40) end-state 80.0 90.0)]
+        (is (= 0.0 (:delta ok)))
+        (is (false? (:cross-stale? ok)))))
+    (testing "a main mismatch still reports its delta"
+      (let [moved (render/refine-seam wrapl wrap-env 5 (ui/Size 90 40) end-state 200.0 90.0)]
+        (is (= -120.0 (:delta moved)))))
+    (testing "align-delta measures the prefix against a FRESH run at the head, so
+              re-anchoring by it leaves the retained head's run line empty"
+      ;; open run at y=80 of height 40 ⇒ the next run starts at 120, 40 below the head
+      (is (= 40.0 (:align-delta stale)))
+      (let [seed' ((:anchor wrapl) wrap-env 4 (- 80.0 ^double (:align-delta stale)))
+            aligned (tw/flow-run-entries wrapl wrap-env (wrap-sized 4 5) seed')
+            reseam (render/refine-seam wrapl wrap-env 5 (ui/Size 90 40)
+                                       (:state (peek aligned)) 80.0 0.0)]
+        (is (= 40.0 (:offset (nth aligned 0))))     ; the prefix run sits above
+        (is (= 0.0 (:align-delta reseam)))))
+    (testing "the alignment carries the layout's run gap"
+      (let [gapped (lay/wrap-layout {:spacing 0 :run-spacing 6})
+            e (tw/flow-run-entries gapped wrap-env (wrap-sized 4 5)
+                                   ((:anchor gapped) wrap-env 4 80.0))]
+        (is (= 46.0 (:align-delta (render/refine-seam gapped wrap-env 5 (ui/Size 90 40)
+                                                      (:state (peek e)) 80.0 0.0))))))
+    (testing "a layout without run structure reports no alignment"
+      (let [ml (lay/masonry-layout {:cross-axis-count 2})
+            menv {:axis :vertical :cross-extent 200.0 :item-count 12}
+            mseed ((:anchor ml) menv 4 80.0)]
+        (is (nil? (:align-delta (render/refine-seam ml menv 5 (ui/Size 90 40)
+                                                    mseed 80.0 0.0))))))))
 
 (deftest refinement-telescopes-to-true-residual
   ;; A window estimated 170px below truth converges in two refinement steps:
@@ -579,7 +629,7 @@
   ;; full estimate error, and index 0 lands exactly at offset 0.
   (let [;; step 1: seam at cf=6 (as above) emits −170; the window's coordinate
         ;; system is now checkpoint truth.
-        d1 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+        d1 (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                      (:state (peek (tw/flow-run-entries
                                                     wrapl wrap-env (wrap-sized 4 6)
                                                     ((:anchor wrapl) wrap-env 4 80.0))))
@@ -594,7 +644,7 @@
       (is (= -170.0 (+ d1 (- z)))))
     (testing "the from-0 re-flow seam-matches the corrected window (no re-emission)"
       ;; head cf=4 after landing: truth 80 vs corrected cache 80 ⇒ 0
-      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 4 (ui/Size 90 40)
+      (is (= 0.0 (seam-delta wrapl wrap-env 4 (ui/Size 90 40)
                                            (:state (peek from0)) 80.0))))))
 
 (deftest exact-landing-lands-index-0-at-offset-0
@@ -639,7 +689,7 @@
     (testing "the seam at the trimmed head (cf=8) matches exactly — NO correction"
       ;; the re-flowed prefix's end-state places index 8 at its true offset (160),
       ;; which the trimmed cache already held as its head ⇒ refine delta 0.
-      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 8 (ui/Size 90 40)
+      (is (= 0.0 (seam-delta wrapl wrap-env 8 (ui/Size 90 40)
                                            (:state (peek reflow))
                                            (:offset (nth from0 8))))))))
 
@@ -650,12 +700,12 @@
   ;; coherent; the displacement is reconciled by a later resting pass.
   (let [sized (wrap-sized 4 6)
         truth (tw/flow-run-entries wrapl wrap-env sized ((:anchor wrapl) wrap-env 4 80.0))
-        ^double d (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+        ^double d (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                             (:state (peek truth)) 290.0)
         seed' ((:anchor wrapl) wrap-env 4 (- ^double (:offset (nth truth 0)) d))
         anchored (tw/flow-run-entries wrapl wrap-env sized seed')]
     (testing "the re-anchored prefix meets the estimated head exactly (seam delta 0)"
-      (is (= 0.0 (render/refine-seam-delta wrapl wrap-env 6 (ui/Size 90 40)
+      (is (= 0.0 (seam-delta wrapl wrap-env 6 (ui/Size 90 40)
                                            (:state (peek anchored)) 290.0))))
     (testing "run structure survives — only the absolute offset moved"
       (dotimes [j (count truth)]
@@ -962,7 +1012,7 @@
             ^int k (int (:index cp))
             sized (wrap-sized k cf)
             entries (tw/flow-run-entries layout env sized (:state cp))
-            ^double d (render/refine-seam-delta layout env cf (ui/Size 90 40)
+            ^double d (seam-delta layout env cf (ui/Size 90 40)
                                                 (:state (peek entries)) head)
             entries (if (zero? d)
                       entries
@@ -1066,7 +1116,7 @@
             (let [cp (render/synth-renewal-checkpoint wrapl drift-env (dec cf))
                   ^int k (int (:index cp))
                   entries (tw/flow-run-entries wrapl drift-env (wrap-sized k cf) (:state cp))
-                  ^double d (render/refine-seam-delta wrapl drift-env cf (ui/Size 90 40)
+                  ^double d (seam-delta wrapl drift-env cf (ui/Size 90 40)
                                                      (:state (peek entries))
                                                      (double (get frame cf)))
                   ;; adopt: the reconciled seam shifts everything at/below it by d
@@ -1088,7 +1138,7 @@
       (doseq [^int k [0 2 4]]
         (let [entries (tw/flow-run-entries wrapl drift-env (wrap-sized k (+ k 2))
                                            ((:anchor wrapl) drift-env k (double (get frame k))))]
-          (is (= 0.0 (render/refine-seam-delta wrapl drift-env (+ k 2) (ui/Size 90 40)
+          (is (= 0.0 (seam-delta wrapl drift-env (+ k 2) (ui/Size 90 40)
                                                (:state (peek entries))
                                                (double (get frame (+ k 2)))))))))))
 

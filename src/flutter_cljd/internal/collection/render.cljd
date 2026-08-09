@@ -449,16 +449,33 @@
   [^bool segment?]
   (not segment?))
 
-(defn refine-seam-delta
-  "How far a checkpoint-seeded re-flow says the cache head REALLY sits from
-   where the estimated cache placed it: places head index `cf` (its measured
-   `head-size`) through the layout's :place seeded with the re-flowed prefix's
-   end state, and returns `true-offset − old-head` — this seam's refinement
-   correction. 0.0 when below the pixel threshold (converged / emit-once). Pure."
-  [layout env ^int cf ^ui/Size head-size end-state ^double old-head]
+;; @ai-generated(guided)
+(defn refine-seam
+  "How a checkpoint-seeded re-flow disagrees with the cache head: places head index
+   `cf` (its measured `head-size`) through the layout's :place seeded with the
+   re-flowed prefix's end state and compares BOTH axes with what the estimated
+   cache recorded. Returns
+     {:delta        `true-offset − old-head` — this seam's refinement correction,
+                    0.0 below the pixel threshold (converged / emit-once)
+      :cross-stale? the re-flow puts the head on a different CROSS slot
+      :align-delta  how far the prefix sits from letting a FRESH RUN start at
+                    `old-head` (nil without :run-start)}
+   A packing layout can re-flow the prefix into an OPEN run, which places the head
+   at the same main offset with a different run membership — so main agreement
+   alone is not convergence: keeping the cached head there leaves it sharing
+   {offset, cross} with the cell the re-flow put in that slot. `:align-delta` is
+   the shift that makes the retained head's run start where the cache put it,
+   which `:delta` cannot express — aligning on the head's PLACEMENT is what puts
+   an open prefix run on top of it. Pure."
+  [layout env ^int cf ^ui/Size head-size end-state ^double old-head ^double old-cross]
   (let [[gm _] ((:place layout) env cf head-size end-state)
-        ^double d (- (double (:offset gm)) old-head)]
-    (if (> (.abs d) 1e-3) d 0.0)))
+        run-start-fn (:run-start layout)
+        ^double d (- (double (:offset gm)) old-head)
+        ^double c (- (double (or (:cross gm) 0.0)) old-cross)]
+    {:delta (if (> (.abs d) 1e-3) d 0.0)
+     :cross-stale? (> (.abs c) 1e-3)
+     :align-delta (when run-start-fn
+                    (- (double (run-start-fn env end-state)) old-head))}))
 
 (defn landing-decision
   "Decision kernel for the exact-landing check when the cache reaches index 0:
@@ -1794,7 +1811,7 @@
    checkpoints for the re-flowed runs.
 
    Phase C seam reconciliation: when the re-flow says the cache head really sits
-   `d` away from where the estimated cache placed it (refine-seam-delta):
+   `d` away from where the estimated cache placed it (refine-seam):
    - `emit?` (resting, unsuppressed): trust the re-flowed truth — drop the
      stale-coordinate entries below the seam, shift their attached children by
      `d`, and return `d` as this step's refinement correction; backfill-leading!
@@ -1805,6 +1822,9 @@
      the prefix AT THE SEAM via :anchor(lo, first-offset − d). Structure stays
      exact (lo is a renewal point); the absolute displacement stays latent above,
      reconciled by a later resting pass or the exact landing at 0.
+   A CROSS-only mismatch (`:cross-stale?`, main converged) takes the same
+   drop-the-stale-entries route with no correction and no gate: nothing moves on
+   the scroll axis, so there is nothing to emit and nothing for a motion to race.
 
    Returns nil (no leading child available — caller stops), true (stepped,
    caller continues), or a double (correction emitted — caller returns it)."
@@ -1842,20 +1862,30 @@
             entries (tw/flow-run-entries layout env sized use-seed)
             ;; seam: where does the re-flow say the head (index cf) really sits?
             head-child (some->> ^r/RenderBox (get inserted (dec cf)) (.childAfter rs))
-            ^double old-head (double (:offset (nth (.-cache rs) 0)))
-            ^double d (if (and head-child
-                               (= cf (.indexOf rs ^r/RenderBox head-child))
-                               (.-hasSize ^r/RenderBox head-child))
-                        (refine-seam-delta layout env cf (.-size ^r/RenderBox head-child)
-                                           (:state (peek entries)) old-head)
-                        0.0)
+            head-entry (nth (.-cache rs) 0)
+            ^double old-head (double (:offset head-entry))
+            seam (if (and head-child
+                          (= cf (.indexOf rs ^r/RenderBox head-child))
+                          (.-hasSize ^r/RenderBox head-child))
+                   (refine-seam layout env cf (.-size ^r/RenderBox head-child)
+                                (:state (peek entries)) old-head
+                                (double (or (:cross head-entry) 0.0)))
+                   {:delta 0.0 :cross-stale? false})
+            ^bool cross-stale? (boolean (:cross-stale? seam))
+            align-delta (:align-delta seam)
+            anchor-fn (:anchor layout)
+            reanchor (fn [^double shift]
+                       (let [seed' (anchor-fn env lo (- (double (:offset (nth entries 0))) shift))]
+                         [(tw/flow-run-entries layout env sized seed') seed' 0.0]))
+            ^double d (double (:delta seam))
             [entries use-seed ^double d]
             (cond
-              (or (zero? d) emit?) [entries use-seed d]
-              (:anchor layout)
-              (let [seed' ((:anchor layout) env lo (- (double (:offset (nth entries 0))) d))]
-                [(tw/flow-run-entries layout env sized seed') seed' 0.0])
-              ;; no :anchor to re-anchor with while frozen — keep the stale seam
+              (and (zero? d) (not cross-stale?)) [entries use-seed d]
+              (and emit? (not (zero? d))) [entries use-seed d]
+              ;; a retained head keeps its run only if the prefix ends above it
+              (and cross-stale? align-delta anchor-fn) (reanchor (double align-delta))
+              (and (not (zero? d)) anchor-fn) (reanchor d)
+              ;; nothing to re-anchor with while frozen — keep the stale seam
               ;; (Phase B behavior) rather than emit outside the gate.
               :else [entries use-seed 0.0])]
         (dotimes [j (count entries)]

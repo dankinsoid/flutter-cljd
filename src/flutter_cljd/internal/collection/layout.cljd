@@ -40,6 +40,14 @@
      :flow-end  (fn [env state] double) — the minimum main-axis offset at
                 which any subsequent child could be placed; tells the engine
                 when the window is filled
+     :run-start (fn [env state] double) — OPTIONAL, for layouts with run
+                structure. The main-axis offset at which the next INDEPENDENT
+                run begins after `state` — what :anchor would be seeded with
+                there. :flow-end answers where the next CHILD may land, which
+                inside an open run is the run's own start, so it cannot express
+                the inter-run gap; the engine needs that gap wherever it reasons
+                BACKWARD from a known run start (leading dead-reckon, seam
+                re-anchor). Absent → the engine falls back to :flow-end.
      :anchor    (fn [env index offset] state) — reconstruct the flow state as if
                 children 0..index-1 ended at `offset`. TWO MODES, by whether
                 `index` is a renewal point (see :renewal-point?):
@@ -268,6 +276,7 @@
                     [{:offset ny :cross 0.0}
                      {:x cw :y ny :h ch}]))))
      :flow-end (fn [_env state] (:y state))
+     :run-start (fn [_env state] (+ ^double (:y state) ^double (:h state) rsp))
      :anchor (fn [_env _i ^double offset] {:x nil :y offset :h 0.0})
      ;; :cross == 0 marks the first item of a run — the state before it is an
      ;; empty run at that offset, exactly what :anchor reconstructs.
