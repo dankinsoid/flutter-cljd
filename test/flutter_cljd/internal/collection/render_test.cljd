@@ -312,6 +312,36 @@
     (let [[^double ws ^double we] (render/reanchor-band 1000.0 2200.0 517.3)]
       (is (< (.abs (- (- we ws) 1200.0)) 1e-9)))))
 
+;; @ai-generated(guided)
+;; --- seed-plan: seed-cache!'s arms are effects of this one classification ---
+
+(deftest seed-plan-classification
+  (let [base {:cache? false :far? false :at-top? false :invertible? true
+              :landing-init? false :deep? false :attached? false
+              :first0? false :anchor-fn? true}]
+    (testing "a live band near the window is kept — cache IS the anchor's frame"
+      (is (= :keep (render/seed-plan (assoc base :cache? true)))))
+    (testing "far window over a live band: reassignment, at-top wins over inverse"
+      (is (= :far-inverse (render/seed-plan (assoc base :cache? true :far? true))))
+      (is (= :far-top (render/seed-plan (assoc base :cache? true :far? true
+                                               :at-top? true)))))
+    (testing "far but no estimate and not at top: keep the band (nothing to seed by)"
+      (is (= :keep (render/seed-plan (assoc base :cache? true :far? true
+                                            :invertible? false)))))
+    (testing "the landing's corrected re-run outranks every other empty-cache seed"
+      (is (= :landing-init (render/seed-plan (assoc base :landing-init? true
+                                                    :deep? true)))))
+    (testing "cold deep start inverse-seeds near the window"
+      (is (= :cold-deep (render/seed-plan (assoc base :deep? true)))))
+    (testing "nothing attached at the top / first child at 0: exact from-0 seed"
+      (is (= :at-0 (render/seed-plan base)))
+      (is (= :at-0 (render/seed-plan (assoc base :attached? true :first0? true)))))
+    (testing "a surviving deep window dead-reckons at the resolved anchor slot"
+      (is (= :anchor (render/seed-plan (assoc base :attached? true)))))
+    (testing "no :anchor hook: drop children and re-flow from 0"
+      (is (= :restart-0 (render/seed-plan (assoc base :attached? true
+                                                 :anchor-fn? false)))))))
+
 ;; --- align-start! recovery when the window sits past the content end ---
 ;; At the bottom overscroll the window is entirely past the last item; align-start!
 ;; found no cache entry reaching it and its attach-idx overshot to item-count. The
