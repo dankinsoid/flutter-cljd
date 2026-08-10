@@ -824,3 +824,26 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - Next-step impact: step 9 split into 9a (stages 0-3, fable), 9b (stages 4-6),
   9c (stages 8-9); fuzz re-campaign (stage 7) folded into step 10. WIP diff
   preserved as a patch file before stage-0 revert.
+
+### 13a. Anchor-primary stages 0-2
+- Status: in-progress (stages 0-1 done, stage 2 restarted after an API-limit cutoff)
+- Stage 0 (20867d1): oracles O10 (anchor rest stability: (key,frac) bit-stable
+  across idle pumps), O11 (truth equation off + frac*extent == scrollOffset),
+  O12 (extent quiescence); O9 split into an unconditional per-pass WORK probe
+  (materialization-budget arithmetic, x2 mid-segment) + relaxed mid-segment
+  retention denominators — this closed step-10's deliberately-open :o9 family
+  (7 seeds) as calibrated green. BouncingScrollPhysics rig option + :bounce
+  fuzz batch (seeds 401-410) green. All three new oracles hold on the current
+  engine — no known-red additions. Suite 320 green.
+- Stage 1 (50b169e): seed-cache! re-expressed as resolve/reassign — the anchor
+  slot resolves FIRST (resolve-anchor-slot: by key on count change, by index
+  cross-layout), classification is one pure kernel (seed-plan: :keep/:far-top/
+  :far-inverse/:landing-init/:cold-deep/:at-0/:anchor/:restart-0), each old cond
+  arm becomes an effect of that plan. align-start!/walk! mechanically unchanged
+  (at rest the band IS the anchor's frame). Suite 321 green; fuzz byte-identical
+  to the stage-0 baseline over all five profiles.
+- Fuzz baseline carried into stage 2 (13 seeds): :o6 111/151/17/205/235/34/52/55,
+  :o5 23/133/322/337, :o1 251; bounce batch green.
+- Stage 2 (Delta-epilogue) was cut off by an API limit with a half-applied field
+  rename (pendingRebase -> reseedCause, passLead added, 10 consumer sites
+  untouched); the partial diff was reverted, stage 2 restarts from 50b169e.
