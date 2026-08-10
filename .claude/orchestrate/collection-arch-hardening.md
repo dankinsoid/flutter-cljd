@@ -215,6 +215,20 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   which is the opposite class from the epilogue's translate. They die with
   stage 3's anchor-seeded walk, where the anchor's in-pass delta is 0 by
   construction. (by: step-13a stage 2)
+- 2026-08-10: 9a's "segAnchor flow `to` reads the capture-placed cache entry"
+  SURVIVES, re-founded: the cache entry is not a seeding artifact but the frame
+  the capture pass actually placed, and the tween's own `to-src` is now built to
+  reproduce it. The stage-2 diagnosis inverted this — it read a constant
+  `point-desired` as the set-point going silent, when the silence was right and
+  the tween's target was the moving side. A `to` slot and a `to-src` frame that
+  can disagree in-window is the bug; agreeing by construction is the fix, and
+  which of the two the set-point reads then stops mattering. (by: step-13a stage 2b)
+- 2026-08-10: a frozen segment must never lay a child it has no frame for. An
+  attached child above the `to-src` window gets `zero-frame` — offset 0 — which
+  strands firstChild at the scroll top and costs the next capture an O(gap) walk
+  (`:o9` seed 340). The window sources are already nil-clamped (§3.2 layer 1); the
+  per-child frame is not. (by: step-13a stage 2b)
+
 - 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
   it iff no PREVIOUS segment tween happened to still be around — an accident of
   the `segTween` gate, and the opposite of the flow capture. A capture
@@ -227,13 +241,17 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   closed; the absorption channel exists whenever a capture produces a rebase
   (anchor resolution first, pure-shift fallback second), so capture-mode's
   "rebase returned as a value" premise holds. Campaign-3 shows 0 recurrence.
-- ~~Residual campaign-3 classes~~ **PARTLY RESOLVED (step-13a stage 2)**: the O9
-  denominator closed in stage 0; the o6 count-change family is diagnosed (segment
-  set-point, see the stage-2 triage) but NOT fixed. Open: does stage 3 proceed on
-  a stage-2 tree whose fuzz set is one seed worse, or does the segAnchor `to`
-  source get fixed first (it owns 7 of the 8 o6 seeds and blocks the stage-2
-  gate)? The set-point fix is outside stage 2's mandate and untried.
-  (raised by: step-13a stage 2)
+- ~~Residual campaign-3 classes~~ **PARTLY RESOLVED (step-13a stage 2b)**: the O9
+  denominator closed in stage 0; the o6 count-change family is fixed at its real
+  root (the segment's `to` FRAMES, not the `to` slot — see stage 2b). Fuzz is 11
+  seeds, a strict subset of stage 2's 14, so stage 3 proceeds on a better tree.
+  Still open, all traced to mechanisms outside the count-change family: `:o6`
+  34/55/205 (a far-jump refinement correction lands past `maxScrollExtent`; the
+  boundary clamp moves the viewport), `:o6` 235 + 52@16 (layout-morph key-moved),
+  `:o5` 7 gone. (raised by: step-13a stage 2, updated by: stage 2b)
+- Frameless attached children lay at offset 0 (`:o9` seed 340, stage 2b decisions
+  log). Blocks the `to-src` set-point flip; worth closing before stage 3 widens
+  the anchor's role. (raised by: step-13a stage 2b)
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -855,7 +873,7 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   preserved as a patch file before stage-0 revert.
 
 ### 13a. Anchor-primary stages 0-2
-- Status: in-progress (stages 0-1 done, stage 2 restarted after an API-limit cutoff)
+- Status: stages 0-2 done; stage 2's unmet gate closed by stage 2b (below)
 - Stage 0 (20867d1): oracles O10 (anchor rest stability: (key,frac) bit-stable
   across idle pumps), O11 (truth equation off + frac*extent == scrollOffset),
   O12 (extent quiescence); O9 split into an unconditional per-pass WORK probe
@@ -897,3 +915,39 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   ends 280px high. Identical shape at seed 123. Stage 2 changes nothing here,
   which is why the family neither closes nor shrinks; the membership churn (111
   out, 123 in) is a chaotic re-roll of the same latent defect.
+
+### 13a stage 2b. The segment `to` frame (o6 count-change family)
+- Status: done (one commit). Fuzz **14 -> 11 seeds, a strict subset**; suite 321
+  green; `-t known-red` empty; `bin/check` clean.
+- Traced (seeds 52 + 51, per-pass): stage 2's diagnosis named the right symptom
+  and the wrong side. `to-off == from-off` is CORRECT for seed 52 — `[:remove 90]`
+  is far above the window, so nothing in it may move. The drift came from the
+  OTHER endpoint: `live-only-flow-window` re-flowed the whole window from its head
+  with `flow-seed-state`, i.e. `:anchor` — which for masonry LEVELS the columns and
+  for wrap fabricates a run break. The capture walk had placed that window
+  anchor-seeded + backfilled, a placement no single forward re-flow reproduces, so
+  the tween's `to` frames sat 126px (seed 52) / 165px (seed 51) off the placement
+  the pass had just made, and the segment slid the content there while the
+  set-point — correctly — emitted nothing.
+- Fix: the capture walk's own placement IS the target frame. Survivors above the
+  first in-window dying cell keep their cache entries verbatim; only the suffix
+  below it re-flows, seeded with `state-before` at that cell — the gap closes,
+  everything else stays exactly where the capture put it. O(window), no new state.
+- Seeds: `:o6` 17 / 123 / 151 green; 52's `[:remove 90]` green (it now fails at
+  op 16, `[:layout :wrap]` — a morph, not a count change). `:o6` 34 / 55 / 205
+  survive: traced (55) to a DIFFERENT mechanism — the far-jump estimate refinement
+  emits a +2991px correction that lands the offset past `maxScrollExtent`, and the
+  boundary clamp eats 63px. `:o6` 235 + 52@16 are layout-morph key-moved.
+- `:o5` 7 (`:full` op 19, extent-below-content mid-segment, introduced by stage 2)
+  SURVIVES and is still untraced — out of stage-2b budget, and unrelated to the
+  segment frames by its oracle. Carried as a fuzz seed, no red test: reproducing
+  it needs the trace stage 2 never took either.
+- MEASURED AND REJECTED: reading `to` from `to-src` (the task's proposed fix, and
+  the flip of 9a's decision). With the frames fixed the two sources agree
+  everywhere except below an in-window dying cell, so it closes NOTHING extra on
+  today's seeds, and it adds seed 340 (`:churn`, `:o9` work: 163 materializations
+  vs a 158 budget). That seed exposes a pre-existing latent, not the flip itself: a
+  child attached ABOVE the frozen `to-src` window has neither a committed rect nor
+  a `to` frame, so `keyed-tween-layout` lays it at offset **0** (`zero-frame`); the
+  next capture then finds firstChild at 0, inverse-seeds by estimate, and walks 163
+  children in one pass. Fix that first, then the flip is free.
