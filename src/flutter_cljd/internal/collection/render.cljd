@@ -1495,9 +1495,14 @@
      :seeded     — re-anchored near the window (estimates until refined).
      :at-top     — the inversion put the window inside index 0's span: the exact
                    from-0 seed is the right (and O(window)) move; caller seeds it.
-     :degenerate — the estimate's density never reaches the window (an unseeded
-                   density saturates at the last index at offset ≪ ws); state
-                   untouched, the caller keeps its previous frontier."
+     :degenerate — the estimate's density never reaches the window and the count is
+                   unknown, so there is no tail to fall back on; state untouched,
+                   the caller keeps its previous frontier.
+
+   The `off-start >= ws/2` guard rejects a seed so far ABOVE the window that the
+   forward walk to it would be the O(gap) one this function exists to avoid. The
+   LAST index is exempt: nothing follows it, so a window past the content end costs
+   O(1) from there however far the estimate undershot (NEW-15)."
   [^CollectionRenderSliver rs layout env ^double ws]
   (let [approx-fn (:approx-offset layout)
         anchor-fn (:anchor layout)
@@ -1507,7 +1512,7 @@
         ^int start (if (pos? n) (math/max 0 (math/min raw (dec n))) (math/max 0 raw))
         ^double off-start (double (approx-fn env start))]
     (cond
-      (and (pos? start) (>= off-start (* 0.5 ws)))
+      (and (pos? start) (or (>= off-start (* 0.5 ws)) (= start (dec n))))
       (do (.-cache! rs [])
           (.-checkpoints! rs {})
           (.-cacheFirst! rs start)
