@@ -254,6 +254,43 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   stage 3, where the anchor-seeded walk makes the anchor's in-pass delta 0 by
   construction. (by: step-13a stage 2c)
 
+- 2026-08-10: a flow pass's frame is a run-chain from wherever its walk STARTS,
+  so it is not reproducible from a different start. `translate-window!` empties
+  the band, which moves the next pass's walk start to the frontier and re-packs
+  the runs below it; `stitch-prefix` glues a re-anchored prefix onto a retained
+  suffix that matches only in the head's OFFSET, so the chain the next pass
+  re-derives is a different one. Nothing in the pass can prevent that — the
+  anchor is what holds ACROSS it, which is why anchor-follow had to stop reading
+  the emptied cache. (by: step-13b stage 3)
+- 2026-08-10: re-deriving the window inside `translate-window!` (so the next pass
+  would reproduce it) is stage 2b's rejected move in another costume: a forward
+  re-flow seeded at the frontier levels a masonry's columns and fabricates a wrap
+  run break. MEASURED: seed 34 and seed 52 both drift worse with it. The rigid
+  translation stays; the anchor absorbs the re-derivation. (by: step-13b stage 3)
+- 2026-08-10: the anchor reference must be an IDENTITY, not "the first cached
+  entry overlapping the top". A bsearch reference re-picks the run's lowest
+  row-mate every pass, so a re-pack that splits the run holds the run and drops
+  the child O6 tracks. viewAnchor is that identity, re-resolved by key across a
+  count change. (by: step-13b stage 3)
+- 2026-08-10: a SYNTHESIZED checkpoint's seam is not a measurement — it sits at
+  `:approx-offset`, which is a function of the measured EMA that this very window
+  feeds. Honouring it under a latched anchor makes the frame chase itself one
+  `1 − ema-alpha` = 0.75 step per pass, and the viewport's 10-cycle correction
+  budget runs out first (seed 52 turned :o6 into :o1 that way). This is design
+  §2.1's latching invariant, discovered from the other end: "aggregate drift never
+  moves a latched lead". A pass that REASSIGNED the anchor still honours it —
+  there the estimate is the truth it just chose. (by: step-13b stage 3)
+- 2026-08-10: seeding EVERY `:anchor`-plan re-seed at viewAnchor's slot (design
+  §2.2 step 2, the anchor-seeded walk) was MEASURED AND REJECTED: it breaks NEW-2
+  (wrap runs stop tiling after a backward drag) because the anchor is generally
+  mid-run and `:anchor` opens a fresh one there. The slot resolution stays scoped
+  to the causes that renumber or re-space it. (by: step-13b stage 3)
+- 2026-08-10: anchor-primary Q1 resolved AGAINST its leaning: no `leadEstimate`
+  field. The latch it describes already exists as `viewAnchor :off` (sampled every
+  pass) + `anchoredTo0`, and a second copy of the anchor's offset would be state
+  to keep in sync, not single ownership — against the design's own "every stage
+  should delete more state than it adds". Q3 (1e-3 hysteresis) confirmed: no new
+  tunable was needed. (by: step-13b stage 3)
 - 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
   it iff no PREVIOUS segment tween happened to still be around — an accident of
   the `segTween` gate, and the opposite of the flow capture. A capture
@@ -270,11 +307,20 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   denominator closed in stage 0; the o6 count-change family is fixed at its real
   root (the segment's `to` FRAMES, not the `to` slot — see stage 2b). Fuzz is 11
   seeds, a strict subset of stage 2's 14, so stage 3 proceeds on a better tree.
-  Still open, all traced to mechanisms outside the count-change family: `:o6`
-  34/55/205 — **retriaged (stage 2c)** as NEW-14, the above-window-insert anchor
-  drift, red-tested at seed 34 and DEFERRED to stage 3 (not a boundary clamp);
-  `:o6` 235 + 52@16 (layout-morph key-moved); `:o5` 7/23/133/337; `:o1` 251.
-  (raised by: step-13a stage 2, updated by: stage 2b, stage 2c)
+  **NEW-14 CLOSED (step-13b stage 3)**: `:o6` 34/55/205 and 52@16 plus `:o5` 7
+  are green, the red test is un-tagged. Fuzz is 6 seeds. Still open: `:o6` 235
+  (layout-morph key-moved), `:o6` 337 (was `:o5` 337 — same seed, op 6 → 8),
+  `:o5` 23/133, `:o1` 251, and NEW `:o1` 56 (below).
+  (raised by: step-13a stage 2, updated by: stage 2b, stage 2c, step-13b stage 3)
+- **NEW-15 (raised by step-13b stage 3, seed 56, `:full` op 10)**: a jump PAST
+  the content end inverse-seeds (which empties the cache), then
+  `align-start-fallback` cannot take its `:attach-last` arm — that arm needs a
+  non-empty cache to know the last index — and falls to `:restart-0`, walking
+  from index 0. The O9 work probe catches it at 558 children for a 557-child
+  budget. The path is untouched by stage 3; the episode re-rolled onto it (the
+  same chaotic membership churn stage 2 saw with 111/123). Not a latching or
+  anchor defect — `align-start-fallback` needs an item-count-only route to the
+  last index.
 - ~~Frameless attached children lay at offset 0~~ **RESOLVED (stage 2c)**:
   `parked-frame` clamps the per-child frame to the source's own edge. Seed 340 is
   clean and the `to-src` set-point flip is now inert on the fuzz tree (identical
@@ -1023,3 +1069,61 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   as its first correctness target: it is the leading-estimate-vs-anchor
   disagreement the anchor-seeded walk exists to remove, and its red test is the
   acceptance criterion.
+
+### 13b stage 3. NEW-14, the latching invariant, and `:lead-emit?`
+- Status: done (2 commits — 4f9f13c the anchor/latching fix, 54edbf4 the
+  capability collapse). Default suite 323 -> **326** green, O7 in-suite;
+  `-t known-red` **empty** (NEW-14 un-tagged); `bin/check` clean.
+- Fuzz **10 -> 6 seeds**. Green: `:o6` 34 / 52 / 55 / 205, `:o5` 7. Carried:
+  `:o6` 235, `:o5` 23 / 133, `:o1` 251. Flipped: `:o5` 337 op 6 -> `:o6` 337
+  op 8 (same seed, later op). **NEW: `:o1` 56** — the one gate deviation, logged
+  as NEW-15 in Open questions; it is a jump-past-the-end `:restart-0` walk the
+  work probe catches, on a path stage 3 does not touch. The gate asked for a
+  strict subset; the set is a subset plus that one seed, and no oracle or probe
+  was weakened to get there.
+- **NEW-14, traced (seed 34, per pass)**: the count-change re-anchor pins the
+  anchor at its old offset (by design), the backfill measures the leading extent
+  against a checkpoint, and the Δ-epilogue translates the window by it — that
+  part is CORRECT and holds the anchor. The drift arrives on the NEXT pass: the
+  translation empties the band, so the pass re-derives the window from the
+  frontier, the run-chain re-packs, index 201 moves 115px against the anchor, and
+  `anchor-before` — which could only read the cache the translation had just
+  dropped — returned nil. Nothing held the anchor across the re-derivation.
+- Fix, three parts, all in the epilogue:
+  1. `anchor-before` falls back to the engine's own `viewAnchor` when the seed
+     emptied the band, re-resolved by KEY across a count change and lifted into
+     the frame the seed already rebased to. Gated on `anchor-preserved?` — the
+     new pure kernel over `seed-plan` — so a far jump / cold start still
+     teleports the anchor instead of fighting the teleport.
+  2. `anchor-delta` reads the LAID CHILD, not the cache: the translation drops it.
+  3. The epilogue is ONE producer — translate first, then emit the anchor's own
+     displacement over the whole pass. A pass with no anchor to hold falls back
+     to the raw measure. `seed-cache!`/`normalize-cache!` now return their plan.
+- **The latching invariant, arrived at empirically**: part 1 alone closed NEW-14
+  but turned seed 52 into an `:o1` (10 layout cycles exhausted) and added seed 33
+  — the anchor-follow was emitting once per round of an estimate cascade that
+  already emitted once per round. The cascade's engine is `synth-renewal-
+  checkpoint`: its `:offset` is `:approx-offset`, a function of the measured EMA
+  that the window itself feeds, so honouring its seam makes the frame chase its
+  own aggregate at 0.75/pass. A synthesized checkpoint's seam now reports 0.0
+  under a latched anchor (its re-flow still runs — real runs above the window is
+  what it is for) and is honoured only when the pass reassigned the anchor.
+- MEASURED AND REJECTED, both logged in the Decisions log: re-deriving the window
+  inside `translate-window!` (stage 2b's levelled-runs defect again — seeds 34
+  and 52 both drift worse), and seeding every `:anchor` re-seed at viewAnchor's
+  slot per design §2.2 step 2 (breaks NEW-2's wrap tiling: the anchor is mid-run
+  and `:anchor` opens a fresh run there).
+- **Capability collapse + `:settled` ON**: `:refine?` + `:origin-refine?` ->
+  `:lead-emit?`; the ballistic sub-gate stays in the epilogue (`refine-emit?`
+  filters the seam, the origin residuals ride the capability unfiltered, #B).
+  `:settled` gets `:lead-emit?` true — step 11's deferred divergence, dissolved
+  as design §3 owns it. `:overscan?`/`:prune-commit?` stay OFF there. Pinned by
+  `settled-lands-exactness-during-the-playing-clock` (kernel-level: flipping the
+  row turns it red) plus a harness scenario for the mid-clock jump-to-top. The
+  change is fuzz-neutral — identical 6 seeds before and after.
+- **Field delta: 0** (`anchoredTo0` kept, no `leadEstimate` added — Q1 resolved
+  against its leaning, see the Decisions log). Deleted: `frontier-after-prune`
+  (the identity kernel) and its write site, one pass-caps column. Added:
+  `anchor-preserved?` (pure, no state).
+- Not done, out of stage-3 scope as scoped here: stages 4 (the `:o5` remove-extent
+  family) and 5 (cleanup handoff).
