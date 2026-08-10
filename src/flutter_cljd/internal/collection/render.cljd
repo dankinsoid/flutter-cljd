@@ -1572,15 +1572,19 @@
 
 ;; @ai-generated(guided)
 (defn- resolve-anchor-slot
-  "The attached slot the anchor directs a re-seed at: a count change resolves
-   viewAnchor by KEY (reconciliation moved the element, §3.3), a cross-layout
-   change by index. -1 when the anchor cannot direct this seed. O(window)."
+  "The attached slot a re-seed anchors at: viewAnchor's own, resolved by KEY when
+   a count change renumbered the slots (reconciliation moved the element, §3.3)
+   and by index otherwise. -1 when there is no anchor to direct the seed.
+
+   Seeding at the ANCHOR rather than at the first attached child is what keeps it
+   still: the frame a flow pass lays is a run-chain from its seed, so a seed one
+   run higher re-packs everything below it and slides the anchor (NEW-14). O(window)."
   [^CollectionRenderSliver rs cause]
   (let [va (.-viewAnchor rs)]
     (cond
       (nil? va) -1
-      (= :cross-layout cause) (int (:idx va))
-      (= :count-change cause) (int (attached-index-of-key rs (:key va)))
+      (identical? :count-change cause) (int (attached-index-of-key rs (:key va)))
+      (identical? :cross-layout cause) (int (:idx va))
       :else -1)))
 
 (defn- seed-cache!
@@ -1593,7 +1597,9 @@
      regardless of cache contents (cache = accelerator, never the algorithm).
    - EMPTY cache (cold start / invalidation): on a cold deep start the same
      inverse seed; otherwise anchor at the resolved anchor slot (or the first
-     attached child's last-frame offset) via :anchor, or at index 0."
+     attached child's last-frame offset) via :anchor, or at index 0.
+   Returns the applied `seed-plan` — the caller reads it to tell an anchor the
+   pass must HOLD from one it deliberately teleported (`anchor-preserved?`)."
   [^CollectionRenderSliver rs layout env]
   (let [init-fn (:init layout)
         anchor-fn (:anchor layout)
@@ -1689,13 +1695,24 @@
       (do (.collectGarbage rs (count-attached rs) 0)
           (.-cacheFirst! rs 0)
           (.-baseState! rs (init-fn env))
-          (.-anchoredTo0! rs true)))))
+          (.-anchoredTo0! rs true)))
+    plan))
+
+;; @ai-generated(guided)
+(defn ^bool anchor-preserved?
+  "Whether a `seed-plan` left the anchor where the previous pass put it. `:keep`
+   and `:anchor` re-derive the frame AROUND the anchor, so the pass owes a
+   correction for any displacement it introduces; every other plan is a
+   deliberate reassignment (far jump, cold start, from-0 landing) where holding
+   the old anchor would fight the teleport. Pure."
+  [plan]
+  (or (identical? :keep plan) (identical? :anchor plan)))
 
 (defn- normalize-cache!
   "Keyed reconciliation may remap attached child indices arbitrarily between
    frames; when firstChild no longer falls inside the cached prefix, drop the
    cache and re-anchor at its stale offset. Keeps the walk invariant
-   0 <= firstChild-rel <= (count cache)."
+   0 <= firstChild-rel <= (count cache). Returns the re-seed's plan, or nil."
   [^CollectionRenderSliver rs layout env]
   (when-let [fc (.-firstChild rs)]
     (let [rel (- (.indexOf rs ^r/RenderBox fc) (.-cacheFirst rs))]
@@ -1914,19 +1931,18 @@
 ;; @ai-generated(guided)
 (defn- translate-window!
   "The Δ-epilogue's single reconciliation op (design §2.2 step 4): moves the WHOLE
-   laid window by `d` in content space, rigidly. The pass decided every internal
-   frame anchor-relative before this point, so the translation cannot change how
-   the window's cells sit against each other — which is what makes the anchor
-   structurally unable to drift against its neighbours.
+   laid window by `d` in content space, rigidly. A re-derivation would not do: a
+   forward re-flow seeded at the frontier re-opens the run there — it levels a
+   masonry's columns and fabricates a wrap run break (stage 2b's `to`-frame
+   lesson) — so the only frame-preserving move is the rigid one.
 
    The geometry cache and the checkpoint store are dropped rather than rewritten:
    their entries carry layout-OPAQUE flow states whose offsets are absolute, and
    only the layout could translate one (`:place`'s state is not a public shape).
    The band keeps its FRONTIER and re-seeds `baseState` at the frontier's
-   translated offset — exact, because a backfill leaves cacheFirst on a renewal
-   point, where the layout's `:anchor` state is a function of offset alone. The
-   next pass re-walks the window from measured sizes either way (walk! lays every
-   child every pass; the cache only saves its `:place` arithmetic)."
+   translated offset. The next pass therefore re-walks the window from that seed,
+   which need NOT reproduce the stitched frame this pass laid — the anchor is
+   what holds across that re-derivation (see anchor-before/anchor-delta)."
   [^CollectionRenderSliver rs layout env ^double d]
   (loop [child (.-firstChild rs)]
     (when child
@@ -1969,9 +1985,17 @@
    start (`:align-delta`) instead: the retained head keeps its own run rather than
    sharing a slot with the cell the re-flow packed there.
 
+   `measured?` says the seed is a STORED checkpoint — a frame a real walk left
+   behind. A SYNTHESIZED one (synth-renewal-checkpoint) sits at the layout's
+   `:approx-offset`, so its seam reports the estimate's own opinion, not a
+   measurement; the latching invariant (design §2.1) forbids that from moving the
+   window, and letting it through makes the frame chase the measured-EMA it feeds
+   (a 0.75-per-pass decay that outlives the viewport's correction budget). Its
+   re-flow still runs — real runs above the window is what it exists for.
+
    Returns nil (no leading child available — caller stops) or the step's
    leading-extent delta (0.0 when the re-flow and the cache agree)."
-  [^CollectionRenderSliver rs layout env cp]
+  [^CollectionRenderSliver rs layout env cp ^bool measured?]
   (let [measure-fn (:measure layout)
         ^int cf (.-cacheFirst rs)
         ^int k (int (:index cp))
@@ -2044,7 +2068,7 @@
         (.-cache! rs (stitch-prefix entries (.-cache rs)))
         (.-cacheFirst! rs lo)
         (.-baseState! rs use-seed)
-        d))))
+        (if measured? d 0.0)))))
 
 (defn leading-step-entry
   "Canonical single-child leading dead-reckon used by estimate-leading-step! when
@@ -2191,9 +2215,17 @@
    `origin-emit?` gates the ORIGIN residuals; it is off only mid-segment, NOT for
    velocity, so a fast up-fling still lands index 0 exactly (#B). `from-init?`
    says this pass's frame came out of a from-:init walk, which is the only frame
-   a non-zero index-0 offset can indict the layout for."
+   a non-zero index-0 offset can indict the layout for.
+
+   `latched?` says the seed KEPT the anchor. A synthesized checkpoint's seam is
+   the layout's `:approx-offset` opinion, not a measurement, so under a latched
+   anchor it must not move the window (design §2.1) — otherwise the frame chases
+   the measured EMA that its own window feeds, one 0.75 step per pass, past the
+   viewport's correction budget. A pass that REASSIGNED the anchor has already
+   chosen the estimate as its truth, and there the same seam is how a cold or
+   far-jumped frame stops being O(gap) away from it."
   ^double [^CollectionRenderSliver rs layout env ^double ws ^bool emit? ^bool origin-emit?
-           ^bool from-init?]
+           ^bool from-init? ^bool latched?]
   (let [approx-fn (:approx-offset layout)
         land (fn []
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
@@ -2230,10 +2262,11 @@
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
         (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
-          (let [cp (or (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
-                       (synth-renewal-checkpoint layout env (dec cf)))
+          (let [stored (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
+                cp (or stored (synth-renewal-checkpoint layout env (dec cf)))
                 stepped (if cp
-                          (reflow-from-checkpoint! rs layout env cp)
+                          (reflow-from-checkpoint! rs layout env cp
+                                                   (or (some? stored) (not latched?)))
                           (estimate-leading-step! rs layout env))]
             (cond
               ;; the one-child estimator is anchor-relative by construction
@@ -2243,26 +2276,46 @@
           (lead-delta seam (or (underflow) (land))))))))
 
 (defn- anchor-before
-  "Snapshot of the first cached entry overlapping the paint window —
-   the child the user is visually anchored to."
-  [^CollectionRenderSliver rs ^double so]
+  "Where the child the user is visually anchored to sat when this pass started —
+   the reference the epilogue holds still.
+
+   The cached band answers it while the band survives the seed. When the seed
+   EMPTIED the band but kept the anchor (a dead-reckon re-anchor, or the pass
+   after a Δ-translation), the engine's own `viewAnchor` record answers instead:
+   without it the pass re-derives the whole window — a flow walk restarted at a
+   different index re-packs the runs below it — and nothing holds the anchor
+   against that re-derivation (NEW-14). A count change renumbers the slots, so
+   the record is re-resolved by KEY. `:off` is lifted into the frame the seed
+   already rebased to, so a re-anchor that emitted its own shift is not counted
+   twice."
+  [^CollectionRenderSliver rs cause ^double so]
   (let [cache (.-cache rs)
         ^int rel (bsearch-max-end cache so)]
-    (when (< rel (count cache))
+    (if (< rel (count cache))
       {:idx (+ (.-cacheFirst rs) rel)
-       :off (double (:offset (nth cache rel)))})))
+       :off (double (:offset (nth cache rel)))}
+      (when-let [va (.-viewAnchor rs)]
+        (let [^int idx (if (identical? :count-change cause)
+                         (attached-index-of-key rs (:key va))
+                         (int (:idx va)))]
+          (when-not (neg? idx)
+            {:idx idx :off (+ (double (:off va)) (.-passRebase rs))}))))))
 
 (defn- anchor-delta
-  "How far the anchored child moved during this pass; non-nil requests a
-   scroll correction so the viewport follows it."
+  "How far the anchored child moved during this pass — the correction that keeps
+   it under the same screen pixel. nil means the pass has no anchor to hold (none
+   resolved, or it left the band), NOT that the anchor held still."
   [^CollectionRenderSliver rs anchor]
   (when anchor
-    (let [^int rel (- ^int (:idx anchor) (.-cacheFirst rs))
-          cache (.-cache rs)]
-      (when (and (>= rel 0) (< rel (count cache)))
-        (let [^double delta (- ^double (:offset (nth cache rel)) ^double (:off anchor))]
-          (when (> (.abs delta) 1e-3)
-            delta))))))
+    (let [^int idx (int (:idx anchor))]
+      ;; the laid child, not the cache: the Δ-translation empties the band
+      (loop [child (.-firstChild rs)]
+        (when child
+          (let [^r/RenderBox ch child]
+            (if (= idx (.indexOf rs ch))
+              (when-let [off (.childScrollOffset rs ch)]
+                (- (double off) ^double (:off anchor)))
+              (recur (.childAfter rs ch)))))))))
 
 (defn window-canonical-violations
   "Structural-invariant guard (debug only). Cache entries whose laid span
@@ -2564,16 +2617,17 @@
           ^double ws-o (- ws (.-overscanBehind rs))
           ^double we-o (+ we (.-overscanAhead rs))]
       (pre-gc! rs ws-o we-o)
-      (seed-cache! rs layout env)
-      (normalize-cache! rs layout env)
-      (let [;; a re-anchor rebased the walked frame — materialize against the shifted
+      (let [cause (.-reseedCause rs)
+            plan0 (seed-cache! rs layout env)
+            plan (or (normalize-cache! rs layout env) plan0)
+            ;; a re-anchor rebased the walked frame — materialize against the shifted
             ;; band, or backfill walks the whole (approx − stale) gap in one frame
             [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-passRebase rs))
             ^double align-ws (+ ws (- ws-eff ws-o))
             ;; an empty band at index 0 is the from-:init seed: only that frame
             ;; can indict the layout for an off-zero index 0
             from-init? (and (zero? (.-cacheFirst rs)) (empty? (.-cache rs)))
-            anchor (anchor-before rs so)
+            anchor (when (anchor-preserved? plan) (anchor-before rs cause so))
             emit? (refine-emit? (pass-allows? mode :refine?)
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
                                                     (double (:suppress-v overscan-tunables))
@@ -2592,7 +2646,8 @@
                                  last-i)]
             (post-gc! rs keep-last ws-eff)
             (let [^double lead-d (backfill-leading! rs layout env ws-eff emit? origin-emit?
-                                                    (boolean from-init?))]
+                                                    (boolean from-init?)
+                                                    (anchor-preserved? plan))]
               ;; Row 3 memory bound: a from-0-anchored deep scroll must not keep [0..head] on the heap
               (trim-front! rs ws-eff)
               ;; checkpoint scoping: the overscan band plus one seed above
@@ -2605,14 +2660,14 @@
                   (when (pass-allows? mode :tripwire?)
                     (assert-materialization-bounded! rs layout (tripwire-env env sample)
                                                      (- we-o ws-o)))))
-              ;; anchor-follow reads the pre-translate frame: an in-window resize
-              ;; above the anchor moves it by construction, not by reconciliation
-              (when-let [delta (anchor-delta rs anchor)]
-                (rebase+! rs (double delta)))
-              ;; the Δ-epilogue: ONE window translation from ONE number
-              (when (> (.abs lead-d) 1e-3)
-                (translate-window! rs layout env lead-d)
-                (rebase+! rs lead-d)))
+              ;; a pass with no anchor to hold has only the raw measure to emit
+              (let [translated? (> (.abs lead-d) 1e-3)
+                    _ (when translated? (translate-window! rs layout env lead-d))
+                    ^double follow (double (or (anchor-delta rs anchor)
+                                               (when translated? lead-d)
+                                               0.0))]
+                (when (> (.abs follow) 1e-3)
+                  (rebase+! rs follow))))
             (if (identical? :capture mode)
               (do (finish-flow-geometry! rs layout env c walked)
                   {:rebase (.-passRebase rs)

@@ -310,9 +310,10 @@
                       "band:" (fail-str f)))))
 
 
-;; NEW-14: an above-window insert drifts the anchor by the leading re-measure
-(deftest known-red-insert-above-window-drifts-by-the-leading-measure
-  :tags [:widget :known-red]
+;; NEW-14 (FIXED, step 13b): an above-window insert re-derives the window from an
+;; emptied band; the anchor is what holds across that re-derivation
+(deftest fuzz-insert-above-window-survives-the-leading-remeasure
+  :tags [:widget]
   :runner (ft/testWidgets [tester])
   (let [f (await (run-seed! tester 34
                             [[:drag -211.66341304779053]
@@ -333,4 +334,4 @@
     (is (nil? f) (str "NEW-14 the count-change re-anchor pins the anchor's offset, "
                       "then the leading re-measure translates the whole window past "
                       "it — the emitted correction and the anchor's own displacement "
-                      "disagree:" (fail-str f)))))
+                      "must not disagree:" (fail-str f)))))
