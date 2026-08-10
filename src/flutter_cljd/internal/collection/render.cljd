@@ -43,7 +43,7 @@
 
 (declare flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
          segment-start! update-velocity! overscan-extent sample-view-anchor!
-         segment-domain-exited? settle-segment!)
+         segment-domain-exited? settle-segment! state-before)
 
 ;; --- pass mode (rebase-design §2.3 / §6) ---
 
@@ -1233,13 +1233,17 @@
   "Frozen PURE-LIVE `to` endpoint for a FLOW remove segment — the flow analogue of
    an indexed source over pure-live indices. After `flow-layout!` has materialized
    and measured the shadow window (survivors at natural size, inserts at target),
-   walk the attached children, DROP the ones whose key is `exiting`, REINDEX the
+   walk the attached children, DROP the ones whose key is `exiting` and REINDEX the
    survivors to contiguous pure-live indices (base = count of live entries before
-   the window top), and RE-PLACE them via `flow-frames` seeded at the live base —
-   a real re-flow so the gap each dying cell leaves closes and survivors below it
-   glide up (offset-subtraction would be wrong for wrap/masonry). Returns the
-   {:frames :base :extent} shape `frozen-frame-source` consumes, addressed by
-   pure-live index (what `shadow-frame-source` remaps shadow indices into).
+   the window top). The capture walk's own placement IS the target frame, so
+   survivors ABOVE the first dying cell keep their cache entries verbatim; only the
+   suffix below it re-flows (`flow-frames` seeded with the flow state before that
+   cell), which closes the gap and glides the survivors up — offset-subtraction
+   would be wrong for wrap/masonry. Re-flowing the WHOLE window instead would
+   re-pack it against a levelled anchor state and move content the segment was
+   never asked to move. Returns the {:frames :base :extent} shape
+   `frozen-frame-source` consumes, addressed by pure-live index (what
+   `shadow-frame-source` remaps shadow indices into).
 
    `shadow-ext` is the TARGET layout's honest total over the shadow band
    (flow-total-extent, supplied by the capture pass) — never read back off
@@ -1258,18 +1262,17 @@
         ^int cf (.-cacheFirst rs)
         ^int clen (count (.-cache rs))
         walked? (fn [^int i] (and (>= i cf) (< (- i cf) clen)))
-        [survivors first-off ^double dying-ext]
-        (loop [child (.-firstChild rs) surv [] first-off nil ^double dext 0.0]
+        [survivors first-dying ^double dying-ext]
+        (loop [child (.-firstChild rs) surv [] first-dying nil ^double dext 0.0]
           (if child
             (let [^r/RenderBox ch child ^int i (.indexOf rs ch)]
               (if (and (.-hasSize ch) (walked? i))
                 (if (exiting-key? i)
-                  (recur (.childAfter rs ch) surv first-off
+                  (recur (.childAfter rs ch) surv (or first-dying i)
                          (+ dext (lay/size-main env (.-size ch))))
-                  (recur (.childAfter rs ch) (conj surv [i (.-size ch)])
-                         (or first-off (.childScrollOffset rs ch)) dext))
-                (recur (.childAfter rs ch) surv first-off dext)))
-            [surv first-off dext]))
+                  (recur (.childAfter rs ch) (conj surv [i (.-size ch)]) first-dying dext))
+                (recur (.childAfter rs ch) surv first-dying dext)))
+            [surv first-dying dext]))
         ^double live-ext (math/max 0.0 (- shadow-ext dying-ext))]
     (if (empty? survivors)
       {:frames [] :base 0 :extent live-ext}
@@ -1278,10 +1281,28 @@
                         (if (< j first-shadow)
                           (recur (inc j) (if (exiting-key? j) cnt (inc cnt)))
                           cnt))
-            ^double base-off (double (or first-off 0.0))
-            sized (map-indexed (fn [^int k [_ ^ui/Size size]] [(+ base k) size]) survivors)
-            seed (tw/flow-seed-state to-layout env base base-off)
-            frames (tw/flow-frames to-layout env sized seed)]
+            cache (.-cache rs)
+            ^int keep-n (if first-dying
+                          (count (take-while (fn [s] (< (int (first s)) (int first-dying)))
+                                             survivors))
+                          (count survivors))
+            kept (mapv (fn [s]
+                         (let [^int i (first s)
+                               ^ui/Size size (nth s 1)
+                               e (nth cache (- i cf))]
+                           {:offset (double (:offset e))
+                            :cross (double (or (:cross e) 0.0))
+                            :main-extent (double (:extent e))
+                            :cross-extent (lay/size-cross env size)}))
+                       (take keep-n survivors))
+            reflowed (if (= keep-n (count survivors))
+                       []
+                       (tw/flow-frames
+                        to-layout env
+                        (map-indexed (fn [^int k s] [(+ base keep-n k) (nth s 1)])
+                                     (drop keep-n survivors))
+                        (state-before rs to-layout env (int first-dying))))
+            frames (into kept reflowed)]
         {:frames frames :base base
          :extent (math/max (tw/frames-main-extent frames) live-ext)}))))
 
