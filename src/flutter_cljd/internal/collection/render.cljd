@@ -1392,6 +1392,30 @@
   (.-geometry! rs (r/SliverGeometry .scrollOffsetCorrection d)))
 
 ;; @ai-generated(guided)
+(defn correction-floor
+  "The most negative correction a sliver may emit. Content space is pinned at the
+   leading edge, so below the content start there is no offset to move to: the
+   viewport parks `pixels` out of range and — the sliver's own scrollOffset being
+   clamped at 0 already — no further pass exists to walk it back. Only this side is
+   knowable; `SliverConstraints` says nothing about the slivers that FOLLOW, which
+   is why the trailing overshoot has no such bound. Pure."
+  ^double [^double scroll-offset ^double preceding]
+  (- (+ scroll-offset preceding)))
+
+;; @ai-generated(guided)
+(defn- clamp-rebase!
+  "Trims the accumulator to `correction-floor` before the emit arm reads it. The
+   window has already been laid in the produced frame, so the trimmed remainder is
+   not lost work — it is the boundary winning over the anchor (design §3): at the
+   scroll top the content lands and the viewport shows index 0."
+  ^double [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  (let [^double d (double (math/max (.-passRebase rs)
+                                    (correction-floor (.-scrollOffset c)
+                                                      (.-precedingScrollExtent c))))]
+    (.-passRebase! rs d)
+    d))
+
+;; @ai-generated(guided)
 (defn- consume-seg-tail!
   "Retires the segment set-point on the first resting pass after a segment. The
    clock can complete before a t=1 layout pass runs, so the set-point's
@@ -2660,7 +2684,7 @@
                   {:rebase (.-passRebase rs)
                    :extent (flow-total-extent layout env walked (.-anchoredTo0 rs))})
               ;; the ONE flow emission site: the accumulated rebase, or honest geometry
-              (let [^double pr (.-passRebase rs)]
+              (let [^double pr (clamp-rebase! rs c)]
                 (if (> (.abs pr) 1e-3)
                   (do (emit-correction! rs pr)
                       (.didFinishLayout mgr))
@@ -2877,7 +2901,7 @@
                 ;; pass rebase (e.g. a consumed segment tail) through the same exit
                 corr (or (seg-scroll-correction rs c)
                          (when (pass-allows? mode :emit-rebase?)
-                           (let [^double pr (.-passRebase rs)]
+                           (let [^double pr (clamp-rebase! rs c)]
                              (when (> (.abs pr) 1e-3) pr))))]
             (if corr
               (do (emit-correction! rs (double corr))
