@@ -291,6 +291,42 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   to keep in sync, not single ownership — against the design's own "every stage
   should delete more state than it adds". Q3 (1e-3 hysteresis) confirmed: no new
   tunable was needed. (by: step-13b stage 3)
+- 2026-08-10: an O(gap) walk is not always a seeding bug — `inverse-seed!`'s
+  `off-start >= ws/2` guard is one, applied where it does not belong. The guard
+  rejects a seed the walk would have to travel to; at the LAST index there is
+  nothing to travel, so a window past the content end is O(1) from there whatever
+  the estimate says. Its `:degenerate` fallback ("keep the band") contradicts the
+  very plan that called it: `:far-inverse` was chosen BECAUSE the band is far.
+  (by: step 13c)
+- 2026-08-10: the leading edge of a pass is what it LAID, not what its index math
+  says. `first-index`'s own frame is the leading edge only for a monotone source;
+  a masonry column and a morph target are not, and the leading walk may stop short
+  of `first-index` entirely — `calculateCacheOffset` then gets `from > to`. Same
+  rule on the other end: the advertised extent is `max(total, laid trail)`, which
+  is §2.4's honesty rule the flow driver already had and the segment drivers did
+  not. (by: step 13c)
+- 2026-08-10: the leading side of a correction IS clampable, unlike the trailing
+  side (stage 2c). `SliverConstraints` carries `precedingScrollExtent`, so
+  "content space is pinned at the leading edge" is a bound the sliver can compute:
+  below it the viewport parks `pixels` out of range and — the sliver's own
+  scrollOffset already clamped at 0 — no further pass runs to walk it back. The
+  accumulator is trimmed before the emit arm reads it, so the exactly-once
+  identity survives; the trimmed remainder is design §3's boundary rule (at the
+  scroll top the content lands and the viewport shows index 0). (by: step 13c)
+- 2026-08-10: a set-point built on an ESTIMATE is worse than none, but a set-point
+  built on a frame the capture actually placed and then discarded is free. The
+  frozen `to` snapshot starts at the capture window, so a morph that packs the
+  anchor above it lost the set-point entirely; the capture walk had placed the
+  slot, so it now returns that frame with its rebase and extent. When the walk did
+  not cover the slot the value stays nil. (by: step 13c)
+- 2026-08-10: closing the anchor's TARGET frame does not close the anchor's
+  IDENTITY. Seed 235 keeps drifting because the capture materializes the window at
+  the CURRENT offset: after the set-point moves the viewport there is no child at
+  the new top, and the anchor re-samples onto the window's first child. The END
+  window is only knowable after the set-point the capture produces — a chicken-
+  and-egg the §7b/§7c machinery would have to break, out of this plan's scope.
+  (by: step 13c)
+
 - 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
   it iff no PREVIOUS segment tween happened to still be around — an accident of
   the `segTween` gate, and the opposite of the flow capture. A capture
@@ -308,19 +344,34 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   root (the segment's `to` FRAMES, not the `to` slot — see stage 2b). Fuzz is 11
   seeds, a strict subset of stage 2's 14, so stage 3 proceeds on a better tree.
   **NEW-14 CLOSED (step-13b stage 3)**: `:o6` 34/55/205 and 52@16 plus `:o5` 7
-  are green, the red test is un-tagged. Fuzz is 6 seeds. Still open: `:o6` 235
-  (layout-morph key-moved), `:o6` 337 (was `:o5` 337 — same seed, op 6 → 8),
-  `:o5` 23/133, `:o1` 251, and NEW `:o1` 56 (below).
-  (raised by: step-13a stage 2, updated by: stage 2b, stage 2c, step-13b stage 3)
-- **NEW-15 (raised by step-13b stage 3, seed 56, `:full` op 10)**: a jump PAST
-  the content end inverse-seeds (which empties the cache), then
-  `align-start-fallback` cannot take its `:attach-last` arm — that arm needs a
-  non-empty cache to know the last index — and falls to `:restart-0`, walking
-  from index 0. The O9 work probe catches it at 558 children for a 557-child
-  budget. The path is untouched by stage 3; the episode re-rolled onto it (the
-  same chaotic membership churn stage 2 saw with 111/123). Not a latching or
-  anchor defect — `align-start-fallback` needs an item-count-only route to the
-  last index.
+  are green, the red test is un-tagged. Fuzz is 6 seeds. **Step 13c**: `:o1`
+  56/251 and `:o5` 23/133 green; fuzz is **2 seeds**, `:o6` 235 + 337, both
+  carried as documented reds (NEW-16/NEW-17 below).
+  (raised by: step-13a stage 2, updated by: stage 2b, stage 2c, step-13b stage 3,
+  step 13c)
+- ~~**NEW-15** (raised by step-13b stage 3, seed 56)~~ **RESOLVED (step 13c)**,
+  and NOT where stage 3 placed it: `align-start-fallback` never runs. Traced
+  per-pass — the jump past the content end takes `seed-plan :far-inverse`,
+  `inverse-seed!` saturates the inversion at the LAST index, and its
+  `off-start >= ws/2` guard then rejects that seed and returns `:degenerate`,
+  which KEEPS the far band. `align-start!` attaches at the band's end and the
+  walk covers the whole gap (558 children, 557 budget). The guard now exempts the
+  last index — nothing follows it, so the seed is O(1) however far the estimate
+  undershot.
+- **NEW-16 (raised by step 13c, seed 235, `:no-jump` op 12)**: a morph into a
+  DENSER layout. The capture window is materialized at the CURRENT offset, so
+  once the set-point moves the viewport to the anchor's new (much smaller) target
+  offset there is no attached child at the new viewport top; `sample-view-anchor!`
+  re-anchors onto the window's first child (25px below the top), and the first
+  resting pass after the segment holds THAT one — +115px against the anchor the
+  user was looking at. Closing it needs the capture to materialize the END window,
+  which is only knowable after the set-point the capture itself produces. Red
+  test `known-red-morph-loses-the-anchor-above-the-capture-window`.
+- **NEW-17 (raised by step 13c, seed 337, `:churn` op 8, untraced)**: an insert
+  above the window with `pixels` resting ON `maxScrollExtent` drifts the masonry
+  anchor's consumed fraction by ~6px (intra 38.02 -> 32.00). Same shape as NEW-14,
+  which step 13b closed for 34/55/205; this residual survives it. Red test
+  `known-red-insert-above-window-at-max-drifts-the-fraction`.
 - ~~Frameless attached children lay at offset 0~~ **RESOLVED (stage 2c)**:
   `parked-frame` clamps the per-child frame to the source's own edge. Seed 340 is
   clean and the `to-src` set-point flip is now inert on the fuzz tree (identical
@@ -341,8 +392,8 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 10. Fuzz re-campaign (design stage 7); verify reds green; revert TEMP fb24f35 — agent: general-purpose, model: sonnet
 - [x] 10b. Close campaign-2 defects (NEW-9..NEW-13 + masonry kernel) — agent: general-purpose, model: fable
 - [x] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
-- [ ] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
-- [ ] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
+- [x] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
+- [x] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
 - [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
 
 ## Step results
@@ -1127,3 +1178,46 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   `anchor-preserved?` (pure, no state).
 - Not done, out of stage-3 scope as scoped here: stages 4 (the `:o5` remove-extent
   family) and 5 (cleanup handoff).
+
+### 13c stage 4-5. The residual fuzz set + cleanup
+- Status: done (6 commits). Fuzz **6 -> 2 seeds**, a strict subset. Default suite
+  **326** green, O7 in-suite; `-t known-red` **2** — this step's two documented
+  deferrals; `bin/check` clean.
+- Green: `:o1` 56 (NEW-15), `:o1` 251, `:o5` 23, `:o5` 133. Carried: `:o6` 235
+  (NEW-16), `:o6` 337 (NEW-17). No new seeds on any of the five profiles.
+- **`:o1` 56 / NEW-15 (9a347d0)**: NOT `align-start-fallback` — see the Open
+  questions entry. `inverse-seed!`'s guard rejected the saturated last-index seed
+  and kept the far band. The last index is now exempt.
+- **`:o1` 251 (b72ea77)**: `indexed-layout!` took the leading edge from
+  `first-index`'s frame while the leading walk had stopped at index 85 of a
+  non-monotone masonry morph — `calculateCacheOffset` asserted `from <= to`
+  (leading-off 4845 vs trail-end 3844). It is now the minimum laid offset.
+- **`:o5` 23 (b72ea77)**: the segment advertised the lerping total (9345) while
+  laying edge-sliding enter cells out to 10472 — 41 cells the capture
+  pre-materialized below the window, entering from the cache-window edge. Both
+  segment writers now advertise `max(total, laid trail)`.
+- **`:o5` 133 (d76573b)**: a landing at the scroll top emitted the anchor's full
+  -267 displacement; `pixels` parked at -267 for all 150 settle frames with no
+  activity to spring it back (the sliver sees scrollOffset 0, so no further pass
+  runs). `correction-floor` + `clamp-rebase!`.
+- **`:o6` 235 (66db72a, PARTIAL)**: traced per-pass. Two distinct defects in one
+  seed. (1) `segment-start!` read the anchor's `to` slot from the frozen snapshot,
+  which starts at the capture window; a morph into a denser layout packs the
+  anchor above it, the lookup answered nil and the set-point went silent — the
+  viewport-top key moved 22 items. FIXED: the capture returns the frame its own
+  walk placed (`anchor-slot-frame`, read before `trim-front!`, riding the
+  epilogue's rigid translation). The set-point now converges exactly on the
+  anchor's target (traced: so 489.59 -> 102.84). (2) NEW-16, deferred: the
+  segment's window never covers that new top, so the anchor re-samples onto the
+  window's first child and the next resting pass holds it (+115px).
+- **`:o6` 337 (NEW-17)**: not traced — out of budget after 235. Recorded with its
+  measured signature and red-tested.
+- **Cleanup (955b927)**: `fromRects` + `fromExtent` are written at the end of
+  `segment-start!` and never read — the `from` rects reach the tween as a local
+  and the frozen extent as its `:max-extent` lerp input. **Field delta -2**
+  (44 -> 42). **Kernel delta +2**: `correction-floor` (pure) and
+  `anchor-slot-frame`; nothing else in render.cljd is unreferenced — every
+  `defn` has a live call site, `pass-caps` has no unused column, and
+  `landing-decision`/`underflow-decision` are still `backfill-leading!`'s two
+  origin measurements. `anchoredTo0` stays (stage 3's Q1 resolution).
+- Not done: step 14's doc pass (docs/CollectionRectAnimator.md §9/§2.4, memory).
