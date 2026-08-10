@@ -1,8 +1,13 @@
 # Collection Rect Animator (v2)
 
-> Design note. Supersedes the v1 two-path scheme (`MoveRender` position-glide +
-> `tween-layout` size-morph, committed at 636cf22). Written before coding —
-> architecture and abstractions first, implementation second.
+> Design note for the shipped engine (`internal/collection/render.cljd`,
+> `tween.cljd`). Supersedes the v1 two-path scheme (`MoveRender` position-glide +
+> `tween-layout` size-morph, committed at 636cf22).
+>
+> §1–§8a are the rect-animator model: what is animated and why. §9 is the scroll
+> model the sliver host needs to make it hold — pass modes, the rebase transport,
+> the anchor. A `>` note under a heading marks a section a later one refines;
+> where they disagree, the later one is the engine.
 
 ## 1. What changes and why
 
@@ -71,6 +76,10 @@ not captured global positions.
 
 ## 4. Resting vs. animating: a mode switch, and why it must be one
 
+> **Refined by §9a.** The switch is a FOUR-value axis — `:resting`, `:settled`,
+> `:capture`, `:segment` — decided once per pass and read through a capability
+> table. The two-value framing below is *why* it exists, not its shape.
+
 A flow layout (list/wrap/masonry) *self-sizes* children — it measures each at
 loose constraints to learn its natural size, and that measurement is how the engine
 detects data changes (self-healing cache: re-measure, compare extent). Tight
@@ -117,12 +126,19 @@ and keying both sides fixes shuffle alignment for free.
 
 ```
 committed : {key → rect}   ;; rect last laid this cell got; updated every pass
-from      : {key → rect}   ;; frozen segment start; committed at (re)start time
-target    : {index → rect} ;; this pass's goal, from the live layout (transient)
-gen       : int            ;; host bumps on each (re)start; engine compares
+segTween  : layout         ;; the built keyed lerp; owns the frozen `from` map,
+                           ;; the frozen `to-src` and the segment's :domain
+segAnchor : set-point      ;; §9d; nil outside a segment
+viewAnchor: {:idx :key :off :extent :frac}  ;; §9c — the viewport-top truth
+curGen / segGen : int      ;; host bumps curGen on each (re)start; segGen is the
+                           ;; gen the engine last BUILT segTween for
 ```
 
 `rect = {:offset :cross :main-extent :cross-extent}` in content space.
+
+The frozen `from` map is *not* a render-object field: it is built at segment
+start and reaches the tween as a closed-over local, so it cannot drift from the
+tween that reads it. `target` likewise never outlives the pass that queries it.
 
 **Keying.** The render layer is index-addressed, but animation identity is by key.
 The host passes `key-of : (fn [^int index] → key)` (closure over data + `:key-fn`).
@@ -338,7 +354,7 @@ at its real (scattered) index while the drivers simply never bridge the gap. Shi
   `to` = its target frame slid past the near END-window edge (`edge-slide-block`
   over `[end-ws, end-we]`) — index above the span → `:trailing`, below →
   `:leading`. The end window is the current one shifted by the
-  §9 set-point delta (`desired(1) − desired(0)`), so a cell the viewport merely
+  §9d set-point delta (`desired(1) − desired(0)`), so a cell the viewport merely
   scrolls away from keeps its real target and is NOT edge-dragged. Exiting
   (data-removed) keys are skipped — they exit-collapse in place (§7a).
   `keyed-tween-layout` takes the map as `:leaving` and lerps committed → edge at
@@ -363,7 +379,7 @@ at its real (scattered) index while the drivers simply never bridge the gap. Shi
 Known edges (accepted, self-healing at settle): scrolling mid-segment can bring a
 leaving key's real index back into the window — the window path then lays it at its
 frozen edge lerp until the segment settles (one snap at rest). A flow end-window
-that falls outside the frozen capture snapshot (large §9 shift on a mid-scroll flow
+that falls outside the frozen capture snapshot (large §9d shift on a mid-scroll flow
 switch) falls back to current-window classification — boundary cells may edge-slide
 and re-enter at settle. A leading-scattered kept cell in the flow capture can still
 anchor the walk at a stale offset (pre-existing behavior, unchanged by this).
@@ -464,19 +480,185 @@ Leave-slides (§7b) don't need this clip — a slide never resizes, so their
 `full-main-extent == main-extent` and they paint unclipped; the viewport itself
 clips past the edge.
 
-## 9. Scroll correction (the gotcha, tested first)
+## 9. Scroll correction: the rebase model
 
-The **indexed** layout path emits geometry directly and does **not** call
-`scrollOffsetCorrection`. When content above the viewport collapses — a remove, or
-list→grid shrinking the region before the anchor — `scrollOffset` can jump and the
-anchored child visibly shifts. The flow path already handles this (`anchor-before`
-/ `anchor-delta` → correction); the indexed/animating path must grow the same:
+A **rebase** is a coordinate-frame event: the engine decides that the content the
+viewport is anchored to now lives at a different content-space offset (new-frame
+= old-frame + Δ), and `scrollOffset` must move by the same Δ so the visible pixels
+do not. Content above the viewport collapsing (a remove, list→grid packing the
+region before the anchor), a leading estimate turning out wrong, a cache re-seed
+after a far jump, a segment's set-point — all of them are that one event.
 
-Before committing geometry, snapshot the anchored child (first visible cell at the
-current `scrollOffset`) and its offset; after computing this pass's rects, if that
-key's offset moved by > ε, emit `scrollOffsetCorrection = delta` so the viewport
-follows it. A failing test (`anchored child stays put while content above it
-animates`) is written **before** the engine change.
+Flutter offers exactly one valve for it, `scrollOffsetCorrection`, and it is
+re-entrant: a correcting pass is discarded and re-run, up to ten times per frame.
+Everything in §9a–§9f exists to make sure a Δ is produced by one owner, travels by
+one route, and is consumed exactly once.
+
+### 9a. The pass mode and the capability table
+
+A layout pass is one of four modes, decided ONCE per `performLayout` (`pass-mode`,
+a pure kernel over the dispatch it feeds) and stored on the render object:
+
+| mode | when |
+|---|---|
+| `:resting` | no host clock running |
+| `:settled` | the clock plays out but the engine holds no segment model — never built, or the window left the frozen `:domain` (§9f) |
+| `:capture` | `segment-start!`'s target-materialization pass |
+| `:segment` | a live pass over the frozen segment tween |
+
+`:settled` is not a nicety: the resting drivers run under a playing clock, and
+`tweenAnim` (a clock exists) and `segTween` (a segment model exists) are *not*
+interchangeable. Every gate that re-derived segment-ness from those two fields was
+a place the two could be confused, and each confusion shipped as a bug.
+
+`pass-caps` maps each mode to twelve named capabilities — `:emit-rebase?`
+`:lead-emit?` `:overscan?` `:prune-commit?` `:measure-feed?` `:tripwire?`
+`:canonical-assert?` `:epilogue-asserts?` `:union-window?` `:set-point?`
+`:seg-tail?` — and `pass-allows?` debug-asserts that the capability HAS a row, so
+a newly added feature cannot inherit an accidental OFF. The table is the single
+owner of segment-ness: no engine code reads `tweenAnim`/`segTween` as a gate, only
+as state ownership (listener swap, tween value, settle).
+
+### 9b. Transport: one accumulator, three arms, exactly once
+
+- **`passRebase`** — a per-pass double, reset each `performLayout`, written only
+  through `rebase+!`. Every producer (cross-layout re-anchor, seam measurement,
+  top underflow, exact landing, anchor follow, segment tail) adds its Δ and
+  continues working in the shifted frame.
+- **Exactly one arm consumes it** at pass end, selected by the mode:
+  - **emit** (`:resting` / `:settled` / `:segment`) — `emit-correction!` writes
+    `scrollOffsetCorrection`. It is the single correction-writing path and
+    debug-asserts `:emit-rebase?`.
+  - **value** (`:capture`) — the emit arm is structurally unreachable, and the
+    driver returns `{:rebase :extent :anchor-frame}` as plain values over no
+    mutable state. A capture correction would be overwritten by `from-relay!`,
+    which lays the same pass at t≈0; the delta would vanish silently.
+  - **absorb** (`segment-start!`) — the returned rebase is folded into the
+    set-point, whose incremental corrections deliver it over the segment. The
+    absorb arm is TOTAL: when no anchor resolves, the rebase is absorbed as a pure
+    shift over the first placed slot, so a produced rebase always has a channel.
+- **Exactly-once assert** (debug, epilogue): a resting pass's emitted correction
+  equals the produced rebase; a capture pass's displayed geometry carries none.
+
+`reseedCause` (`:count-change` | `:cross-layout`) is the only cross-pass remnant:
+it tells the next `seed-cache!` that the frame must be re-derived from the anchor,
+and is cleared on consumption.
+
+### 9c. The Δ-epilogue and the anchor latch
+
+The viewport-top truth is `viewAnchor {:idx :key :off :extent :frac}`, sampled from
+the DISPLAYED frames after EVERY pass — mid-segment included, because the user can
+scroll during a segment and the displayed frame is the same frame `committed`
+records. `:frac` is the fraction of the anchor item consumed above the viewport
+top, and `:key` is what survives a count change (keyed reconciliation has already
+moved the element; the anchor is re-resolved by key, never by index).
+
+A resting flow pass therefore ends with ONE producer, not five:
+
+1. `backfill-leading!` MEASURES the extent above the anchor and returns one
+   leading delta. Measurements **supersede, they never accumulate**: no step moves
+   the window, so every step compares the same rigid frame against its own
+   reference and each report is the WHOLE displacement restated one run closer to
+   the origin. Summing them translates the window by a multiple of its own error.
+2. `translate-window!` moves the whole laid window rigidly, once, and drops the
+   cache and checkpoints rather than rewriting them (a flow state is layout-opaque
+   and carries absolute offsets). The band's frontier is kept and `baseState`
+   re-derived at its translated offset.
+3. The epilogue emits the ANCHOR's own displacement over the whole pass — not the
+   raw measure. A pass with no anchor to hold falls back to the measure.
+
+**The latching invariant**: aggregate drift never moves a latched anchor. A
+synthesized checkpoint sits at `:approx-offset`, which is a function of the
+measured EMA that this very window feeds — honouring its seam under a latched
+anchor makes the frame chase itself one `1 − ema-alpha` step per pass until the
+viewport's ten-cycle budget runs out. A pass that REASSIGNED the anchor (far jump,
+cold start) still honours it: there the estimate is the truth it just chose.
+
+A flow pass's frame is a run-chain from wherever its walk STARTS, so it is not
+reproducible from a different start; re-deriving the window inside the translation
+levels a masonry's columns and fabricates a wrap run break. The rigid translation
+stays and the anchor absorbs the re-derivation — which is why the anchor must be
+an IDENTITY (`viewAnchor`), not "the first cached entry overlapping the top": a
+bsearch reference re-picks the run's lowest row-mate every pass, so a re-pack that
+splits the run holds the run and drops the child.
+
+**The leading side is clampable, the trailing side is not.** `SliverConstraints`
+carries `precedingScrollExtent`, so "content space is pinned at the leading edge"
+is a bound the sliver can compute (`correction-floor`): below it the viewport parks
+`pixels` out of range and no further pass runs to walk it back. It says nothing
+about the slivers that FOLLOW, so `maxScrollExtent` is not knowable here and a
+self-computed trailing clamp would fire early in a composed viewport. The
+accumulator is trimmed before the emit arm reads it, so exactly-once survives.
+
+### 9d. The segment set-point preserves the anchor's FRACTION
+
+During a segment the scroll offset is derived from the anchor's trajectory:
+
+```
+desired(t) = lerp(from-off, to-off, t) + frac · lerp(from-ext, to-ext, t) − screen
+```
+
+`tw/point-desired` is the one formula; `point-correction-delta`, the segment tail
+and the leave-slide shift all route through it. What stays at the viewport top is
+the content point at `frac` of the anchor item, **not its top edge** — an anchor
+that resizes across a morph (a grid row becoming a list cell) no longer slides out
+from under the viewport. With an unchanged extent this is pixel-identical to a
+rigid `to − from` shift. `screen` is the residual
+`(from-off + frac·from-ext) − scrollOffset`, which keeps `desired(0)` exact for a
+clamped `frac` and for a drag landing between the sample and the segment start.
+
+The corrections are the ANIMATION delta only — they never read the live
+scrollOffset, so a concurrent drag composes (`scrollOffset = drag + Σcorrections`)
+and the emitted deltas telescope to exactly `desired(1) − desired(0)`.
+
+Both endpoints come from frames the pass actually placed:
+
+- `to-off`/`to-ext` from the capture walk's own placement (`anchor-frame`), read
+  before the band is trimmed. A `to` slot and a `to-src` frame that can disagree
+  in-window is the bug; agreeing by construction is the fix. When the walk did not
+  cover the slot the value is nil — a set-point built on an estimate is worse than
+  none.
+- If the anchor's key is `exiting`, the anchor re-picks the first surviving
+  attached slot at/after the viewport top before freezing.
+
+The host clock can complete before a t=1 pass runs, leaving `desired(1) −
+segPrevDesired` un-emitted; `consume-seg-tail!` publishes that residual through the
+accumulator on the first resting pass, which is `segAnchor`'s explicit end of life.
+
+### 9e. An unanswerable query resolves to the source's own edge
+
+One rule, three queries. A frozen snapshot has no opinion outside its span, and
+mapping "no opinion" to index 0 or offset 0 is what fabricates inverted windows,
+band-pinned segments and O(gap) walks:
+
+- **`:first-index` / `:last-index`** clamp a nil answer to the snapshot's own edge
+  (past the end → its last index; above the start → its base), so the window is
+  always well-ordered and inside the snapshot. `indexed-layout!` additionally
+  refuses inversion — debug assert, release clamp.
+- **the per-child frame** (`parked-frame`): a cell with neither committed history
+  nor a target frame is parked at the source's nearest EDGE frame, collapsed on the
+  layout's own `:collapse-axis` so it reserves nothing, carrying that frame's
+  extent as the stable full size it is laid out at (§8a). Offset 0 would strand it
+  at the scroll top, where it becomes `firstChild` and costs the next capture an
+  O(gap) walk. Parking is a substitution of `to` before the enter/exit/leave cond,
+  so all four branches inherit it.
+  The edges are probed at offsets a bounded source must cover — its start and its
+  own reported extent — never ±infinity, which would reach a layout's index math.
+
+### 9f. A frozen segment has a validity domain
+
+`segment-start!` stamps the tween with `:domain` = the union of the t=0 and t=1
+window spans. A frozen segment never extrapolates: when the current window lies
+more than one window extent outside the domain, `settle-segment!` drops
+`segTween`/`segAnchor`/`leaving`, sets `segGen := curGen` and dispatches to the
+resting drivers, whose far-jump inverse seed takes over — O(window), band follows
+pixels. The host clock keeps playing to its end; that pass is `:settled` (§9a) and
+the engine settles silently, with no callback and no coupling back to the host.
+
+Cache is an accelerator, never the algorithm. The far-window seed is decided by
+GEOMETRY alone — leftovers that happen to be attached must not veto an inverse
+seed — and the per-pass work bound is O(window + overscan) unconditionally,
+enforced by `assert-materialization-bounded!` in debug.
 
 ## 10. Both hosts
 
@@ -520,15 +702,16 @@ v1 non-goal; it now works for free.)
 Coexistence with `:reorderable` (kept mutually exclusive — `SliverReorderableList`
 animates its own reorders).
 
-## 14. Test plan
+## 14. Verification
 
-1. **Scroll-anchor stability** (write first, failing): anchored child fixed while
-   content above animates its rect; engine emits the correction.
-2. Content-space rect continuity across a scroll (no spurious animation).
-3. Stable-size cell ⇒ zero child `performLayout` during a move (assert constraint
-   identity / a layout-count probe).
-4. Key-based match across a data shuffle (a key's `from` follows the key, not the
-   index).
-5. Enter/exit classification vs. scroll-off (windowed absence ≠ data absence).
-6. Retarget continuity (interrupt mid-glide, re-aim, no jump — keyed).
-7. Box: own-size lerp; exact endpoints.
+The properties above are held by a `RenderViewport` simulation harness (oracles
+O1–O12) plus a seeded invariant fuzzer over random op sequences. How to run them,
+what each oracle asserts, and how to turn a fuzz failure into a red test:
+**`docs/CollectionTesting.md`**.
+
+The invariants that map directly onto this document: O6 (the anchor's consumed
+fraction survives an op that must not move content — §9d), O11 (the truth
+equation `off + frac·extent == scrollOffset` — §9c), O7 (a warm morph settles to
+the same shape a cold start at the same anchor produces — §4.1/§7a), O4 (tiling,
+rest-only because §8a lays cells at full size and paint-clips them), O9 (the
+per-pass work bound of §9f).

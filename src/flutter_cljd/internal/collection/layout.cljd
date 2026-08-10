@@ -26,6 +26,12 @@
    slide in cross-wise (right-to-left) and the dying cell shrinks its CROSS extent.
    masonry stacks within columns → MAIN.
 
+   It also picks the axis a PARKED cell collapses on — a cell mid-segment that
+   neither endpoint has a frame for, held at the target source's own edge frame
+   reserving nothing (docs/CollectionRectAnimator.md §9e). Only the collapse axis
+   has a `:full-*` slot, so zeroing any other axis would lay the content out at
+   extent 0.
+
    Two models, chosen by the presence of `:geometry`:
 
    ## Flow (sequential; children self-size — list, wrap, masonry)
@@ -93,7 +99,10 @@
                 offset→index for cold-start / far-jump seeding). Reads the engine's
                 measured aggregates off env (:avg-main / :avg-cross) plus the
                 layout's baked opts. Absent → the engine falls back to a
-                layout-agnostic linear density.
+                layout-agnostic linear density. With no aggregate basis
+                (`:avg-main` nil) the engine treats the answer as absent rather
+                than as an estimate: spacing-only arithmetic is not one, and
+                trusting it re-anchors a far window onto a fabricated offset.
 
    Geometry depends only on the sequence of measured sizes, so the engine
    validates its cache by re-measuring attached children — layouts never
