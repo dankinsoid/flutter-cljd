@@ -107,7 +107,10 @@
    :churn     {:layout 0 :drag-large 0 :fling-catch 0
                :insert 16 :remove 12 :remove-anchor 12 :rotate 8
                :pump 8 :drag-small 8 :settle 4 :fling 3
-               :jump 5 :to-top 3 :cross 2}})
+               :jump 5 :to-top 3 :cross 2}
+   ;; step-13a stage 0: BouncingScrollPhysics coverage — the op space is :full's,
+   ;; only the rig's physics differs, so boundary springs run over real overscroll
+   :bounce    {}})
 
 (defn weights-for [profile]
   (let [ov (get profiles profile {})]
@@ -161,7 +164,9 @@
                :cross0 (pick! r cross-choices)
                :items0 items}
         ;; overridden AFTER the draw so the op stream stays seed-identical
-        header (if (= :churn profile) (assoc drawn :animate? true) drawn)
+        header (cond-> drawn
+                 (= :churn profile) (assoc :animate? true)
+                 (= :bounce profile) (assoc :physics :bouncing))
         ws (weights-for profile)
         ops (loop [i 0 acc []]
               (if (>= i len)
@@ -514,6 +519,13 @@
   :runner (ft/testWidgets [tester])
   (await (check-batch! tester :churn (seeds 331 10))))
 
+;; step-13a stage 0: one BouncingScrollPhysics batch — §3's bounce rules (no
+;; estimate corrections mid-bounce, exactness allowed) were otherwise untested
+(deftest fuzz-bounce-a
+  :tags [:widget :fuzz]
+  :runner (ft/testWidgets [tester])
+  (await (check-batch! tester :bounce (seeds 401 10))))
+
 ;; the generator itself is pure — a compile-time regression here would silently
 ;; change every seed's meaning
 (deftest fuzz-generator-is-deterministic
@@ -529,6 +541,11 @@
     (is (empty? (filter (fn [op] (contains? #{:jump :to-top :animate-top} (nth op 0)))
                         (nth (gen-episode 7 :no-jump fuzz-items episode-len) 1)))
         ":no-jump starves the far-jump ops")
+    (let [bounce (gen-episode 7 :bounce fuzz-items episode-len)]
+      (is (= :bouncing (:physics (nth bounce 0)))
+          ":bounce forces BouncingScrollPhysics on the rig")
+      (is (= (nth bounce 1) (nth (gen-episode 7 :full fuzz-items episode-len) 1))
+          ":bounce keeps :full's op stream — only the physics differs"))
     (let [churn (gen-episode 7 :churn fuzz-items episode-len)]
       (is (true? (:animate? (nth churn 0)))
           ":churn forces the animated host — without a segment there is no race")

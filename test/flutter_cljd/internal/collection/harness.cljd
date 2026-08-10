@@ -11,7 +11,7 @@
    - rig lifecycle + widget tree           (§ rig)
    - scenario ops: time / input / data / structural
    - introspection: engine fields, children, probe log
-   - oracles O1–O9 + `check-report!` / `check!`
+   - oracles O1–O12 + `check-report!` / `check!`
    - `replay!` — consumes a fuzz failure's op vector verbatim
 
    ASYNC DISCIPLINE: every `!`-suffixed fn compiles to an async Dart fn and
@@ -125,6 +125,7 @@
         items (:items st)
         animate? (:animate? st)
         approx (:approx st)
+        physics (:physics st :clamping)
         spec (get layout-specs (:layout st))]
     (w/Directionality
      .textDirection ui/TextDirection.ltr
@@ -146,7 +147,7 @@
          .child
          (f/custom-scroll
           :controller (:ctl st)
-          :physics :clamping
+          :physics physics
           (probe-sliver
            (:probe st)
            (apply f/sliver-collection
@@ -173,10 +174,10 @@
 (defn make-rig
   "Creates and mounts a rig; returns the rig atom. MUST be awaited.
 
-   Opts: :items :layout :cross :main :animate? :approx :probe? :offset"
-  [^ft/WidgetTester t & {:keys [items layout cross main animate? approx probe? offset]
+   Opts: :items :layout :cross :main :animate? :approx :probe? :offset :physics"
+  [^ft/WidgetTester t & {:keys [items layout cross main animate? approx probe? offset physics]
                          :or {layout :list cross 400.0 main 600.0
-                              animate? true probe? true offset 0.0}}]
+                              animate? true probe? true offset 0.0 physics :clamping}}]
   (let [^w/ScrollController ctl (w/ScrollController .initialScrollOffset (double offset))
         rig (atom {:tester t
                    :ctl ctl
@@ -187,6 +188,7 @@
                    :main (double main)
                    :animate? animate?
                    :approx approx
+                   :physics physics
                    :cold-gen (swap! rig-gen inc)
                    :probe (when probe? (atom []))})]
     ;; retired controllers are disposed at teardown, never inline — their old
@@ -441,6 +443,7 @@
      :tweening? (some? (.-tweenAnim rs))   :vel (.-velocityEMA rs)
      :pass-mode (.-passMode rs)
      :pass-materialized (.-passMaterialized rs)
+     :measured-agg (.-measuredAgg rs)
      :checkpoints (sort (keys (.-checkpoints rs)))
      :committed-n (count (.-committed rs))
      :overscan [(.-overscanBehind rs) (.-overscanAhead rs)]}))
@@ -723,7 +726,11 @@
         lim (scroll-limits rig)
         ^double min-e (:min lim)
         ^double max-e (:max lim)
-        ^double px (offset rig)]
+        ^double px (offset rig)
+        ;; bouncing physics makes out-of-range pixels LEGAL while a spring plays;
+        ;; at rest the spring must have returned them into [min, max]
+        bounce-flight? (and (= :bouncing (:physics @rig :clamping))
+                            (not (at-rest? rig)))]
     (if (nil? g)
       [(v :o5 {:why :no-geometry})]
       (let [^double se (:scroll-extent g)
@@ -748,7 +755,8 @@
           (< mpe (- pe eps-geom))
           (conj (v :o5 {:why :max-paint-below-paint :max mpe :paint pe}))
 
-          (or (< px (- min-e eps-geom)) (> px (+ max-e eps-geom)))
+          (and (not bounce-flight?)
+               (or (< px (- min-e eps-geom)) (> px (+ max-e eps-geom))))
           (conj (v :o5 {:why :pixels-out-of-range :pixels px :min min-e :max max-e})))))))
 
 (defn o6-anchor-preserved
@@ -888,26 +896,109 @@
     (if (seq bad) [(v :o8 {:why :idle-correction :entries (vec (take 3 bad))})] [])))
 
 (defn o9-bounded-state
-  "O9 — retention stays proportional to the live window. Catches unbounded growth
-   across long episodes, which no single-frame assert can see.
+  "O9 — two disjoint bounds (the step-10 open calibration, closed in step 13a
+   stage 0):
 
-   `committed` is scoped to the cache BAND and pruned only BETWEEN segments
-   (render.cljd `commit-prune?`), so mid-segment it legitimately accumulates every
-   key the segment's passes touched — while the attached window can collapse to a
-   single child during a landing. Bounding it by `attached` there measured the
-   wrong thing; mid-segment it is bounded by the band instead."
+   WORK — `pass-materialized` (children laid out by the last flow pass) stays
+   under the engine's own `materialization-budget` arithmetic over the band the
+   pass was given: O(window+overscan) per pass, UNCONDITIONAL — no pass mode is
+   exempt, the cache is an accelerator and never the algorithm. Densities come
+   from the OBSERVED attached cells (the engine tripwire's `tripwire-env` uses
+   the same current-pass sample so a stale EMA cannot collapse the budget);
+   unknown density ⇒ the budget is infinite, same as the engine's.
+
+   RETENTION — `cache-n` / `committed-n` / `checkpoints` stay proportional to
+   the live window; mid-segment the denominator is the BAND (the same budget
+   arithmetic), because a landing collapses the attached window to one child
+   while the segment legitimately retains band-scale state (`commit-prune?`
+   defers pruning; the cache tracks the band). The old attached-window
+   denominator mid-segment was the deliberately-open miscalibration."
   [rig]
   (let [e (engine rig)
-        ^int n (count (children rig))
+        cs (children rig)
+        ^int n (count cs)
         ^int lim (+ (* 8 n) 64)
-        ^int com-lim (if (:tweening? e)
-                       (+ (* 8 (max n ^int (:cache-n e))) 64)
+        sized (filter (fn [c] (pos? ^double (:main-size c))) cs)
+        ^int sn (count sized)
+        ^double mm (if (pos? sn)
+                     (/ ^double (reduce (fn [^double a c] (+ a ^double (:main-size c))) 0.0 sized) sn)
+                     0.0)
+        ^double mc (if (pos? sn)
+                     (/ ^double (reduce (fn [^double a c] (+ a ^double (:cross-size c))) 0.0 sized) sn)
+                     0.0)
+        ^r/SliverConstraints sc (.-constraints (sliver rig))
+        [^double behind ^double ahead] (:overscan e)
+        ^double band (+ (.-remainingCacheExtent sc) behind ahead)
+        ^double budget (render/materialization-budget band mm mc (cross-extent rig))
+        seg? (boolean (:tweening? e))
+        ^int band-lim (if (.-isFinite budget) (+ (.toInt budget) 64) lim)
+        ^int keep-lim (if seg? (max lim band-lim) lim)
+        ^int com-lim (if seg?
+                       (+ (* 8 (max n ^int (:cache-n e) (max 0 (- band-lim 64)))) 64)
                        lim)
-        probes [[:cache-n (:cache-n e) lim]
+        probes [[:cache-n (:cache-n e) keep-lim]
                 [:committed-n (:committed-n e) com-lim]
-                [:checkpoints (count (:checkpoints e)) lim]]
-        bad (filter (fn [p] (> ^int (nth p 1) ^int (nth p 2))) probes)]
-    (if (seq bad) [(v :o9 {:why :unbounded :limit lim :counts (vec bad)})] [])))
+                [:checkpoints (count (:checkpoints e)) keep-lim]]
+        bad (filter (fn [p] (> ^int (nth p 1) ^int (nth p 2))) probes)
+        ^int pm (int (:pass-materialized e))
+        ;; a capture lays the union window + vacated extent; x2 still flags O(gap)
+        ^double work-budget (if seg? (* 2.0 budget) budget)
+        work-bad (and (.-isFinite budget) (> pm work-budget))]
+    (cond-> []
+      (seq bad)
+      (conj (v :o9 {:why :unbounded :limit lim :counts (vec bad)}))
+      work-bad
+      (conj (v :o9 {:why :work :pass-materialized pm :budget budget :band band})))))
+
+;; @ai-generated(guided)
+(defn o11-truth-equation
+  "O11 — the engine's viewAnchor is the scroll truth: after a settled pass the
+   anchor's fraction point sits exactly at the sliver's scrollOffset,
+   `off + frac·extent == so`. Today this holds by sampling construction; under
+   anchor-primary (step 13 stages 2+) it is the model itself, so a drift here is
+   the engine losing its own truth record. REST-ONLY (mid-segment the displayed
+   frames are tweened against a moving set-point)."
+  [rig]
+  (let [e (engine rig)
+        va (:view-anchor e)]
+    (if (or (nil? va) (empty? (children rig)))
+      []
+      (let [^double so (scroll-offset rig)
+            ^double frac (double (:frac va))
+            ^double point (+ ^double (:off va) (* frac ^double (:extent va)))
+            ;; clamped frac = viewport top inside inter-run spacing (§2.1 screenResidual)
+            clamped? (or (= 0.0 frac) (= 1.0 frac))
+            ^double rsp (double (:run-spacing (get layout-specs (:layout @rig))))
+            ^double tol (if clamped? (+ rsp eps-geom) eps-geom)]
+        (if (close? point so tol)
+          []
+          [(v :o11 {:why :truth-equation :anchor va :scroll-offset so :point point})])))))
+
+;; @ai-generated(guided)
+(defn o10-anchor-rest-stability
+  "O10 — the anchor never teleports at rest: across an idle pump viewAnchor's
+   (key, frac) is bit-stable. `before`/`after` are the engine map's :view-anchor
+   read around the pump. An idle frame that runs no layout pass is trivially
+   stable; the oracle bites when something schedules relayout at rest (a
+   correction storm, an epilogue re-deriving the anchor)."
+  [before after]
+  (if (or (nil? before) (nil? after))
+    []
+    (if (and (= (:key before) (:key after))
+             (close? (double (:frac before)) (double (:frac after)) eps-exact))
+      []
+      [(v :o10 {:why :anchor-teleport :before before :after after})])))
+
+;; @ai-generated(guided)
+(defn o12-extent-quiescence
+  "O12 — at rest with no mutations `maxScrollExtent` is constant across pumps
+   (the campaign-2 applyNewDimensions→goBallistic observation as an oracle):
+   an extent that breathes at rest restarts boundary springs and betrays a
+   Δ storm / EMA drift leaking into the reported extent."
+  [^double before ^double after]
+  (if (close? before after eps-exact)
+    []
+    [(v :o12 {:why :extent-breathing :before before :after after})]))
 
 ;; --- driver ---
 
@@ -931,15 +1022,21 @@
         (if-not rest?
           {:violations base
            :ran #{:o1 :o5 :o8 :o9}
-           :skipped {:o2 :in-motion :o3 :in-motion :o4 :in-motion}
+           :skipped {:o2 :in-motion :o3 :in-motion :o4 :in-motion
+                     :o10 :in-motion :o11 :in-motion :o12 :in-motion}
            :ctx ctx}
-          (let [idle (await (o3-idle-stability! rig))     ;; pumps one idle frame
+          (let [va0 (:view-anchor (engine rig))
+                ^double max0 (double (:max (scroll-limits rig)))
+                idle (await (o3-idle-stability! rig))     ;; pumps one idle frame
                 quiet (o8-idle-quiet rig)
                 _ (probe-reset! rig)
-                more (into (into (into base idle) quiet)
+                anchor (into (o10-anchor-rest-stability va0 (:view-anchor (engine rig)))
+                             (o12-extent-quiescence max0 (double (:max (scroll-limits rig)))))
+                more (into (into (into (into base idle) quiet)
+                                 (into anchor (o11-truth-equation rig)))
                            (into (o2-top-edge rig) (o4-tiling rig)))]
             {:violations (into more (o1-no-exception rig))
-             :ran #{:o1 :o2 :o3 :o4 :o5 :o8 :o9}
+             :ran #{:o1 :o2 :o3 :o4 :o5 :o8 :o9 :o10 :o11 :o12}
              :skipped {}
              :ctx ctx}))))))
 
@@ -974,14 +1071,15 @@
 
 (defn rig-from-header!
   "Mounts the rig a fuzz episode header describes:
-   {:seed :animate? :approx :layout0 :cross0 :items0}"
+   {:seed :animate? :approx :layout0 :cross0 :items0 :physics}"
   [^ft/WidgetTester t header]
   (await (make-rig t
                    :items (items-range (or (:items0 header) default-item-count))
                    :layout (or (:layout0 header) :list)
                    :cross (double (or (:cross0 header) 400.0))
                    :animate? (boolean (:animate? header))
-                   :approx (:approx header))))
+                   :approx (:approx header)
+                   :physics (or (:physics header) :clamping))))
 
 (defn apply-op!
   "One fully-parameterized op. Index-bearing ops clamp into range — DEFINED

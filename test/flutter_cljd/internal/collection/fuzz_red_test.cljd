@@ -107,7 +107,8 @@
   (cond (< seed 100) :full
         (< seed 200) :no-layout
         (< seed 300) :no-jump
-        :else :churn))
+        (< seed 400) :churn
+        :else :bounce))
 
 (defn- header-for [^int seed]
   (nth (fz/gen-episode seed (profile-of seed) fz/fuzz-items fz/episode-len) 0))
