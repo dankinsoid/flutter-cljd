@@ -349,11 +349,39 @@
       (is (= 1 ((:first-index tl) env 150.0)))
       (is (= 2 ((:last-index tl) env 250.0))))))
 
+(deftest keyed-tween-frameless-cell-parks-at-the-source-edge
+  ;; offset 0 would strand it at the scroll origin (fuzz :o9 seed 340)
+  (let [to (tw/frozen-frame-source
+            {:base 5 :extent 900.0
+             :frames [(fr 500 0 100 200) (fr 600 0 100 200) (fr 700 0 100 200)]})
+        key-of (fn [^int i] (keyword (str "k" i)))
+        geo (fn [^int i ^double t] (keyed-geo to {} 900.0 key-of t i))]
+    (testing "above the window: the first frame's slot, no main extent"
+      (is (frame= (fr 500 0 0 200) (geo 4 0.0)))
+      (is (frame= (fr 500 0 0 200) (geo 0 0.5)))
+      (is (frame= (fr 500 0 0 200) (geo 4 1.0))))
+    (testing "below the window: the last frame's slot, no main extent"
+      (is (frame= (fr 700 0 0 200) (geo 8 0.5))))
+    (testing "the parked cell still lays out at the edge cell's full extent"
+      (is (close? 100.0 (:full-main-extent (geo 4 0.5))))
+      (is (close? 200.0 (:full-cross-extent (geo 4 0.5)))))
+    (testing "an in-window cell with no history is untouched (sits at target)"
+      (is (frame= (fr 600 0 100 200) (geo 6 0.5))))))
+
 ;; --- keyed combinator (v2): enter/exit wipe (main-extent collapse) ---
 
 (defn- keyed-geo* [to-src committed ^double from-extent key-of opts ^double t ^int i]
   (let [tl (tw/keyed-tween-layout [:k t] to-src committed from-extent key-of (fn [] t) opts)]
     ((:geometry tl) (with-ctx tl base-env) i)))
+
+(deftest keyed-tween-frameless-cell-parks-on-the-layouts-own-axis
+  ;; a :cross-collapsing parked cell is a row-mate: it keeps the edge row's main span
+  (let [to (tw/frozen-frame-source
+            {:base 5 :extent 900.0 :frames [(fr 500 0 100 200)]})
+        key-of (fn [^int i] (keyword (str "k" i)))
+        gm (keyed-geo* to {} 900.0 key-of {:collapse-axis :cross} 0.5 4)]
+    (is (frame= (fr 500 0 100 0) gm))
+    (is (close? 200.0 (:full-cross-extent gm)))))
 
 (deftest keyed-tween-entering-key-wipes-open
   (let [to (tw/frozen-frame-source

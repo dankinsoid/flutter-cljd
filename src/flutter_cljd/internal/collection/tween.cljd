@@ -253,6 +253,37 @@
   [fr axis]
   (when fr (assoc fr (if (= :cross axis) :cross-extent :main-extent) 0.0)))
 
+;; @ai-generated(guided)
+(defn ^:private parked-frame
+  "Frame for a cell NEITHER endpoint has an opinion about — no committed history
+   and no target frame. It is parked at `to-src`'s own nearest EDGE frame,
+   collapsed on `axis` so it reserves nothing, keeping that frame's extent as the
+   stable full size the cell is laid out at (§8a).
+
+   This is `keyed-tween-layout`'s WINDOW CLAMP applied to the third query: an
+   answer the source does not have resolves to the source's own edge, never to 0.
+   A frame of 0 teleports the cell to the scroll origin, where it becomes
+   firstChild and costs the next pass an O(gap) walk back to the window (fuzz
+   `:o9` seed 340).
+
+   The edges are probed at offsets every bounded source covers — its start and
+   its own reported extent — so no non-finite offset ever reaches a layout's
+   index math. `:extent`'s item count is passed as 0: only a bounded source can
+   answer nil for a frame, and every bounded source (frozen, shadow) reports its
+   own span regardless of that argument."
+  [to-src env ctx ^int i axis]
+  (let [lo ((:first-index to-src) env ctx 0.0)
+        hi ((:last-index to-src) env ctx
+            (double (or ((:extent to-src) env ctx 0) 0.0)))
+        edge (cond
+               (and lo (< i (int lo))) ((:frame to-src) env ctx (int lo))
+               (and hi (> i (int hi))) ((:frame to-src) env ctx (int hi))
+               :else nil)]
+    (when edge
+      (assoc (zero-axis edge axis)
+             (if (= :cross axis) :full-cross :full-main)
+             (double (get edge (if (= :cross axis) :cross-extent :main-extent)))))))
+
 ;; @ai-generated(solo)
 (defn keyed-tween-layout
   "The v2 morph as an indexed layout map, with a KEYED `from` side. Unlike the
@@ -300,7 +331,9 @@
    fabricates a window the source never described: it pins the materialization
    band at the top while the viewport moves away, and pairs an in-snapshot
    `first-index` with a `last-index` of 0 into an INVERTED window whose two
-   garbage walks count the same children twice (fuzz NEW-5 / NEW-7)."
+   garbage walks count the same children twice (fuzz NEW-5 / NEW-7). The
+   per-child FRAME obeys the same clamp: a cell with no committed history and no
+   target frame parks at the source's edge (`parked-frame`), never at offset 0."
   ([id to-src committed ^double from-extent key-of progress]
    (keyed-tween-layout id to-src committed from-extent key-of progress {}))
   ([id to-src committed ^double from-extent key-of progress
@@ -317,8 +350,13 @@
                  (let [ctx (:ctx env)
                        ^double t (double (:t ctx))
                        key (key-of i)
-                       to (to-frame env (:to-ctx ctx) i)
                        from (get committed key)
+                       to (to-frame env (:to-ctx ctx) i)
+                       ;; no history and no target: the cell has no honest place
+                       ;; in this segment, so it parks at the source's edge
+                       to (or to (when (nil? from)
+                                   (parked-frame to-src env (:to-ctx ctx) i
+                                                 collapse-axis)))
                        ext-key (if (= :cross collapse-axis) :cross-extent :main-extent)
                        ;; the captured `from`'s STABLE full extent on the collapse
                        ;; axis (commit-pass!/animate-pass! store it): a cell
