@@ -249,3 +249,41 @@
       (await (h/settle! rig))
       (let [ovs (h/o6-anchor-preserved rig before)]
         (is (empty? ovs) (str "anchor preserved after remove above the window: " ovs))))))
+
+;; --- 9. the offset model is live in :settled ---
+
+;; @ai-generated(guided)
+;; the capability itself is pinned in render-test/settled-lands-exactness-*
+(deftest settled-pass-lands-index-0-before-the-clock-ends
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [rig (await (h/make-rig tester
+                               :items (h/items-range 1200)
+                               :layout :wrap
+                               :cross 400.0
+                               :approx 120.0
+                               :animate? true))]
+    (await (h/settle! rig))
+    (let [^double max-off (:max (h/scroll-limits rig))]
+      (await (h/jump-to! rig (* 0.6 max-off)))
+      (await (h/settle! rig)))
+    ;; open a segment, then leave its frozen domain by jumping to the top
+    (await (h/set-layout! rig :list))
+    (is (h/tweening? rig) "the layout swap opens a segment")
+    (await (h/pump! rig 16))
+    (await (h/jump-to! rig 0.0))
+    (await (h/pump-n! rig 4 16))
+    (is (h/tweening? rig)
+        "the host clock is still playing — this is the :settled pass, not a resting one")
+    (let [top (first (sort-by :index (h/children rig)))
+          eng (h/engine rig)]
+      (is (= 0 (:index top)) (str "index 0 is attached mid-clock: " (pr-str top)))
+      (is (h/close? (double (:offset top)) 0.0 h/eps-geom)
+          (str "index 0 sits at content offset 0 while the clock plays: " (pr-str top)))
+      (is (true? (:anchored0 eng))
+          (str "the leading estimate became EXACT during the segment: " (pr-str eng)))
+      (is (h/close? (h/offset rig) 0.0 h/eps-geom)
+          (str "and the viewport rests on the origin: " (h/offset rig))))
+    (await (h/settle! rig))
+    (let [vs (await (h/check! rig {:step :settled-landing}))]
+      (is (empty? vs) (str "oracles after the clock ends: " vs " " (h/report rig {}))))))

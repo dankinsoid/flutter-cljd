@@ -79,14 +79,14 @@
    Capabilities:
      :emit-rebase?      the pass may publish `passRebase` as a
                         scrollOffsetCorrection (`emit-correction!`).
-     :refine?           above-anchor seam refinement (reflow-from-checkpoint!)
-                        may emit — mid-content churn that only a resting offset
-                        model can absorb; still subject to velocity suppression.
-     :origin-refine?    exact-landing (index 0 at offset 0) and top-underflow may
-                        emit. These reconcile the scroll BOUNDARY the motion is
-                        heading toward — one-shot, convergent and pixel-stable —
-                        so unlike :refine? they ignore ballistic suppression and
-                        close the gap above item 0 within the frame (#B).
+     :lead-emit?        the leading-extent Δ (seam refinement, exact landing,
+                        top underflow) may reach the epilogue. ON wherever the
+                        resting drivers own the offset model — a playing segment
+                        freezes it at capture and emits only the set-point, so
+                        the two are mutually exclusive per pass. The ballistic
+                        sub-gate lives in the epilogue, not here: mid-content
+                        seams defer under fast backward motion, the ORIGIN
+                        residuals never do (#B).
      :overscan?         directional overscan margins are resolved; otherwise the
                         set-point + widen-window! own the window (scenario 6).
      :prune-commit?     the committed map may be pruned geometrically — never
@@ -102,19 +102,20 @@
                         their committed rect, so leave-slides glide out (§7b).
      :set-point?        the segment set-point drives the scroll correction.
      :seg-tail?         a lingering segAnchor's un-emitted tail is published."
-  {:resting {:emit-rebase? true  :refine? true  :origin-refine? true  :overscan? true
+  {:resting {:emit-rebase? true  :lead-emit? true  :overscan? true
              :prune-commit? true  :measure-feed? true  :tripwire? true
              :canonical-assert? true  :epilogue-asserts? true
              :union-window? false :set-point? false :seg-tail? true}
-   :settled {:emit-rebase? true  :refine? false :origin-refine? false :overscan? false
+   ;; :settled runs the resting drivers with no set-point competing for the offset
+   :settled {:emit-rebase? true  :lead-emit? true  :overscan? false
              :prune-commit? false :measure-feed? true  :tripwire? true
              :canonical-assert? false :epilogue-asserts? true
              :union-window? true  :set-point? false :seg-tail? false}
-   :capture {:emit-rebase? false :refine? false :origin-refine? false :overscan? false
+   :capture {:emit-rebase? false :lead-emit? false :overscan? false
              :prune-commit? false :measure-feed? false :tripwire? false
              :canonical-assert? false :epilogue-asserts? false
              :union-window? true  :set-point? false :seg-tail? false}
-   :segment {:emit-rebase? true  :refine? false :origin-refine? false :overscan? false
+   :segment {:emit-rebase? true  :lead-emit? false :overscan? false
              :prune-commit? false :measure-feed? false :tripwire? false
              :canonical-assert? false :epilogue-asserts? false
              :union-window? true  :set-point? true  :seg-tail? false}})
@@ -431,8 +432,8 @@
    backward re-flow walks forward from. Everything further above is dropped and
    re-recorded on the next downward walk. Never pruned by count or age. Bounded
    O((we-ws)/min-run-height). Sound because the anchoredTo0 frontier does not
-   rest on checkpoints (see frontier-after-prune): exact near-0 landing walks
-   from :init, and a deep window only ever re-flows from the retained band+seed.
+   rest on checkpoints: exact near-0 landing walks from :init, and a deep window
+   only ever re-flows from the retained band + seed.
    Phase E re-scopes [ws, we] to the velocity-widened overscan window. Pure."
   [checkpoints ^double ws ^double we]
   (let [seed (reduce-kv (fn [best k v]
@@ -447,23 +448,6 @@
                      (assoc m k v)
                      m)))
                {} checkpoints)))
-
-(defn frontier-after-prune
-  "anchoredTo0 after a geometric prune / front-trim pass — the NEW frontier
-   invariant (Row 3). anchoredTo0 no longer claims \"index 0 is still in the
-   cache\" (front-trim drops the from-0 prefix while deep); it claims the retained
-   entries' OFFSETS ARE EXACT — chained from a from-0-exact walk. trim-front drops
-   the exact prefix but keeps the retained offsets and re-seeds baseState from the
-   exact stored state, and the checkpoint / committed prunes touch no offsets at
-   all — so NO geometric prune can degrade the claim. Degradation is owned entirely
-   by the offset-PRODUCING ops that introduce estimates (cold / far inverse seed
-   and dead-reckon re-anchor in seed-cache!, walk!'s mismatch truncation, the
-   underflow branch) plus mutation invalidation in update-render! (a count change
-   shifts the retained offsets, drops all checkpoints, and clears the flag). Each
-   sets the flag directly, so this reconciliation is the identity — it exists to
-   state, at the one prune site, that pruning/trimming preserves the frontier. Pure."
-  [^bool anchored]
-  anchored)
 
 (defn stitch-prefix
   "Prepends the `prefix` cache entries (index-ascending, each carrying a running
@@ -522,13 +506,12 @@
 ;; (see refine-suppressed? in the phase-E section above).
 
 (defn refine-emit?
-  "The WS1.3 exclusivity + suppression gate in one place. `allowed?` is the pass
-   mode's `:refine?` (a playing segment freezes the offset model at capture and
-   emits only the set-point correction, so the two are mutually exclusive per
-   pass); the second half defers while active backward motion would race the
-   correction. Gates the ABOVE-ANCHOR seam refinement (reflow-from-checkpoint!),
-   which is mid-content churn. The ORIGIN corrections use `:origin-refine?`
-   directly — they ignore suppression (see pass-caps). Pure."
+  "The ballistic sub-gate of `:lead-emit?`, for the ABOVE-ANCHOR seam only: it is
+   mid-content churn, and deferring it while active backward motion could race the
+   correction costs nothing (the measurement still happens, only its delta stays
+   latent). The ORIGIN residuals take `:lead-emit?` unfiltered — they converge on
+   the boundary the motion is heading for, so a fast up-fling must still land
+   index 0 exactly (#B). Pure."
   [^bool allowed? ^bool suppressed?]
   (and allowed? (not suppressed?)))
 
@@ -2145,8 +2128,9 @@
    Without it a from-0-anchored deep scroll keeps every entry [0..head] on the heap
    (O(N) memory) — cacheFirst never leaves 0. The dropped prefix's children were
    already collected by pre-/post-gc! over the same [ws-o, we-o] band, so no child
-   is orphaned. anchoredTo0 is untouched: trimming preserves the exact-offsets claim
-   (frontier-after-prune). Runs every flow pass, after backfill has lowered
+   is orphaned. anchoredTo0 is untouched: NO geometric prune or trim can degrade the
+   exact-offsets claim — trimming keeps the retained offsets and re-seeds baseState
+   from the exact stored state. Runs every flow pass, after backfill has lowered
    cacheFirst to the band top."
   [^CollectionRenderSliver rs ^double ws]
   (when-let [[cache' ^int cf' base'] (trim-front (.-cache rs) (.-cacheFirst rs) ws)]
@@ -2628,11 +2612,11 @@
             ;; can indict the layout for an off-zero index 0
             from-init? (and (zero? (.-cacheFirst rs)) (empty? (.-cache rs)))
             anchor (when (anchor-preserved? plan) (anchor-before rs cause so))
-            emit? (refine-emit? (pass-allows? mode :refine?)
+            origin-emit? (pass-allows? mode :lead-emit?)
+            emit? (refine-emit? origin-emit?
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
                                                     (double (:suppress-v overscan-tunables))
-                                                    (double (:v-fast overscan-tunables))))
-            origin-emit? (pass-allows? mode :origin-refine?)]
+                                                    (double (:v-fast overscan-tunables))))]
         (if-not (align-start! rs layout env align-ws)
           (do (.-geometry! rs r/SliverGeometry.zero)
               (.didFinishLayout mgr)
@@ -2652,8 +2636,6 @@
               (trim-front! rs ws-eff)
               ;; checkpoint scoping: the overscan band plus one seed above
               (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
-              ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
-              (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
               (when (pass-allows? mode :measure-feed?)
                 (let [sample (update-measured-agg! rs env)]
                   ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change

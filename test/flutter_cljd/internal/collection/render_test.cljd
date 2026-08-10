@@ -163,27 +163,20 @@
         (is (contains? p2 3))
         (is (not (contains? p2 2)))))))
 
-(deftest frontier-survives-front-trim
-  ;; Row 3 frontier invariant: anchoredTo0 now means "retained offsets are exact",
-  ;; NOT "index 0 is in the cache". Front-trim (trim-front) drops the from-0 prefix
-  ;; while deep but keeps exact offsets + an exact re-seeded baseState, and the
-  ;; checkpoint/committed prunes touch no offsets — so no geometric prune/trim can
-  ;; degrade the claim. The reconciliation is identity; degradation is owned by the
-  ;; offset ops (seed/re-anchor/mismatch/underflow) and mutation invalidation.
-  (testing "an anchored pass survives front-trim + prune with no churn (was:
-            the old rule cleared it the moment cacheFirst left 0 — now it must not)"
-    (is (true? (render/frontier-after-prune true))))
-  (testing "an un-anchored frontier never resurrects from a prune/trim pass"
-    (is (false? (render/frontier-after-prune false))))
-  (testing "an item mutation above the band degrades the claim via update-render!
-            (count change) + cp-drop-from, not via this reconciliation — the flag
-            arrives here already false and stays false"
-    ;; cp-drop-from at the touched index drops the shifted checkpoints (>= j),
-    ;; and update-render! clears anchoredTo0 on the same count change; the prune
-    ;; reconciliation then preserves that cleared state.
+(deftest frontier-degrades-only-through-offset-producers
+  ;; Row 3 frontier invariant: anchoredTo0 means "retained offsets are exact", NOT
+  ;; "index 0 is in the cache". Front-trim drops the from-0 prefix while deep but
+  ;; keeps exact offsets + an exact re-seeded baseState, and the checkpoint /
+  ;; committed prunes touch no offsets — so no geometric prune or trim can degrade
+  ;; the claim, and none of them touches the flag. Degradation is owned by the
+  ;; offset-PRODUCING ops (seed / re-anchor / mismatch / underflow) and by mutation
+  ;; invalidation in update-render!.
+  (testing "an item mutation above the band drops the shifted checkpoints; the flag
+            is cleared by the same count change, never by the prune"
     (let [cps (-> {} (render/cp-record 8 400.0 :s8) (render/cp-record 14 900.0 :s14))]
-      (is (= #{8} (set (keys (render/cp-drop-from cps 14)))))   ; mutation at 14 above band
-      (is (false? (render/frontier-after-prune false))))))
+      (is (= #{8} (set (keys (render/cp-drop-from cps 14)))))
+      (testing "the surviving seed keeps its exact offset — nothing to reconcile"
+        (is (= 400.0 (:offset (get (render/cp-drop-from cps 14) 8))))))))
 
 ;; --- trim-front (Row 3 memory bound / Row 4 O(W) mismatch copy) ---
 
@@ -563,14 +556,19 @@
       (doseq [m [:resting :settled :capture :segment] cap caps]
         (is (contains? (get render/pass-caps m) cap))))
     (testing "the capture boundary: no emission, no refinement, no measurement feed"
-      (doseq [cap [:emit-rebase? :refine? :origin-refine? :overscan? :prune-commit?
+      (doseq [cap [:emit-rebase? :lead-emit? :overscan? :prune-commit?
                    :measure-feed? :tripwire? :canonical-assert? :epilogue-asserts?
                    :set-point? :seg-tail?]]
         (is (false? (render/pass-allows? :capture cap))))
       (is (true? (render/pass-allows? :capture :union-window?))))
-    (testing "a settled pass is a resting pass for measurement and the rebase asserts"
-      (doseq [cap [:emit-rebase? :measure-feed? :tripwire? :epilogue-asserts?]]
+    (testing "a settled pass is a resting pass for the offset model: it measures,
+              asserts, and emits the leading Delta — a jump-to-top taken mid-segment
+              lands index 0 before the host clock ends"
+      (doseq [cap [:emit-rebase? :lead-emit? :measure-feed? :tripwire? :epilogue-asserts?]]
         (is (true? (render/pass-allows? :settled cap)))))
+    (testing "a live segment owns the offset, so the leading Delta stays latent there"
+      (doseq [m [:capture :segment]]
+        (is (false? (render/pass-allows? m :lead-emit?)))))
     (testing "only a live segment drives the set-point"
       (is (true? (render/pass-allows? :segment :set-point?)))
       (doseq [m [:resting :settled :capture]]
@@ -579,7 +577,7 @@
 (deftest refine-emission-exclusive-with-segment
   (testing "resting, still pass emits"
     (is (true? (render/refine-emit? true false))))
-  (testing "a playing segment never emits refinement, even at rest —
+  (testing "a live segment never emits refinement, even at rest —
             the WS1.3 segment correction owns the pass (mutual exclusivity)"
     (is (false? (render/refine-emit? false false))))
   (testing "suppressed resting pass defers"
@@ -588,7 +586,7 @@
     (is (false? (render/refine-emit? false true)))))
 
 ;; --- origin corrections fire while flinging (#B: gap above item 0 during a fast up-fling) ---
-(deftest origin-refine-emit-ignores-velocity
+(deftest origin-emission-ignores-velocity
   ;; The exact-landing (index 0 at offset 0) and top-underflow (indices stranded at
   ;; the origin) corrections reconcile the SCROLL BOUNDARY the motion heads toward.
   ;; They are one-shot, convergent and pixel-stable, and Flutter resolves the
@@ -596,16 +594,37 @@
   ;; refinement they must NOT be deferred by ballistic velocity, or a gap opens
   ;; above item 0 during a fast up-fling and only closes at deceleration (#B).
   (testing "origin corrections emit regardless of velocity / direction"
-    (is (true? (render/pass-allows? :resting :origin-refine?))))
-  (testing "a playing segment still owns the pass — origin corrections defer (WS1.3)"
-    (doseq [m [:settled :capture :segment]]
-      (is (false? (render/pass-allows? m :origin-refine?)))))
+    (is (true? (render/pass-allows? :resting :lead-emit?))))
+  (testing "a live segment owns the pass — the leading Delta defers there (WS1.3)"
+    (doseq [m [:capture :segment]]
+      (is (false? (render/pass-allows? m :lead-emit?)))))
   (testing "the split is real: at a fast up-fling SEAM refinement is suppressed but
             the origin correction still fires"
     (let [suppressed? (render/refine-suppressed? -1 4000.0 120.0 3200.0)]  ; fast up
       (is (true? suppressed?))
-      (is (false? (render/refine-emit? (render/pass-allows? :resting :refine?) suppressed?)))
-      (is (true? (render/pass-allows? :resting :origin-refine?))))))
+      (is (false? (render/refine-emit? (render/pass-allows? :resting :lead-emit?) suppressed?)))
+      (is (true? (render/pass-allows? :resting :lead-emit?))))))
+
+;; @ai-generated(guided)
+;; --- :settled exactness ---
+(deftest settled-lands-exactness-during-the-playing-clock
+  ;; a domain-exited segment has no set-point competing for the offset
+  (let [settled (render/pass-allows? :settled :lead-emit?)
+        live (render/pass-allows? :segment :lead-emit?)]
+    (testing "index 0 found off the origin lands NOW under a playing clock"
+      (is (= :emit (render/landing-decision -42.0 settled false)))
+      (is (= :defer (render/landing-decision -42.0 live false))))
+    (testing "a converged landing is capability-independent — nothing to emit"
+      (is (= :converged (render/landing-decision 0.0 settled false)))
+      (is (= :converged (render/landing-decision 0.0 live false))))
+    (testing "top-underflow rides the same capability, so a frontier stranded at
+              the origin is freed during the clock too"
+      (is (= :emit (render/underflow-decision 12 0.0 900.0 settled)))
+      (is (= :defer (render/underflow-decision 12 0.0 900.0 live))))
+    (testing "the SEAM half of the same capability still defers under fast
+              backward motion — only the origin residuals ignore it"
+      (is (false? (render/refine-emit? settled (render/refine-suppressed? -1 4000.0 120.0 3200.0))))
+      (is (true? (render/refine-emit? settled false))))))
 
 ;; wrap fixture: cross-extent 200, items 90x40 ⇒ 2 per run, run pitch 40.
 ;; Truth: index i at offset 40*(i div 2), cross 90*(i mod 2).
@@ -1153,8 +1172,8 @@
         ^double z0 (double (get stale 0))
         truth (tw/flow-run-entries wrapl drift-env (wrap-sized 0 8) ((:init wrapl) drift-env))]
     (testing "the driven flight really is the suppressed+origin-open regime"
-      (is (false? (render/refine-emit? (render/pass-allows? :resting :refine?) suppressed?)))
-      (is (true? (render/pass-allows? :resting :origin-refine?))))
+      (is (false? (render/refine-emit? (render/pass-allows? :resting :lead-emit?) suppressed?)))
+      (is (true? (render/pass-allows? :resting :lead-emit?))))
     (testing "the anchor-relative walk leaves index 0 at the constant negative
               residual — the whole leading-extent underestimate, carried down intact"
       (is (= -60.0 z0))     ; approx(6)=60 vs truth 120
@@ -1167,7 +1186,7 @@
             ;; the corrected re-run is seeded :at-0 — a from-:init walk
             (loop [^int pass 1 frame stale from-init? false corrs []]
               (let [^double z (double (get frame 0))]
-                (case (render/landing-decision z (render/pass-allows? :resting :origin-refine?) from-init?)
+                (case (render/landing-decision z (render/pass-allows? :resting :lead-emit?) from-init?)
                   :converged {:passes pass :corrs corrs :frame frame}
                   :emit (recur (inc pass) (translate-frame frame (- z)) true (conj corrs (- z)))
                   {:passes -1 :corrs corrs :frame frame})))]
