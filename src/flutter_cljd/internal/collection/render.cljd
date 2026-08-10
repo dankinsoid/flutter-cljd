@@ -150,8 +150,6 @@
    ;; --- segment state (v2 keyed rect animator, see docs/CollectionRectAnimator.md) ---
    ^:mutable ^int curGen    ;; host's current segment gen (set by update-render!)
    ^:mutable ^int segGen    ;; gen the engine last BUILT segTween for; -1 = none built
-   ^:mutable fromRects      ;; {key -> rect} OLD committed rects frozen at segment start
-   ^:mutable ^double fromExtent ;; scroll extent frozen at segment start
    ^:mutable entering       ;; set of keys wiping open this segment
    ^:mutable exiting        ;; set of keys wiping shut this segment
    ^:mutable leaving        ;; {key -> edge frame} leave-slide `to`s this segment (§7b);
@@ -3090,8 +3088,8 @@
   "First pass of a new segment (docs §4.1/§6). Freezes the OLD committed rects as
    the `from` side, captures the target from the NEW tree, builds the keyed
    segment tween and displays THIS pass at `from` (t≈0) so nothing jumps to target:
-     a. fromRects := the OLD committed rects (this pass has not committed yet).
-     b. fromExtent := the scroll extent reported last pass (read before overwrite).
+     a. the `from` side := the OLD committed rects (this pass has not committed yet).
+     b. the `from` extent := the scroll extent reported last pass (read before overwrite).
      c. to-src := exact indexed math for an indexed target; for a flow target,
         run the flow driver so the inserted cells are created/measured at their
         natural target, then freeze that window as an index-addressed source.
@@ -3284,8 +3282,6 @@
     ;; consume the frozen resting layout — this segment has read the old sizes; a
     ;; later data-only segment must not re-read it (docs §7c).
     (.-prevLayout! rs nil)
-    (.-fromRects! rs from-rects)
-    (.-fromExtent! rs from-extent)
     (.-segTween! rs seg-tween)
     (.-segAnchor! rs seg-anchor)
     ;; desired(0) == the live scrollOffset, so t≈0 emits no jump on a retrigger (§9)
@@ -3329,7 +3325,7 @@
   (createRenderObject [_this ^w/BuildContext context]
     (let [^w/SliverMultiBoxAdaptorElement element context
           rs (CollectionRenderSliver element layoutImpl itemCount -1.0 [] 0 nil nil nil keyOf {}
-                                     segGen -1 {} 0.0 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
+                                     segGen -1 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
                                      :resting 0.0 nil 0 (or dyingSlots []))]
