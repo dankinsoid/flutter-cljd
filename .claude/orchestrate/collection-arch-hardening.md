@@ -2,7 +2,7 @@
 
 **Slug**: collection-arch-hardening
 **Started**: 2026-08-07
-**Status**: in-progress
+**Status**: done (2026-08-10)
 
 ## Goal
 Eliminate the class of cross-subsystem device-round bugs in the collection
@@ -394,9 +394,96 @@ reproduced in the harness first (no device run) and closed by the rebase work.
 - [x] 11. Capture-mode: design + implement (corrections statically off, rebase returned as value) — agent: general-purpose, model: opus
 - [x] 12. Design anchor-primary migration (truth = anchor idx+intra offset; equivalence criteria; kill-list of subsystems) — agent: Plan, model: fable
 - [x] 13. Implement anchor-primary in stages behind harness equivalence — agent: general-purpose, model: fable
-- [ ] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
+- [x] 14. Cleanup: remove dead subsystems, update docs/CollectionRectAnimator.md + memory — agent: general-purpose, model: sonnet
+
+## Outcome
+
+**Shipped.** The engine's coordinate rebase, its pass-mode gating and its scroll
+truth are each owned by one structure instead of being emergent properties of
+several mechanisms agreeing:
+
+- **One pass mode, one capability table** (`pass-mode` / `pass-caps` /
+  `pass-allows?`): `:resting | :settled | :capture | :segment`, decided once per
+  `performLayout`. No engine code gates on `tweenAnim`/`segTween` any more.
+  `:settled` is the mode the engine used to re-derive at every gate and get wrong.
+- **One rebase transport**: `passRebase` accumulator (one write path, `rebase+!`),
+  one emission site (`emit-correction!`, capability-asserted), three arms — emit /
+  value / absorb — and a debug exactly-once assert. A capture returns
+  `{:rebase :extent :anchor-frame}` as plain values; its emit arm is structurally
+  unreachable. The absorption arm is total, so a produced rebase can never vanish.
+- **One leading-side producer**: the Δ-epilogue. Measurements supersede, the
+  window translates rigidly once, and the ANCHOR's own displacement is what gets
+  emitted, under the latching invariant (aggregate drift never moves a latched
+  anchor).
+- **One scroll truth**: `viewAnchor {:idx :key :off :extent :frac}`, sampled from
+  displayed frames every pass, re-resolved by KEY across a count change. The
+  segment set-point preserves its consumed FRACTION, not its top edge.
+- **One boundary rule**: an answer a source does not have resolves to the source's
+  own edge, never to 0 — window queries, per-child frames (`parked-frame`), and
+  the correction floor at the content start.
+
+**Numbers**
+
+| | before | after |
+|---|---|---|
+| default suite (`-x "known-red || fuzz"`) | 183 | **326** green |
+| viewport-level tests | 0 | harness + 5 fuzz profiles, 230 episodes |
+| oracles | — | **O1–O12** |
+| fuzz failing seeds | 62/120 episodes (campaign 1) | **2** |
+| `-t known-red` | — | **2** (both documented below) |
+| render-object fields | 44 | **42** |
+
+**Deleted subsystems**: `restingTop` + `capture-resting-top!`, `crossLayoutReanchor`,
+`reanchorShift`, `landingEmitted`, `pendingLandingWs`, `pendingRebase` (→ a bare
+`reseedCause` keyword), `landing-reseed-decision`, the landing cache-drop/`:init`
+dance, `frontier-after-prune`, `origin-refine-emit?` (→ one `:lead-emit?`
+capability), the emit-vs-frozen branch pair, the `wsx` shifted-frame loop,
+`shift-attached-from!`-as-producer, `fromRects`/`fromExtent`.
+
+**Docs**: `docs/CollectionRectAnimator.md` §9–§9f (the scroll model) and
+`docs/CollectionTesting.md` (harness, oracles, fuzz, red-test workflow).
+
+**Carried deferrals** — both red-tested, both `:o6`, both about the anchor's
+IDENTITY rather than its target frame:
+
+- **NEW-16** `known-red-morph-loses-the-anchor-above-the-capture-window`
+  (seed 235). A morph into a denser layout: the capture materializes the window at
+  the CURRENT offset, so after the set-point moves the viewport there is no child
+  at the new top and the anchor re-samples onto the window's first child. Closing
+  it needs the capture to materialize the END window, which is knowable only after
+  the set-point the capture itself produces — the §7b/§7c chicken-and-egg. Pick it
+  up at `segment-start!`'s capture-window choice, not at the set-point.
+- **NEW-17** `known-red-insert-above-window-at-max-drifts-the-fraction`
+  (seed 337, untraced). An insert above the window with `pixels` resting ON
+  `maxScrollExtent` drifts the masonry anchor's consumed fraction by ~6px. Same
+  shape as NEW-14 (count-change re-anchor vs leading re-measure), which step 13b
+  closed for seeds 34/55/205. Pick it up by tracing the epilogue per pass at the
+  bottom boundary, where the RANGE clamp is designed to win over the anchor.
 
 ## Step results
+
+### 14. Documentation, verification, close-out
+- Status: done
+- Files changed: docs/CollectionRectAnimator.md (header, §4 note, §5 state, §9
+  rewritten into §9–§9f, §14), docs/CollectionTesting.md (new),
+  layout.cljd (contract docstring: `:collapse-axis` also picks the parked-cell
+  axis; `:approx-offset` with no aggregate basis is treated as absent), this plan.
+  Zero engine behavior changes.
+- Verification, all on this commit's tree:
+  - `-x "known-red || fuzz"` → **326 green**, "All tests passed!"
+  - `-t known-red` → **0 passed, 2 failed** — NEW-16 and NEW-17, nothing else.
+  - `-t fuzz --timeout 20x` (all five profiles, 230 episodes) → 21 batches green,
+    **2 failing seeds**: `:no-jump` 235 op 12 `:o6`, `:churn` 337 op 8 `:o6`.
+    Identical to step 13c's recorded set.
+  - `bin/check` → no Dart errors.
+  - `git grep` over `src/`: no TEMP / debug instrumentation anywhere; fb24f35's
+    prints were reverted in f609581 and did not creep back.
+- Half-done review of the plan's ~55 commits: none. Every stage that claimed a
+  fix has its commit, its suite number and its fuzz delta recorded; the two
+  survivors are tagged reds, not silent skips.
+- The layout contract needed no new hooks: `:run-start` was documented when it
+  landed (9c), `:renewal-index` / `:approx-offset` / `:collapse-axis` kept their
+  meaning. Only the two facts above were unstated.
 
 ### 11. Capture-mode boundary (pass mode + capability table)
 - Status: done (commit 97b1815 — one commit; the mode, the capability table and
