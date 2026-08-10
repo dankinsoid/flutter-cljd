@@ -335,3 +335,52 @@
                       "then the leading re-measure translates the whole window past "
                       "it — the emitted correction and the anchor's own displacement "
                       "must not disagree:" (fail-str f)))))
+
+
+;; NEW-16 (step 13c, DEFERRED): the capture window is materialized at the CURRENT
+;; offset, so a morph whose set-point then moves the viewport has no child at the
+;; new viewport top. `sample-view-anchor!` re-anchors onto the window's first
+;; child, and the first resting pass after the segment holds THAT one — the
+;; anchor the user was looking at is 115px away by then. Closing it needs the
+;; capture to cover the END window, which is only known after the set-point the
+;; capture itself produces.
+(deftest known-red-morph-loses-the-anchor-above-the-capture-window
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 235
+                            [[:drag -420.3800868988037]
+                             [:cross 280.0]
+                             [:drag -484.02204036712646]
+                             [:drag -584.825291633606]
+                             [:drag -683.2603883743286]
+                             [:insert 22 900005]
+                             [:cross 900.0]
+                             [:rotate 59 360]
+                             [:drag -774.2908716201782]
+                             [:settle]
+                             [:drag 489.5867872238159]
+                             [:settle]
+                             [:layout :wrap]]))]
+    (is (nil? f) (str "NEW-16 a morph into a denser layout must keep the anchor the "
+                      "user is looking at, not the capture window's first child:"
+                      (fail-str f)))))
+
+;; NEW-17 (step 13c, DEFERRED, untraced): an insert above the window with `pixels`
+;; resting ON `maxScrollExtent` drifts the anchor's fraction by ~6px on masonry.
+;; Same shape as NEW-14 (count-change re-anchor vs leading re-measure), which
+;; step 13b closed for seeds 34/55/205; this residual survives it.
+(deftest known-red-insert-above-window-at-max-drifts-the-fraction
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 337
+                            [[:remove-anchor]
+                             [:settle]
+                             [:settle]
+                             [:insert 567 900003]
+                             [:remove-anchor]
+                             [:rotate 311 489]
+                             [:jump 28585.206270217896]
+                             [:settle]
+                             [:insert 260 900008]]))]
+    (is (nil? f) (str "NEW-17 an above-window insert at the end of the range must "
+                      "hold the anchor's consumed fraction:" (fail-str f)))))
