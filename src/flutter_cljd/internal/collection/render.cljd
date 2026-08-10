@@ -2591,6 +2591,24 @@
                   (when reached (.setDidUnderflow mgr true))
                   (.didFinishLayout mgr))))))))))
 
+;; @ai-generated(guided)
+(defn- anchor-slot-frame
+  "The anchor's slot as THIS pass placed it. A morph's frozen `to` snapshot starts
+   at the window, so an anchor the NEW layout packs above it has no target frame
+   there and the segment loses its set-point entirely (fuzz `:o6` seed 235); the
+   walk placed the slot, so reading it before `trim-front!` drops the band costs
+   nothing. nil when the walk did not cover it — there the estimate is all there
+   would be, and a set-point built on one is worse than none."
+  [^CollectionRenderSliver rs]
+  (when-let [va (.-viewAnchor rs)]
+    (let [^int k-idx (attached-index-of-key rs (:key va))
+          ^int idx (if (neg? k-idx) (int (:idx va)) k-idx)
+          cache (.-cache rs)
+          ^int rel (- idx (.-cacheFirst rs))]
+      (when (and (>= rel 0) (< rel (count cache)))
+        (let [e (nth cache rel)]
+          {:offset (double (:offset e)) :main-extent (double (:extent e))})))))
+
 (defn- flow-layout!
   "The flow driver, run under the pass mode the render object carries (pass-caps).
    In :resting / :settled it emits the accumulated pass rebase as a
@@ -2660,7 +2678,8 @@
             (post-gc! rs keep-last ws-eff)
             (let [^double lead-d (backfill-leading! rs layout env ws-eff emit? origin-emit?
                                                     (boolean from-init?)
-                                                    (anchor-preserved? plan))]
+                                                    (anchor-preserved? plan))
+                  cap-anchor (when (identical? :capture mode) (anchor-slot-frame rs))]
               ;; Row 3 memory bound: a from-0-anchored deep scroll must not keep [0..head] on the heap
               (trim-front! rs ws-eff)
               ;; checkpoint scoping: the overscan band plus one seed above
@@ -2678,17 +2697,23 @@
                                                (when translated? lead-d)
                                                0.0))]
                 (when (> (.abs follow) 1e-3)
-                  (rebase+! rs follow))))
-            (if (identical? :capture mode)
-              (do (finish-flow-geometry! rs layout env c walked)
-                  {:rebase (.-passRebase rs)
-                   :extent (flow-total-extent layout env walked (.-anchoredTo0 rs))})
-              ;; the ONE flow emission site: the accumulated rebase, or honest geometry
-              (let [^double pr (clamp-rebase! rs c)]
-                (if (> (.abs pr) 1e-3)
-                  (do (emit-correction! rs pr)
-                      (.didFinishLayout mgr))
-                  (finish-flow-geometry! rs layout env c walked))))))))))
+                  (rebase+! rs follow)))
+              (if (identical? :capture mode)
+                (do (finish-flow-geometry! rs layout env c walked)
+                    {:rebase (.-passRebase rs)
+                     :extent (flow-total-extent layout env walked (.-anchoredTo0 rs))
+                     ;; the epilogue's translation is rigid, so the slot rides it
+                     :anchor-frame (when cap-anchor
+                                     (if (> (.abs lead-d) 1e-3)
+                                       (assoc cap-anchor :offset
+                                              (+ ^double (:offset cap-anchor) lead-d))
+                                       cap-anchor))})
+                ;; the ONE flow emission site: the accumulated rebase, or honest geometry
+                (let [^double pr (clamp-rebase! rs c)]
+                  (if (> (.abs pr) 1e-3)
+                    (do (emit-correction! rs pr)
+                        (.didFinishLayout mgr))
+                    (finish-flow-geometry! rs layout env c walked)))))))))))
 
 ;; ============================================================
 ;; Indexed driver
@@ -3190,7 +3215,10 @@
                            to-slot (if (and (not indexed) (>= rel 0) (< rel (count cache)))
                                      (let [e (nth cache rel)]
                                        {:offset (:offset e) :main-extent (:extent e)})
-                                     ((:frame to-src) env ctx idx))]
+                                     ;; the snapshot starts at the window; the capture
+                                     ;; walk may still have placed a slot above it
+                                     (or ((:frame to-src) env ctx idx)
+                                         (:anchor-frame flow-cap)))]
                        (when to-slot
                          (let [^double from-off (double (:off resting))
                                ^double from-ext (double (:extent resting))
