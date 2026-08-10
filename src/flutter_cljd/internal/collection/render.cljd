@@ -2779,8 +2779,7 @@
             (.-geometry! rs (r/SliverGeometry .scrollExtent max-ext .maxPaintExtent max-ext))
             (.didFinishLayout mgr))
 
-          (let [^double leading-off (double (:offset gm-first))
-                ;; children before the current firstChild, down to first-index
+          (let [;; children before the current firstChild, down to first-index
                 last-leading
                 (loop [^int idx (dec (.indexOf rs (.-firstChild rs)))
                        created nil]
@@ -2853,12 +2852,22 @@
                                 item-count (double ((:max-extent layout) env (int item-count)))
                                 reached trail-end
                                 :else dc/double.infinity)
+                ;; frames are not monotone in index (masonry columns, morph targets)
+                ^double lead-edge (loop [child (.-firstChild rs) ^double m trail-end]
+                                    (if child
+                                      (let [^r/RenderBox ch child
+                                            ^double off (double (or (.childScrollOffset rs ch) m))]
+                                        (recur (.childAfter rs ch) (double (math/min m off))))
+                                      m))
+                ;; §2.4: the indicator never claims less than the pass laid — a
+                ;; mid-collapse trail outruns the lerping total
+                ^double advertised (double (math/max total trail-end))
                 ^double paint-extent
                 (.calculatePaintOffset rs c
-                  .from (math/min (.-scrollOffset c) leading-off)
+                  .from (math/min (.-scrollOffset c) lead-edge)
                   .to trail-end)
                 ^double cache-extent
-                (.calculateCacheOffset rs c .from leading-off .to trail-end)
+                (.calculateCacheOffset rs c .from lead-edge .to trail-end)
                 ;; §8a: record each animating cell's paint-clip window (shared helper).
                 _clips (compute-clips! rs env geo-fn)
                 ;; a flow layout arriving after indexed-only history must not
@@ -2876,13 +2885,11 @@
               (do
                 (.-geometry! rs
                   (r/SliverGeometry
-                   .scrollExtent total
+                   .scrollExtent advertised
                    .paintExtent paint-extent
-                   ;; mid-collapse the laid trail exceeds the final resting total;
-                   ;; maxPaintExtent must cover what we actually paint this pass.
-                   .maxPaintExtent (math/max total paint-extent)
+                   .maxPaintExtent (math/max advertised paint-extent)
                    .cacheExtent cache-extent
-                   .hasVisualOverflow (or (> total paint-extent)
+                   .hasVisualOverflow (or (> advertised paint-extent)
                                           (pos? (.-scrollOffset c))
                                           (not (zero? (.-overlap c))))))
                 (when (or reached (= total trail-end))
@@ -2941,8 +2948,11 @@
                      (double (math/max trail (+ (double (:offset gm))
                                                 (double (:main-extent gm)))))))
             trail))
+        ;; §2.4: the indicator never claims less than the pass laid — an
+        ;; edge-sliding enter parks cells past the lerping total
         ^double total (if item-count
-                        (double ((:max-extent layout) env (int item-count)))
+                        (math/max trail-end
+                                  (double ((:max-extent layout) env (int item-count))))
                         trail-end)
         ^double paint-extent (.calculatePaintOffset rs c
                               .from (math/min (.-scrollOffset c) lead-off) .to trail-end)
