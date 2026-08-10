@@ -309,3 +309,28 @@
     (is (nil? f) (str "mid-segment `committed` must stay proportional to the cache "
                       "band:" (fail-str f)))))
 
+
+;; NEW-14: an above-window insert drifts the anchor by the leading re-measure
+(deftest known-red-insert-above-window-drifts-by-the-leading-measure
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [tester])
+  (let [f (await (run-seed! tester 34
+                            [[:drag -211.66341304779053]
+                             [:layout :masonry]
+                             [:insert 134 900002]
+                             [:drag 775.5199241638184]
+                             [:layout :wrap]
+                             [:cross 900.0]
+                             [:insert 477 900006]
+                             [:drag 668.0777978897095]
+                             [:settle]
+                             [:drag 386.64884090423584]
+                             [:settle]
+                             [:fling-catch 1679.8924446105957 95]
+                             [:drag -895.8185863494873]
+                             [:fling-catch 6078.067207336426 145]
+                             [:insert 78 900014]]))]
+    (is (nil? f) (str "NEW-14 the count-change re-anchor pins the anchor's offset, "
+                      "then the leading re-measure translates the whole window past "
+                      "it — the emitted correction and the anchor's own displacement "
+                      "disagree:" (fail-str f)))))
