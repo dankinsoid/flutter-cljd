@@ -189,6 +189,32 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   of implying it from `tweenAnim`. Candidate for step 12/13 to revisit — a
   jump-to-top taken during a segment defers its exact landing until the clock
   ends. (by: step-11)
+- 2026-08-10: anchor-primary Q1/Q3/Q6 resolved per their leanings, unexercised
+  here (Q1's leadExact bool and Q3's 1e-3 hysteresis land with stage 3; Q6's
+  far-jump frac 0 is untouched by stage 2). Q5 resolved AGAINST its leaning by
+  measurement: the Delta-epilogue does not close the o6 family, and the family's
+  root is the segment set-point, not the leading side. (by: step-13a stage 2)
+- 2026-08-10: leading-extent measurements SUPERSEDE, they never accumulate. Once
+  no step moves the window, every step compares the same rigid frame against its
+  own reference, so each report is the WHOLE displacement restated one run closer
+  to the origin — a k-seam chain reports bias, 2*bias, 3*bias. Summing them (the
+  old telescoping sum, correct only because each shift realigned the frame)
+  translates the window by a multiple of its own error. (by: step-13a stage 2)
+- 2026-08-10: translate-window! drops the cache + checkpoints instead of
+  rewriting them: a flow state is layout-opaque and carries absolute offsets, so
+  only a new layout hook could translate one, and the design forbids extending
+  the contract. Cost is nil — walk! lays every child every pass anyway; the cache
+  only saves its :place arithmetic. The band's FRONTIER is kept and baseState
+  re-derived at its translated offset, which is exact because the backfill leaves
+  cacheFirst on a renewal point (re-seeding at the first attached child instead is
+  mid-run and loses a run). (by: step-13a stage 2)
+- 2026-08-10: reanchor-band and anchor-before/anchor-delta SURVIVE stage 2
+  (the design listed them as stage-2 deaths). Both serve producers that lay the
+  window in the CORRECTED frame by construction — the cross-layout re-anchor and
+  the seg-tail before the walk, an in-window resize above the anchor during it —
+  which is the opposite class from the epilogue's translate. They die with
+  stage 3's anchor-seeded walk, where the anchor's in-pass delta is 0 by
+  construction. (by: step-13a stage 2)
 - 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
   it iff no PREVIOUS segment tween happened to still be around — an accident of
   the `segTween` gate, and the opposite of the flow capture. A capture
@@ -201,10 +227,13 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   closed; the absorption channel exists whenever a capture produces a rebase
   (anchor resolution first, pure-shift fallback second), so capture-mode's
   "rebase returned as a value" premise holds. Campaign-3 shows 0 recurrence.
-- Residual campaign-3 classes (fuzz-findings.md §Campaign 3) are the next
-  triage set: the o6 above-window count-change family (7 seeds, the largest
-  un-triaged engine family), two o5 remove-op extent seeds, and the
-  deliberately-open O9 denominator. None block step 11. (raised by: step-10b)
+- ~~Residual campaign-3 classes~~ **PARTLY RESOLVED (step-13a stage 2)**: the O9
+  denominator closed in stage 0; the o6 count-change family is diagnosed (segment
+  set-point, see the stage-2 triage) but NOT fixed. Open: does stage 3 proceed on
+  a stage-2 tree whose fuzz set is one seed worse, or does the segAnchor `to`
+  source get fixed first (it owns 7 of the 8 o6 seeds and blocks the stage-2
+  gate)? The set-point fix is outside stage 2's mandate and untried.
+  (raised by: step-13a stage 2)
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -844,6 +873,27 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   to the stage-0 baseline over all five profiles.
 - Fuzz baseline carried into stage 2 (13 seeds): :o6 111/151/17/205/235/34/52/55,
   :o5 23/133/322/337, :o1 251; bounce batch green.
-- Stage 2 (Delta-epilogue) was cut off by an API limit with a half-applied field
-  rename (pendingRebase -> reseedCause, passLead added, 10 consumer sites
-  untouched); the partial diff was reverted, stage 2 restarts from 50b169e.
+- Stage 2 (bdf7228): the Delta-epilogue. backfill-leading! measures and returns
+  ONE leading-extent delta; reflow-from-checkpoint! keeps only the ex-frozen
+  mechanics (prefix re-anchored to abut the retained head) and reports the shift
+  it used; translate-window! moves the whole laid window rigidly once, at pass
+  end, and the accumulator emits it. Dead: the emit-vs-frozen branch pair, the
+  shifted-frame `wsx` loop, shift-attached-from!-as-producer, the landing
+  cache-drop/`:init` dance, landing-reseed-decision, seed-plan's :landing-init,
+  pendingRebase (-> reseedCause, a bare keyword). New pure kernel: lead-delta.
+  Suite 321 green; -t known-red empty; bin/check clean.
+- Stage 2 fuzz: **gate NOT met**. 13 -> 14 seeds. Green: :o6 111. NEW: :o6 123
+  (:no-layout, insert above window), :o5 7 (:full, extent-below-content
+  mid-segment). Surviving :o6 17/34/52/55/151/205/235; :o5 23/133/322/337;
+  :o1 251. The set is not a strict subset, so Q5's fallback does not carry it.
+- Stage 2 triage (traced, seeds 52 + 123): the o6 count-change family is NOT the
+  leading-repair class the design assumed — it is the SEGMENT set-point.
+  segment-start! reads the anchor's `to` slot from the CAPTURE-placed cache
+  entry, and a count-change capture is seeded by the key re-anchor at the
+  anchor's OLD offset, so `to-off == from-off`: point-desired is constant and
+  the set-point emits nothing all segment while the tween moves the content to
+  its live-re-flow target. Seed 52 (masonry, `[:remove 90]`): segAnchor
+  {:from-off 4044.5 :to-off 4044.5}, zero corrections over the segment, anchor
+  ends 280px high. Identical shape at seed 123. Stage 2 changes nothing here,
+  which is why the family neither closes nor shrinks; the membership churn (111
+  out, 123 in) is a chaotic re-roll of the same latent defect.
