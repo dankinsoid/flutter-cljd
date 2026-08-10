@@ -203,8 +203,8 @@
                           ;; (pass-mode) and read through pass-allows!; the ONE owner of segment-ness gating
    ^:mutable ^double passRebase ;; per-pass sum of every coordinate-frame delta produced (via rebase+!);
                           ;; reset each performLayout, consumed by exactly one arm at pass end
-   ^:mutable pendingRebase ;; nil | {:cause :seed :delta :expect-ws (:consumed)} — the cross-pass seed
-                          ;; contract; cleared unconditionally by the next seed-cache!
+   ^:mutable reseedCause  ;; nil | :count-change | :cross-layout — why the next flow pass must re-derive its
+                          ;; frame from the anchor; consumed (and cleared) by the next seed-cache!
    ^:mutable ^int passMaterialized ;; children laid out by the CURRENT flow pass (walk / backfill / leading
                           ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
                           ;; tripwire (assert-materialization-bounded!) — a pass that lays O(gap) children
@@ -291,7 +291,7 @@
         ;; are stale (list's are cross-independent, but dropping all is cheap).
         (.-checkpoints! this {})
         (.-anchoredTo0! this false)
-        (.-pendingRebase! this nil))
+        (.-reseedCause! this nil))
       (.-passRebase! this 0.0)
       ;; the pass's mode is decided here, once, and every gate below (and in both
       ;; drivers) reads a capability off it — never tweenAnim/segTween again
@@ -563,24 +563,23 @@
 (defn landing-decision
   "Decision kernel for the exact-landing check when the cache reaches index 0:
    `z` is index 0's current offset, `emit?` the refinement gate, and
-   `emitted-before?` whether the previous pass already emitted a landing
-   correction (⇒ the current geometry is a fresh from-:init re-flow). Returns:
-     :converged — index 0 sits at 0: flip anchoredTo0, clear the one-shot.
+   `from-init?` whether THIS pass walked from the :init state at index 0 — the one
+   frame in which index 0 can only sit off zero if the layout put it there.
+   Returns:
+     :converged — index 0 sits at 0: the estimate is exact, flip anchoredTo0.
      :defer     — gated (suppressed / mid-segment): leave the offset model frozen.
-     :emit      — drop the cache, emit −z, arm the one-shot; the corrected
-                  re-run re-flows from :init and must land 0 at 0 (seed-cache!
-                  enforces the from-:init walk via landing-reseed-decision —
-                  a dead-reckoned re-seed would re-derive the same residual).
-     :violated  — the fresh :init re-flow STILL left index 0 off zero: the
-                  layout broke the \":init walk places index 0 at offset 0\"
-                  contract. Assert in debug; in release accept z as a constant-
-                  inset origin instead of re-emitting the same residual forever.
+     :emit      — −z is the pass's leading-extent delta: the Δ-epilogue translates
+                  the window by it and emits it, landing index 0 exactly at 0.
+     :violated  — a from-:init walk STILL left index 0 off zero: the layout broke
+                  the \":init walk places index 0 at offset 0\" contract. Assert in
+                  debug; in release accept z as a constant-inset origin instead of
+                  re-emitting the same residual forever.
    Pure."
-  [^double z ^bool emit? ^bool emitted-before?]
+  [^double z ^bool emit? ^bool from-init?]
   (cond
     (<= (.abs z) 1e-3) :converged
     (not emit?) :defer
-    emitted-before? :violated
+    from-init? :violated
     :else :emit))
 
 (def ^:private ^double underflow-eps
@@ -603,9 +602,9 @@
               eps): the caller falls through to the landing check.
      :defer — underflow but gated (suppressed / mid-segment): the offset model stays
               frozen; a later resting pass picks the deficit up.
-     :emit  — manufacture `deficit`: shift the window up by it and emit it as a
-              pixel-stable scrollOffsetCorrection, restoring the honest scroll range
-              so backfill reaches index 0 on the corrected re-runs.
+     :emit  — `honest − head` is the pass's leading-extent delta: the Δ-epilogue
+              translates the window down by it and emits it, restoring the honest
+              scroll range so backfill reaches index 0 on the corrected re-runs.
    Pure."
   [^int cf ^double head ^double honest ^bool emit?]
   (cond
@@ -615,29 +614,23 @@
     (not emit?) :defer
     :else :emit))
 
-(defn landing-reseed-decision
-  "Seed decision for the pass right after an exact-landing emission. `pending-ws`
-   is the window start (scrollOffset+cacheOrigin) the emission recorded for its
-   corrected re-run (NaN = no landing pending); `ws` the current pass's window
-   start; `slack` the tolerated drift (one viewport). The landing contract —
-   \"the corrected re-run re-flows from :init, placing index 0 at 0\" — is what
-   makes the correction ABSORBING: seed-cache!'s usual empty-cache dead-reckon at
-   a surviving attached child (whose stale offset the correction deliberately did
-   not move) would rebuild the stale coordinate frame, re-derive the SAME residual
-   from the SAME estimation error, and misclassify the honest layout as :violated
-   (the device per-frame assert under a DrivenScrollActivity). Returns:
-     :init-seed — the window is where the corrected re-run expects it: force the
-                  from-:init walk (cacheFirst 0, baseState :init).
-     :abandon   — the frame aborted between emission and re-run (viewport cycle
-                  cap) and the window has moved elsewhere: the from-:init premise
-                  is gone — disarm the one-shot state and seed normally.
-     :none      — no landing pending.
-   Pure."
-  [^double pending-ws ^double ws ^double slack]
-  (cond
-    (.-isNaN pending-ws) :none
-    (<= (.abs (- ws pending-ws)) slack) :init-seed
-    :else :abandon))
+;; @ai-generated(guided)
+(defn lead-delta
+  "The ONE number the Δ-epilogue works from (design §2.2 step 4): how far this
+   pass's whole laid window must move so the anchor's leading extent matches what
+   the pass measured. `seam` is the LAST seam measurement the backfill made;
+   `absolute` (nil when the backfill ended mid-band) is a residual measured
+   against a known reference — index 0's own offset, or the honest estimate at a
+   stalled frontier.
+
+   Measurements SUPERSEDE, they never accumulate. Because no step moves the
+   window, every step compares the same rigid frame against its own reference, so
+   each report is the WHOLE displacement — restated against a reference one run
+   closer to the origin. Summing them would translate the window by a multiple of
+   its own error (a walk over k biased seams reports k·bias, 2k·bias, …). The
+   origin references supersede the last seam for the same reason. Pure."
+  ^double [^double seam absolute]
+  (if (some? absolute) (double absolute) seam))
 
 (def ^:private ^double agg-ema-alpha
   "EMA weight of the current pass's live-window mean in :avg-main/:avg-cross."
@@ -1114,18 +1107,16 @@
     (when (or layout-changed count-changed)
       (.-checkpoints! rs {})
       (.-anchoredTo0! rs false)
-      (.-pendingRebase! rs nil))
+      (.-reseedCause! rs nil))
     ;; every index shifted: the cache answers for the OLD item at each slot
     (when count-changed
       (.-cache! rs [])
       (.-baseState! rs nil)
-      (.-pendingRebase! rs {:cause :count-change :seed :anchor :delta 0.0
-                            :expect-ws dc/double.nan}))
+      (.-reseedCause! rs :count-change))
     ;; an :id change leaves survivor offsets in the OLD layout's space; a count
     ;; change keeps the space, so its re-anchor keeps the offsets (§3.3/§3.4)
     (when layout-changed
-      (.-pendingRebase! rs {:cause :cross-layout :seed :anchor :delta 0.0
-                            :expect-ws dc/double.nan}))
+      (.-reseedCause! rs :cross-layout))
     (.-prevLayout! rs (next-prev-layout (.-prevLayout rs) old
                                         (boolean layout-changed) (some? tween-anim)))
     ;; always swap the fns — same :id means same behavior, fresher closures
@@ -1544,18 +1535,15 @@
      :far-top      far window at the scroll top: exact from-0 reassignment.
      :far-inverse  far window deep: reassignment by inverting the estimate at
                    the window — the one legal anchor teleport (user intent).
-     :landing-init the corrected re-run after an exact-landing emission: forced
-                   from-:init walk.
      :cold-deep    cold start deep: inverse-seed, from-0 fallback.
      :at-0         nothing attached / first child at 0: exact from-0 seed.
      :anchor       dead-reckon at the resolved anchor slot.
      :restart-0    no :anchor hook — drop children, re-flow from 0.
    Pure."
-  [{:keys [cache? far? at-top? invertible? landing-init? deep? attached? first0? anchor-fn?]}]
+  [{:keys [cache? far? at-top? invertible? deep? attached? first0? anchor-fn?]}]
   (cond
     (and cache? far? (or at-top? invertible?)) (if at-top? :far-top :far-inverse)
     cache? :keep
-    landing-init? :landing-init
     deep? :cold-deep
     (or (not attached?) first0?) :at-0
     anchor-fn? :anchor
@@ -1593,28 +1581,20 @@
         ^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
         ^double we (+ ws (.-remainingCacheExtent c))
         fc (.-firstChild rs)
-        ;; the cross-pass seed contract is consumed here, unconditionally
-        pending (.-pendingRebase rs)
-        cross-layout? (= :cross-layout (:cause pending))
-        ;; an exact-landing emission last pass requires THIS pass to re-flow
-        ;; from :init — a dead-reckon would re-derive the same residual forever
-        reseed (landing-reseed-decision
-                (if (= :init (:seed pending))
-                  (double (:expect-ws pending))
-                  dc/double.nan)
-                ws (.-remainingPaintExtent c))
+        ;; the cross-pass re-seed cause is consumed here, unconditionally
+        cause (.-reseedCause rs)
+        cross-layout? (= :cross-layout cause)
         plan (seed-plan
               {:cache? (boolean (seq (.-cache rs)))
                :far? (window-far-from-band? (.-cache rs) ws we)
                :at-top? (<= ws 0.5)
                :invertible? (some? approx-fn)
-               :landing-init? (= :init-seed reseed)
                ;; deep cold window with an invertible estimate — the O(1) inverse seed
                :deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))
                :attached? (some? fc)
                :first0? (boolean (and fc (zero? (.indexOf rs ^r/RenderBox fc))))
                :anchor-fn? (some? anchor-fn)})]
-    (.-pendingRebase! rs nil)
+    (.-reseedCause! rs nil)
     (case plan
       ;; far jump over a live band: geometry decides, never attachment —
       ;; pre-gc! only drops a prefix, so cacheless leftovers survive it (NEW-13)
@@ -1632,13 +1612,6 @@
 
       :keep nil
 
-      ;; landing contract: re-flow from :init absorbs the residual; a dead-reckon re-derives it
-      :landing-init
-      (do (.-pendingRebase! rs (assoc pending :consumed true))
-          (.-cacheFirst! rs 0)
-          (.-baseState! rs (init-fn env))
-          (.-anchoredTo0! rs false))
-
       ;; a degenerate estimate falls back to the from-0 walk (nothing better yet)
       :cold-deep
       (when-not (= :seeded (inverse-seed! rs layout env ws))
@@ -1655,7 +1628,7 @@
       ;; re-anchor on the viewport top (viewAnchor), not the overscan head,
       ;; or content slides by the leading margin
       (let [idx (if fc (.indexOf rs ^r/RenderBox fc) 0)
-            ^int va-idx (resolve-anchor-slot rs (:cause pending))
+            ^int va-idx (resolve-anchor-slot rs cause)
             _ (when (and (not (neg? va-idx)) (.-firstChild rs))
                     (let [^int total (count-attached rs)
                           ^int lead (loop [ch (.-firstChild rs) ^int n 0]
@@ -1917,19 +1890,44 @@
           (.-measuredAgg! rs (ema-agg (.-measuredAgg rs) mm mc))
           {:avg-main mm :avg-cross mc})))))
 
-(defn- shift-attached-from!
-  "Adds `d` to the layoutOffset of every attached child with index >= `from-idx`
-   — the estimated content below a reconciled seam rides the same shift as the
-   scrollOffset correction, keeping the intermediate state coherent until the
-   corrected re-run re-walks it from the exact prefix state."
-  [^CollectionRenderSliver rs ^int from-idx ^double d]
+;; @ai-generated(guided)
+(defn- translate-window!
+  "The Δ-epilogue's single reconciliation op (design §2.2 step 4): moves the WHOLE
+   laid window by `d` in content space, rigidly. The pass decided every internal
+   frame anchor-relative before this point, so the translation cannot change how
+   the window's cells sit against each other — which is what makes the anchor
+   structurally unable to drift against its neighbours.
+
+   The geometry cache and the checkpoint store are dropped rather than rewritten:
+   their entries carry layout-OPAQUE flow states whose offsets are absolute, and
+   only the layout could translate one (`:place`'s state is not a public shape).
+   The band keeps its FRONTIER and re-seeds `baseState` at the frontier's
+   translated offset — exact, because a backfill leaves cacheFirst on a renewal
+   point, where the layout's `:anchor` state is a function of offset alone. The
+   next pass re-walks the window from measured sizes either way (walk! lays every
+   child every pass; the cache only saves its `:place` arithmetic)."
+  [^CollectionRenderSliver rs layout env ^double d]
   (loop [child (.-firstChild rs)]
     (when child
       (let [^r/RenderBox ch child]
-        (when (>= (.indexOf rs ch) from-idx)
-          (when-let [off (.childScrollOffset rs ch)]
-            (set-layout-offset! ch (+ (double off) d))))
-        (recur (.childAfter rs ch))))))
+        (when-let [off (.childScrollOffset rs ch)]
+          (set-layout-offset! ch (+ (double off) d)))
+        (recur (.childAfter rs ch)))))
+  (let [cache (.-cache rs)
+        seed (if (seq cache)
+               [(.-cacheFirst rs) (+ (double (:offset (nth cache 0))) d)]
+               (when-let [fc (.-firstChild rs)]
+                 [(.indexOf rs ^r/RenderBox fc)
+                  (double (or (.childScrollOffset rs ^r/RenderBox fc) 0.0))]))]
+    (.-cache! rs [])
+    (.-checkpoints! rs {})
+    (when seed
+      (let [^int i (int (nth seed 0))
+            ^double off (double (nth seed 1))]
+        (.-cacheFirst! rs i)
+        (.-baseState! rs (if-let [anchor-fn (:anchor layout)]
+                           (anchor-fn env i off)
+                           ((:init layout) env)))))))
 
 (defn- reflow-from-checkpoint!
   "One backward re-flow step (WS2.2 §2.2). Seeds at checkpoint `cp` (index k <=
@@ -1939,25 +1937,20 @@
    cache and lowers cacheFirst to the reached top. Re-records renewal-point
    checkpoints for the re-flowed runs.
 
-   Phase C seam reconciliation: when the re-flow says the cache head really sits
-   `d` away from where the estimated cache placed it (refine-seam):
-   - `emit?` (resting, unsuppressed): trust the re-flowed truth — drop the
-     stale-coordinate entries below the seam, shift their attached children by
-     `d`, and return `d` as this step's refinement correction; backfill-leading!
-     folds it into the pass's summed correction and keeps walking in the shifted
-     frame, and the single corrected re-run re-walks the window forward from the
-     exact prefix state, pixel-stable.
-   - otherwise (suppressed / mid-segment — the offset model is frozen): re-anchor
-     the prefix AT THE SEAM via :anchor(lo, first-offset − d). Structure stays
-     exact (lo is a renewal point); the absolute displacement stays latent above,
-     reconciled by a later resting pass or the exact landing at 0.
-   A CROSS-only mismatch (`:cross-stale?`, main converged) takes the same
-   drop-the-stale-entries route with no correction and no gate: nothing moves on
-   the scroll axis, so there is nothing to emit and nothing for a motion to race.
+   Seam MEASUREMENT (design §2.2 step 3): when the re-flow says the cache head
+   really sits `shift` away from where the estimated cache placed it (refine-seam),
+   the step does NOT move the window. The produced prefix is re-anchored at the
+   seam via :anchor(lo, first-offset − shift) so its runs abut the retained head —
+   exact, because a renewal-point :anchor state is a function of offset alone —
+   and `shift` is REPORTED as this step's leading-extent delta, from which the
+   Δ-epilogue translates the window once, at pass end. A
+   CROSS-only mismatch (`:cross-stale?`, main converged) aligns on the head's run
+   start (`:align-delta`) instead: the retained head keeps its own run rather than
+   sharing a slot with the cell the re-flow packed there.
 
-   Returns nil (no leading child available — caller stops), true (stepped,
-   caller continues), or a double (correction emitted — caller returns it)."
-  [^CollectionRenderSliver rs layout env cp ^bool emit?]
+   Returns nil (no leading child available — caller stops) or the step's
+   leading-extent delta (0.0 when the re-flow and the cache agree)."
+  [^CollectionRenderSliver rs layout env cp]
   (let [measure-fn (:measure layout)
         ^int cf (.-cacheFirst rs)
         ^int k (int (:index cp))
@@ -2005,17 +1998,16 @@
             anchor-fn (:anchor layout)
             reanchor (fn [^double shift]
                        (let [seed' (anchor-fn env lo (- (double (:offset (nth entries 0))) shift))]
-                         [(tw/flow-run-entries layout env sized seed') seed' 0.0]))
+                         [(tw/flow-run-entries layout env sized seed') seed' shift]))
             ^double d (double (:delta seam))
+            ;; the delta is the shift the re-anchor USED, not the raw seam
             [entries use-seed ^double d]
             (cond
-              (and (zero? d) (not cross-stale?)) [entries use-seed d]
-              (and emit? (not (zero? d))) [entries use-seed d]
+              (and (zero? d) (not cross-stale?)) [entries use-seed 0.0]
               ;; a retained head keeps its run only if the prefix ends above it
               (and cross-stale? align-delta anchor-fn) (reanchor (double align-delta))
               (and (not (zero? d)) anchor-fn) (reanchor d)
-              ;; nothing to re-anchor with while frozen — keep the stale seam
-              ;; (Phase B behavior) rather than emit outside the gate.
+              ;; nothing to re-anchor with — keep the stale seam (Phase B behavior)
               :else [entries use-seed 0.0])]
         (dotimes [j (count entries)]
           (let [^int i (+ lo j)
@@ -2027,16 +2019,11 @@
             (set-layout-offset! c off)
             (set-cross-axis-offset! c cross)
             (record-checkpoint! rs layout env i off cross state-before)))
-        (if (zero? d)
-          (do (.-cache! rs (stitch-prefix entries (.-cache rs)))
-              (.-cacheFirst! rs lo)
-              (.-baseState! rs use-seed)
-              true)
-          (do (shift-attached-from! rs cf d)
-              (.-cache! rs (vec entries))
-              (.-cacheFirst! rs lo)
-              (.-baseState! rs use-seed)
-              d))))))
+        ;; the prefix abuts the retained head, so the entries below it stay valid
+        (.-cache! rs (stitch-prefix entries (.-cache rs)))
+        (.-cacheFirst! rs lo)
+        (.-baseState! rs use-seed)
+        d))))
 
 (defn leading-step-entry
   "Canonical single-child leading dead-reckon used by estimate-leading-step! when
@@ -2159,54 +2146,41 @@
    structure (synth-renewal-checkpoint) — and re-flows forward (real :cross /
    per-run :offset — kills #5/#A's single left column), falling back to the
    one-child estimator only where no checkpoint AND no run structure exist (list /
-   masonry). Every correction it derives is published through `rebase+!`; the
-   pass-end publication site emits the accumulated total.
+   masonry). It MEASURES only — no step moves the window (design §2.2 step 3) —
+   and returns the pass's leading-extent delta for the Δ-epilogue to translate
+   and emit as ONE correction, so a deep stale band costs one viewport re-run per
+   frame however many seams it holds (per-seam pass-ending emissions hit the
+   viewport's 10-cycle cap).
 
-   Phase C refinement, telescoped per pass: every step that discovers a seam
-   mismatch reconciles it in place (reflow-from-checkpoint! shifts the content
-   at/below the seam), and the walk CONTINUES in the shifted frame accumulating
-   the deltas into ONE summed pixel-stable scrollOffsetCorrection — one viewport
-   re-run per frame regardless of how many stale seams the band holds (the
-   per-seam pass-ending emission hit the viewport's 10-cycle cap on a deep stale
-   band). Exact landing: whenever the cache reaches index 0
-   away from offset 0, the residual is the final correction — the cache is
-   dropped and the corrected re-run re-flows from :init, placing index 0 exactly
-   at offset 0 with pixels unmoved; scroll stops exactly on the first element and
-   anchoredTo0 flips true. The landing check runs every pass (not only after a
-   step) so a residual deferred by suppression / a segment is picked up by the
-   next resting pass; while `emit?` is false the offset model stays frozen.
+   Three measurement sources, all reporting the same quantity:
+   - SEAM: each re-flow step reports how far the checkpoint-implied frame sits
+     from the anchor-relative placement (reflow-from-checkpoint!).
+   - EXACT LANDING: the walk reaching index 0 at offset z makes the estimate
+     EXACT — −z is the residual, measured against the origin itself.
+   - TOP UNDERFLOW: a stall at a positive frontier pinned at the origin means the
+     leading estimate undershot; honest(cf) − head is the residual.
+   All three restate the SAME rigid frame's displacement against a different
+   reference, so the latest report wins and never accumulates (lead-delta). The
+   origin checks run every pass, not only after a step, so a residual deferred by
+   suppression / a segment is picked up by the next resting pass.
 
-   `emit?` gates the above-anchor SEAM refinement (reflow-from-checkpoint!) — off
-   during a fast fling so a mid-content correction doesn't race the simulation.
-   `origin-emit?` gates the ORIGIN corrections (exact landing at index 0, top-
-   underflow); it is off only mid-segment, NOT for velocity, so a fast up-fling
-   still lands index 0 exactly instead of leaving a gap above it (#B)."
-  [^CollectionRenderSliver rs layout env ^double ws ^bool emit? ^bool origin-emit?]
-  (let [init-fn (:init layout)
-        approx-fn (:approx-offset layout)
-        land (fn [^double wsx]
+   `emit?` gates the above-anchor SEAM refinement — off during a fast fling so a
+   mid-content correction doesn't race the simulation; the measurement still
+   happens (the prefix is re-anchored either way), only its delta stays latent.
+   `origin-emit?` gates the ORIGIN residuals; it is off only mid-segment, NOT for
+   velocity, so a fast up-fling still lands index 0 exactly (#B). `from-init?`
+   says this pass's frame came out of a from-:init walk, which is the only frame
+   a non-zero index-0 offset can indict the layout for."
+  ^double [^CollectionRenderSliver rs layout env ^double ws ^bool emit? ^bool origin-emit?
+           ^bool from-init?]
+  (let [approx-fn (:approx-offset layout)
+        land (fn []
                (when (and (zero? (.-cacheFirst rs)) (seq (.-cache rs)))
-                 (let [^double z (double (:offset (nth (.-cache rs) 0)))
-                       p (.-pendingRebase rs)
-                       consumed-landing? (boolean (and p (:consumed p)
-                                                       (= :landing (:cause p))))]
-                   (case (landing-decision z origin-emit? consumed-landing?)
-                     :converged (do (.-anchoredTo0! rs true)
-                                    (.-pendingRebase! rs nil)
-                                    nil)
+                 (let [^double z (double (:offset (nth (.-cache rs) 0)))]
+                   (case (landing-decision z origin-emit? from-init?)
+                     :converged (do (.-anchoredTo0! rs true) nil)
                      :defer nil
-                     :emit (do (.-cache! rs [])
-                               ;; stale-frame checkpoints would re-derive the residual on the re-run
-                               (.-checkpoints! rs {})
-                               (.-baseState! rs (init-fn env))
-                               (.-anchoredTo0! rs false)
-                               ;; wsx + overscan − z = where the corrected re-run's
-                               ;; window will sit; the record forces its :init seed
-                               (.-pendingRebase! rs
-                                 {:delta (- z) :cause :landing :seed :init
-                                  :expect-ws (+ wsx (.-overscanBehind rs) (- z))})
-                               (rebase+! rs (- z))
-                               nil)
+                     :emit (- z)
                      :violated
                      (do (when fd/kDebugMode
                            (assert false
@@ -2216,18 +2190,8 @@
                          ;; release: degrade to a constant inset — accept z as the
                          ;; origin so the offset stops creeping by z every pass.
                          (.-anchoredTo0! rs true)
-                         (.-pendingRebase! rs nil)
                          nil)))))
-        ;; Top-underflow: the leading backfill stalled at a positive frontier `cf`
-        ;; sitting at/above the coordinate origin because the re-anchor estimate
-        ;; undershot the true leading extent — indices 0..cf-1 fell below offset 0
-        ;; and became unreachable ("clamps with #cf as the top, nothing above").
-        ;; Manufacture the missing extent = honest(cf) − head as a pixel-stable
-        ;; scrollOffsetCorrection (like the reanchor shift): hold the visible
-        ;; children put while the coordinate space grows and the indicator jumps to
-        ;; the honest estimate, restoring the scroll range so index 0 is reachable.
-        ;; Drop the cache + stale checkpoints so the corrected re-run re-seeds the
-        ;; frontier at its honest offset (seed-cache!'s dead-reckon) and re-flows.
+        ;; indices 0..cf-1 fell below offset 0 and became unreachable
         underflow
         (fn []
           (let [cache (.-cache rs)
@@ -2240,34 +2204,22 @@
                                      (pos? avg) (* cf avg)
                                      :else head)]
                 (when (= :emit (underflow-decision cf head honest origin-emit?))
-                  (let [^double deficit (- honest head)]
-                    (shift-attached-from! rs cf deficit)
-                    (.-cache! rs [])
-                    (.-checkpoints! rs {})
-                    (.-anchoredTo0! rs false)
-                    (rebase+! rs deficit)
-                    deficit))))))]
-    ;; per-seam pass-ending emissions hit the viewport 10-cycle cap on a deep
-    ;; stale band — deltas accumulate and wsx tracks the shifted frame
-    (loop [^double wsx ws]
+                  (- honest head))))))]
+    (loop [^double seam 0.0]
       (let [cache (.-cache rs)
             ^int cf (.-cacheFirst rs)]
-        (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) wsx))
+        (if (and (pos? cf) (seq cache) (> ^double (:offset (nth cache 0)) ws))
           (let [cp (or (cp-nearest-at-or-below (.-checkpoints rs) (dec cf))
                        (synth-renewal-checkpoint layout env (dec cf)))
                 stepped (if cp
-                          (reflow-from-checkpoint! rs layout env cp emit?)
+                          (reflow-from-checkpoint! rs layout env cp)
                           (estimate-leading-step! rs layout env))]
             (cond
-              (identical? true stepped) (recur wsx)
-              (or (nil? stepped) (false? stepped)) (land wsx)
-              ;; reconciled seam — keep walking in the shifted frame
-              :else (let [^double d (double stepped)]
-                      (rebase+! rs d)
-                      (recur (+ wsx d)))))
-          ;; head <= wsx or cf==0: underflow manufactures the missing leading extent
-          (do (or (underflow) (land wsx))
-              nil))))))
+              ;; the one-child estimator is anchor-relative by construction
+              (identical? true stepped) (recur seam)
+              (or (nil? stepped) (false? stepped)) (lead-delta seam (land))
+              :else (recur (if emit? (double stepped) seam))))
+          (lead-delta seam (or (underflow) (land))))))))
 
 (defn- anchor-before
   "Snapshot of the first cached entry overlapping the paint window —
@@ -2597,6 +2549,9 @@
             ;; band, or backfill walks the whole (approx − stale) gap in one frame
             [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-passRebase rs))
             ^double align-ws (+ ws (- ws-eff ws-o))
+            ;; an empty band at index 0 is the from-:init seed: only that frame
+            ;; can indict the layout for an off-zero index 0
+            from-init? (and (zero? (.-cacheFirst rs)) (empty? (.-cache rs)))
             anchor (anchor-before rs so)
             emit? (refine-emit? (pass-allows? mode :refine?)
                                 (refine-suppressed? (.-scrollSign rs) (.abs (.-velocityEMA rs))
@@ -2615,23 +2570,28 @@
                                    (int kl))
                                  last-i)]
             (post-gc! rs keep-last ws-eff)
-            (backfill-leading! rs layout env ws-eff emit? origin-emit?)
-            ;; Row 3 memory bound: a from-0-anchored deep scroll must not keep [0..head] on the heap
-            (trim-front! rs ws-eff)
-            ;; checkpoint scoping: the overscan band plus one seed above
-            (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
-            ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
-            (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
-            (when (pass-allows? mode :measure-feed?)
-              (let [sample (update-measured-agg! rs env)]
-                ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change
-                (when (pass-allows? mode :tripwire?)
-                  (assert-materialization-bounded! rs layout (tripwire-env env sample)
-                                                   (- we-o ws-o)))))
-            ;; anchor-follow folds last: when any producer already ran, the cache
-            ;; was dropped/replaced so anchor-delta reads nil — no double count
-            (when-let [delta (anchor-delta rs anchor)]
-              (rebase+! rs (double delta)))
+            (let [^double lead-d (backfill-leading! rs layout env ws-eff emit? origin-emit?
+                                                    (boolean from-init?))]
+              ;; Row 3 memory bound: a from-0-anchored deep scroll must not keep [0..head] on the heap
+              (trim-front! rs ws-eff)
+              ;; checkpoint scoping: the overscan band plus one seed above
+              (.-checkpoints! rs (cp-prune-offset (.-checkpoints rs) ws-eff we-eff))
+              ;; geometric prune/trim preserves the offsets-exact claim (Row 3)
+              (.-anchoredTo0! rs (frontier-after-prune (.-anchoredTo0 rs)))
+              (when (pass-allows? mode :measure-feed?)
+                (let [sample (update-measured-agg! rs env)]
+                  ;; budget density from THIS pass's sample — the EMA is stale across a layout :id change
+                  (when (pass-allows? mode :tripwire?)
+                    (assert-materialization-bounded! rs layout (tripwire-env env sample)
+                                                     (- we-o ws-o)))))
+              ;; anchor-follow reads the pre-translate frame: an in-window resize
+              ;; above the anchor moves it by construction, not by reconciliation
+              (when-let [delta (anchor-delta rs anchor)]
+                (rebase+! rs (double delta)))
+              ;; the Δ-epilogue: ONE window translation from ONE number
+              (when (> (.abs lead-d) 1e-3)
+                (translate-window! rs layout env lead-d)
+                (rebase+! rs lead-d)))
             (if (identical? :capture mode)
               (do (finish-flow-geometry! rs layout env c walked)
                   {:rebase (.-passRebase rs)
