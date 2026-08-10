@@ -229,6 +229,31 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   (`:o9` seed 340). The window sources are already nil-clamped (§3.2 layer 1); the
   per-child frame is not. (by: step-13a stage 2b)
 
+- 2026-08-10: the per-child frame clamp is the SAME rule as the window clamp, not
+  a new one: a query the source cannot answer resolves to the source's own edge.
+  `parked-frame` probes those edges at offsets a bounded source must cover (its
+  start and its own reported extent) rather than ±infinity — the ±inf form the
+  window queries use would reach a layout's index math (`(.floor infinity)`,
+  `getMaxChildIndexForScrollOffset(infinity)`) as soon as an INDEXED target could
+  answer nil. Parking is expressed as a substitution of `to` before the
+  enter/exit/leave cond, so all four branches inherit it instead of each growing
+  a nil case. (by: step-13a stage 2c)
+- 2026-08-10: a parked cell is collapsed on the LAYOUT's own axis, not the main
+  axis: only the collapse axis has a `:full-*` slot, so zeroing anything else
+  would lay the child's content out at extent 0 (§8a's own rule). For a
+  `:cross` layout the parked cell keeps the edge row's main span — it is a
+  row-mate, which is what sharing that slot means. (by: step-13a stage 2c)
+- 2026-08-10: `:o6` 34 / 55 / 205 are NOT a boundary-clamp class — 34 and 205
+  drift identically with the viewport nowhere near an edge. The class is the
+  count-change re-anchor (anchor pinned, no rebase) against the leading
+  re-measure the Δ-epilogue then translates the window by: at seed 55 the
+  translation is 2991.8 while the anchor's own displacement is 2889.8. A sliver
+  cannot clamp its own emission — `SliverConstraints` has `precedingScrollExtent`
+  and nothing about what follows, so `maxScrollExtent` is not knowable here and a
+  self-computed clamp would fire early in a composed viewport. Deferred to
+  stage 3, where the anchor-seeded walk makes the anchor's in-pass delta 0 by
+  construction. (by: step-13a stage 2c)
+
 - 2026-08-09: the INDEXED capture pass no longer feeds the measured EMA. It fed
   it iff no PREVIOUS segment tween happened to still be around — an accident of
   the `segTween` gate, and the opposite of the flow capture. A capture
@@ -246,12 +271,14 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   root (the segment's `to` FRAMES, not the `to` slot — see stage 2b). Fuzz is 11
   seeds, a strict subset of stage 2's 14, so stage 3 proceeds on a better tree.
   Still open, all traced to mechanisms outside the count-change family: `:o6`
-  34/55/205 (a far-jump refinement correction lands past `maxScrollExtent`; the
-  boundary clamp moves the viewport), `:o6` 235 + 52@16 (layout-morph key-moved),
-  `:o5` 7 gone. (raised by: step-13a stage 2, updated by: stage 2b)
-- Frameless attached children lay at offset 0 (`:o9` seed 340, stage 2b decisions
-  log). Blocks the `to-src` set-point flip; worth closing before stage 3 widens
-  the anchor's role. (raised by: step-13a stage 2b)
+  34/55/205 — **retriaged (stage 2c)** as NEW-14, the above-window-insert anchor
+  drift, red-tested at seed 34 and DEFERRED to stage 3 (not a boundary clamp);
+  `:o6` 235 + 52@16 (layout-morph key-moved); `:o5` 7/23/133/337; `:o1` 251.
+  (raised by: step-13a stage 2, updated by: stage 2b, stage 2c)
+- ~~Frameless attached children lay at offset 0~~ **RESOLVED (stage 2c)**:
+  `parked-frame` clamps the per-child frame to the source's own edge. Seed 340 is
+  clean and the `to-src` set-point flip is now inert on the fuzz tree (identical
+  10 seeds with and without it) — stage 3 may take it on its own merits.
 
 ## Checklist
 - [x] 1. Explore test infra + example app usage of collection — agent: Explore, model: sonnet
@@ -951,3 +978,48 @@ reproduced in the harness first (no device run) and closed by the rebase work.
   a `to` frame, so `keyed-tween-layout` lays it at offset **0** (`zero-frame`); the
   next capture then finds firstChild at 0, inverse-seeds by estimate, and walks 163
   children in one pass. Fix that first, then the flip is free.
+
+### 13a stage 2c. Frameless-child-at-0 + the `:o6` boundary class retriaged
+- Status: done (2 commits — one per defect). Fuzz **11 -> 10 seeds**, a strict
+  subset (`:o5` 322 green); seed 340 clean. Default suite 321 -> **323** green
+  (+2 pure tween tests), O7 in-suite; `-t known-red` **1** — this step's
+  documented deferral; `bin/check` clean.
+- **Blocker FIXED (1d5fd70)**: `keyed-tween-layout` gave a cell with no committed
+  history AND no target frame `zero-frame` — offset 0. `parked-frame` resolves the
+  source's nearest EDGE frame instead and parks the cell there, collapsed on the
+  layout's own axis, carrying that frame's extent as the stable full size the
+  child is laid out at. Substituted into `to` before the enter/exit/leave cond, so
+  every branch inherits it. **The principle**: rebase stage 5's window clamp — an
+  answer the source does not have resolves to the source's own edge, never to 0 —
+  now covers all three source queries, not two.
+- Traced (seed 340, `:churn`, per pass): capture at cf=145 ends with the window
+  [145..157] and child **144** attached with no cache entry; from-relay! lays it
+  at 0.0, it becomes firstChild@0, and the next capture inverse-seeds from there
+  and walks **163** children (budget ~78). After the fix that pass materializes
+  **14** and no `zero-frame` call is reached at all in the episode.
+- The flip was applied locally to reproduce (stage 2b's rejected `to-src`
+  set-point read) and reverted, per the task. With the fix in place the campaign
+  is the SAME 10 seeds with and without it — the flip is now inert, so stage 3 can
+  decide it on its own merits rather than on seed 340.
+- **`:o6` 34/55/205 RETRIAGED as NEW-14, deferred (b6239e5)**: not the
+  boundary-clamp class stage 2b named. 34 (offset 2745 of 7967) and 205 (11399 of
+  26042) drift identically nowhere near an edge; all three fail on
+  `[:insert <above the window>]`. The count-change re-anchor pins the anchor at
+  its old offset (no rebase, by design), `backfill-leading!` measures the
+  re-flowed leading extent and the Δ-epilogue translates the whole window by it —
+  2991.8px at seed 55, against the anchor's own 2889.8px displacement over the
+  same pass. Seed 55's overshoot additionally lands past `maxScrollExtent` and the
+  spring takes another 39px, which is what made the clamp look causal.
+  Clamping the emission is **not available to a sliver**: `SliverConstraints`
+  carries `precedingScrollExtent` and nothing about the slivers that follow, so
+  `maxScrollExtent` is not knowable and a self-computed clamp would fire early in
+  a composed viewport — and it would leave the 102px untouched. Red-tested at
+  seed 34 (`known-red-insert-above-window-drifts-by-the-leading-measure`),
+  reproduced 3x, deferred to stage 3's anchor-seeded walk.
+- Carried untouched, as instructed: `:o6` 235 + 52@16 (layout-morph key-moved),
+  `:o5` 7/23/133/337, `:o1` 251.
+- Next-step impact: **stage 3 is unblocked** — the anchor can be widened without
+  the segment stranding children at the origin behind it. Stage 3 inherits NEW-14
+  as its first correctness target: it is the leading-estimate-vs-anchor
+  disagreement the anchor-seeded walk exists to remove, and its red test is the
+  acceptance criterion.

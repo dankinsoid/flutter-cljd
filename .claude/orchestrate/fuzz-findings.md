@@ -456,6 +456,29 @@ campaign-3 classes at the end of this file.
   campaign-3; 220/222/2's remaining o9s are window-scale cache-n 90-151
   mid-segment — the documented O9 denominator, not this class.
 
+## NEW-14 — an above-window insert drifts the anchor by the leading re-measure
+
+- Oracle: `:o6` `intra-drift`. Seeds 34 (`:full`), 55 (`:full`), 205 (`:no-jump`).
+- Red: `known-red-insert-above-window-drifts-by-the-leading-measure` (seed 34,
+  15 ops — the boundary-free representative: offset 2745 of a 7967 range).
+- Every seed's failing op is `[:insert <index above the attached window>]`.
+- Traced (seed 55): the count-change re-anchor pins the anchor at its old offset
+  and emits no rebase, by design. `backfill-leading!` then measures the re-flowed
+  leading extent and the Δ-epilogue translates the whole window by it —
+  `lead-d 2991.8`, while the anchor's own displacement over the same pass is
+  2889.8. The emitted correction follows the measurement, so the anchor moves by
+  the 102px difference. Seed 55's translated offset (8683.5) also lands past
+  `maxScrollExtent` (8644.5) and the boundary spring takes another 39px — which
+  is why stage 2b read the clamp as causal. Seeds 34 and 205 drift the same way
+  with the viewport nowhere near an edge.
+- **Not clampable at this level**: `SliverConstraints` carries
+  `precedingScrollExtent` but nothing about the slivers that FOLLOW, so a sliver
+  cannot compute `maxScrollExtent`; a self-computed clamp would fire early in a
+  composed viewport, and it would leave the 102px untouched anyway.
+- **Deferred to step 13a stage 3** (anchor-primary): with an anchor-seeded walk
+  the anchor's in-pass delta is 0 by construction and the leading extent is
+  derived from the anchor rather than measured and superseded.
+
 ## Recorded, not red-tested (single seed, long vector)
 
 - `:o4 hole` at seed 110 (`:no-layout`, 9 ops, ends on a drag after a far jump).
