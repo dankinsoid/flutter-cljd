@@ -112,14 +112,15 @@
 
 (defn- ^w/Widget services-tile
   "The services grid's own composition: no `:feedback` (the child builder doubles
-   as it), a nested `drag-target`, `:return-on-drop`, and a `:catch-point` aimed
-   at the icon square's centre."
+   as it), a nested `drag-target`, `:return-on-drop`, `:haptic-on`, and a
+   `:catch-point` aimed at the icon square's centre."
   []
   (f/draggable
    :data {:id :a}
    :enabled true
    :delay 100
    :return-on-drop true
+   :haptic-on [:start :enter]
    :catch-point (fn [^w/Rect feedback-rect _point]
                   [(.-dx (.-center feedback-rect))
                    (+ (.-top feedback-rect) 12.0 35.0)])

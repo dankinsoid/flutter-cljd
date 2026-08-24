@@ -105,8 +105,10 @@
       (set! (.-onStart recognizer)
             (fn [position]
               (let [^g/Drag? result (onStart position)]
+                ;; A throw here withholds the Drag, stranding the inserted overlay.
                 (when (and result (contains? (.-haptics this) :start))
-                  (s/HapticFeedback.selectionClick))
+                  (try (s/HapticFeedback.selectionClick)
+                       (catch core/Object _ nil)))
                 result)))
       recognizer)))
 
@@ -392,7 +394,8 @@
                                     (when-not (identical? prev-target curr-target)
                                       (when (contains? (.-haptics widget)
                                                        (if (some? curr-target) :enter :leave))
-                                        (s/HapticFeedback.selectionClick)))
+                                        (try (s/HapticFeedback.selectionClick)
+                                             (catch core/Object _ nil))))
                                     (.setOverTarget this (some? curr-target)))
                                   (.-ignoringFeedbackSemantics widget)
                                   (.-ignoringFeedbackPointer widget)
@@ -428,7 +431,8 @@
     (.setStage this (if was-accepted :dropping :returning))
     (.setOverTarget this false)
     (when (and was-accepted (contains? (.-haptics (.-widget this)) :drop))
-      (s/HapticFeedback.selectionClick))
+      (try (s/HapticFeedback.selectionClick)
+           (catch core/Object _ nil)))
     (when (and (.-mounted this) (.-onDragWillEnd (.-widget this)))
       ((.-onDragWillEnd (.-widget this))
        {:was-accepted was-accepted
