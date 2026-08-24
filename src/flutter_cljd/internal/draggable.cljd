@@ -110,6 +110,15 @@
                 result)))
       recognizer)))
 
+(defn ^w/Size? box-size
+  "Size of `ro` when it is a laid-out RenderBox, else nil. The binding is
+  deliberately untyped: a `^w/RenderBox` hint casts before the nil test, and an
+  element has no render object until its first layout."
+  [ro]
+  (when (dart/is? ro r/RenderBox)
+    (let [^r/RenderBox box ro]
+      (when (.-hasSize box) (.-size box)))))
+
 ;; Child drag anchor strategy
 (defn child-drag-anchor-strategy [^Draggable _ ^w/BuildContext context ^w/Offset position]
   (let [^w/RenderBox render-object (.findRenderObject context)]
@@ -194,7 +203,7 @@
           ^bool can-drag (and (.-enabled widget)
                               (or (nil? (.-maxSimultaneousDrags widget)) (< activeCount (.-maxSimultaneousDrags widget))))
           ^bool show-child (zero? activeCount)
-          ^w/Size? size (some-> ^w/RenderBox (.findRenderObject context) .-size)
+          ^w/Size? size (box-size (.findRenderObject context))
           status {:stage stage :over-target? (.-overTarget this)}
           ;; In place: the child itself at rest and after it lands; a size-
           ;; preserving gap (or :placeholder) while a dragged copy is in flight.
@@ -333,7 +342,7 @@
               ;; Only the default (child-as-feedback) gets frozen at the child's
               ;; laid-out size; an explicit :feedback sizes itself.
               ^w/Size? source-size (when (nil? fb)
-                                     (some-> ^w/RenderBox (.findRenderObject (.-context this)) .-size))
+                                     (box-size (.findRenderObject (.-context this))))
               ;; Feedback is mounted under the Overlay, so it loses the inherited
               ;; environment (themes + `with-inherited` bindings) above the draggable.
               ;; Capture it once here; buildWidget re-wraps each rebuild.
@@ -521,12 +530,13 @@
     (.-position! this global-position)
     (.-lastOffset! this (.- global-position (.-dragStartPoint this)))
 
-    (when (.-mounted (.-overlayState this))
-      (let [^r/RenderBox box (.findRenderObject (.-context (.-overlayState this)))
+    (when-some [overlay-ro (and (.-mounted (.-overlayState this))
+                                (.findRenderObject (.-context (.-overlayState this))))]
+      (let [^r/RenderBox box overlay-ro
             ^w/Offset overlay-space-offset (.globalToLocal box global-position)
             ^w/Offset offset (.- overlay-space-offset (.-dragStartPoint this))
             delegate (w/DragBoundary.forRectOf (.-originalContext this))
-            size (some-> ^w/RenderBox (.findRenderObject (.-context this)) .-size)
+            size (box-size (.findRenderObject (.-context this)))
             rect (.nearestPositionWithinBoundary delegate (.& offset (or size w/Size.zero)))
             offset (or ((.-onDragUpdate this) details (.-topLeft rect))
                        (.-topLeft rect))]
@@ -573,7 +583,7 @@
   ;; Current global bounds of the feedback, for custom catch-point functions.
   (^w/Rect feedbackRect [^DragAvatar this]
     (let [^w/Offset top-left (.-lastOffset this)
-          ^w/Size size (or (some-> ^w/RenderBox (.findRenderObject (.-context this)) .-size) w/Size.zero)]
+          ^w/Size size (or (box-size (.findRenderObject (.-context this))) w/Size.zero)]
       (.& top-left size)))
 
   ;; Targets under the catch point, front-to-back. First the hit-test path
@@ -625,15 +635,14 @@
                      (when-let [^DragTargetState t (.-activeTarget this)]
                        (when (.-mounted t) t)))
             target-box (some-> target .-context .findRenderObject)
-            target-size (some-> ^w/RenderBox target-box .-size)
+            target-size (box-size target-box)
             ^w/BuildContext src-context (.-originalContext this)
             child-box (when (.-mounted src-context) (.findRenderObject src-context))
-            ;; Center-to-center delta by which the child must be translated to land
-            ;; on the target. Used both as the Transform.translate offset and,
-            ;; via localToGlobal below, as the feedback's resting position.
-            expected-offset (if (and target-box child-box)
-                              (.- (.localToGlobal ^w/RenderBox target-box (.center target-size w/Offset.zero))
-                                  (.localToGlobal ^w/RenderBox child-box (.center (.-size ^w/RenderBox child-box) w/Offset.zero)))
+            child-size (box-size child-box)
+            ;; Center-to-center delta landing the child on the target; also the feedback's rest position.
+            expected-offset (if (and target-size child-size)
+                              (.- (.localToGlobal ^w/RenderBox target-box (.center ^w/Size target-size w/Offset.zero))
+                                  (.localToGlobal ^w/RenderBox child-box (.center ^w/Size child-size w/Offset.zero)))
                               w/Offset.zero)
             ;; Keep the accepted target in enteredTargets so its candidate clears
             ;; via didLeave when the drop animation completes, not now — the target

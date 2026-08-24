@@ -1,0 +1,71 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.draggable-null-box-test
+  "`type 'Null' is not a subtype of type 'RenderBox' in type cast` from the drag
+   paths that read a render object off a possibly-unmounted context.
+
+   Each site guards the read (`some->`, or an `or … Size.zero` fallback), but the
+   `^w/RenderBox` hint sits on the THREADED EXPRESSION, so ClojureDart emits the
+   cast ahead of the nil test the guard was written to perform."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget app
+  "A draggable tile over a drop target. `:catch-point` routes through
+   `DragAvatar.feedbackRect`, which is where the app's services grid aims the
+   hit-test at the icon square's centre."
+  [^bool show-source?]
+  (w/Directionality
+   .textDirection ui/TextDirection.ltr
+   .child
+   (w/Overlay
+    .initialEntries
+    [(w/OverlayEntry
+      .builder
+      (fn [_ctx]
+        (w/Column
+         .children
+         [(if show-source?
+            (f/draggable
+             :data {:id :a}
+             :catch-point (fn [^w/Rect feedback-rect _point]
+                            [(.-dx (.-center feedback-rect))
+                             (.-top feedback-rect)])
+             (w/SizedBox .width 70.0 .height 70.0))
+            (w/SizedBox .width 70.0 .height 70.0))
+          (f/drag-target
+           :on-will-accept (fn [_data _off] true)
+           (fn [_ctx _status] (w/SizedBox .width 70.0 .height 70.0)))]))
+      )])))
+
+(deftest first-build-has-no-render-object
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  ;; build reads its own size, but the first build precedes layout.
+  (await (.pumpWidget tester (app true)))
+  (let [e (.takeException tester)]
+    (when (some? e) (dc/print (str "THREW: " e)))
+    (is (nil? e) "mounting a draggable must not cast a null render object")))
+
+(deftest catch-point-survives-an-unmounted-source
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  ;; Removing the source mid-drag makes its findRenderObject return null while
+  ;; the avatar still runs updateDrag -> feedbackRect.
+  (await (.pumpWidget tester (app true)))
+  (let [^ft/TestGesture g (await (.startGesture tester (ui/Offset 35.0 35.0)))]
+    (await (.pump tester (dc/Duration .milliseconds 200)))
+    (await (.moveBy g (ui/Offset 0.0 30.0)))
+    (await (.pump tester))
+    (await (.pumpWidget tester (app false)))
+    (await (.moveBy g (ui/Offset 0.0 10.0)))
+    (await (.pump tester))
+    (let [e (.takeException tester)]
+      (when (some? e) (dc/print (str "THREW: " e)))
+      (is (nil? e) "a null render object must not reach the RenderBox cast"))
+    (await (.up g))
+    (await (.pumpAndSettle tester))))
