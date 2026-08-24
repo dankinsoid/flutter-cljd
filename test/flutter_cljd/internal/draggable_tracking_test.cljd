@@ -1,0 +1,80 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.draggable-tracking-test
+  "The dragged feedback must follow the pointer.
+
+   Every offset in `updateDrag` is derived from the overlay's render object and
+   `dragStartPoint`; a guard that yields a zero size or a zero anchor pins the
+   feedback at the overlay's top-left instead of under the finger."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(def ^:private tile-key (w/ValueKey "tile"))
+(def ^:private feedback-key (w/ValueKey "feedback"))
+
+(defn- ^w/Widget tile-entry
+  "The draggable, inset so a zeroed overlay offset is far from its true position.
+   `:delay` mirrors the services grid; the immediate recognizer needs pointer slop."
+  []
+  (w/Align
+   .alignment w/Alignment.topLeft
+   .child
+   (w/Padding
+    .padding (w/EdgeInsets.only .left 100.0 .top 150.0)
+    .child
+    (f/draggable
+     :data {:id :a}
+     :enabled true
+     :delay 100
+     :feedback (w/SizedBox .width 70.0 .height 70.0 .key feedback-key)
+     ;; A painted box: deferToChild finds nothing to hit-test on a bare SizedBox.
+     (w/Container .width 70.0 .height 70.0 .color (ui/Color 0xFF00FF00) .key tile-key)))))
+
+(defn- ^w/Widget app []
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 800.0 600.0))
+   .child
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child
+    (w/Overlay
+     .initialEntries
+     [(w/OverlayEntry .builder (fn [_ctx] (tile-entry)))]))))
+
+(defn- ^ui/Offset feedback-top-left [^ft/WidgetTester tester]
+  (.getTopLeft tester (ft/find.byKey feedback-key)))
+
+(deftest feedback-tracks-the-pointer
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (app)))
+  ;; Grab the tile's centre: the child anchor strategy makes the feedback sit on
+  ;; the tile, so its top-left starts at the tile's own top-left.
+  (let [^ui/Offset grab (.getCenter tester (ft/find.byKey tile-key))
+        ^ui/Offset tile-tl (.getTopLeft tester (ft/find.byKey tile-key))
+        ^ft/TestGesture g (await (.startGesture tester grab))
+        ^ui/Offset kick (ui/Offset 0.0 20.0)]
+    (await (.pump tester (dc/Duration .milliseconds 200)))
+    (await (.moveBy g kick))
+    (await (.pump tester))
+    (let [^ui/Offset at-start (feedback-top-left tester)
+          ^ui/Offset want (.+ tile-tl kick)]
+      (when (> (.-distance (.- at-start want)) 1.0)
+        (dc/print (str "TRACKING LOST at start: feedback at " at-start ", want " want)))
+      (is (< (.-distance (.- at-start want)) 1.0)
+          (str "feedback must sit under the grab point, got " at-start " want " want)))
+    (let [^ui/Offset delta (ui/Offset 40.0 25.0)]
+      (await (.moveBy g delta))
+      (await (.pump tester))
+      (let [^ui/Offset moved (feedback-top-left tester)
+            ^ui/Offset want (.+ tile-tl (.+ kick delta))]
+        (when (> (.-distance (.- moved want)) 1.0)
+          (dc/print (str "TRACKING LOST: feedback at " moved ", want " want)))
+        (is (< (.-distance (.- moved want)) 1.0)
+            (str "feedback must follow the pointer, got " moved " want " want))))
+    (await (.up g))
+    (await (.pumpAndSettle tester))))

@@ -110,19 +110,35 @@
                 result)))
       recognizer)))
 
-(defn ^w/Size? box-size
-  "Size of `ro` when it is a laid-out RenderBox, else nil. The binding is
-  deliberately untyped: a `^w/RenderBox` hint casts before the nil test, and an
-  element has no render object until its first layout."
+(defn context-render-object
+  "Render object of `ctx`, or nil. `ctx` is deliberately untyped: an avatar's
+  context is unset until its first build, and a `^w/BuildContext` hint casts
+  before the nil test."
+  [ctx]
+  (when (dart/is? ctx w/BuildContext)
+    (let [^w/BuildContext c ctx]
+      (.findRenderObject c))))
+
+(defn ^r/RenderBox? laid-out-box
+  "`ro` as a RenderBox once it has a size, else nil. The binding is deliberately
+  untyped: a `^r/RenderBox` hint casts before the nil test, and an element has no
+  render object until its first layout."
   [ro]
   (when (dart/is? ro r/RenderBox)
     (let [^r/RenderBox box ro]
-      (when (.-hasSize box) (.-size box)))))
+      (when (.-hasSize box) box))))
+
+(defn ^w/Size? box-size
+  "Size of `ro` when it is a laid-out RenderBox, else nil."
+  [ro]
+  (some-> (laid-out-box ro) .-size))
 
 ;; Child drag anchor strategy
 (defn child-drag-anchor-strategy [^Draggable _ ^w/BuildContext context ^w/Offset position]
-  (let [^w/RenderBox render-object (.findRenderObject context)]
-    (.globalToLocal render-object position)))
+  ;; A zero anchor flings the feedback to the overlay's top-left, not the finger.
+  (if-some [box (laid-out-box (context-render-object context))]
+    (.globalToLocal ^r/RenderBox box position)
+    position))
 
 ;; Pointer drag anchor strategy
 (defn pointer-drag-anchor-strategy [^Draggable _ ^w/BuildContext _ ^w/Offset _] w/Offset.zero)
@@ -530,13 +546,13 @@
     (.-position! this global-position)
     (.-lastOffset! this (.- global-position (.-dragStartPoint this)))
 
-    (when-some [overlay-ro (and (.-mounted (.-overlayState this))
-                                (.findRenderObject (.-context (.-overlayState this))))]
-      (let [^r/RenderBox box overlay-ro
-            ^w/Offset overlay-space-offset (.globalToLocal box global-position)
+    (when-some [box (and (.-mounted (.-overlayState this))
+                         (laid-out-box (context-render-object
+                                        (.-context (.-overlayState this)))))]
+      (let [^w/Offset overlay-space-offset (.globalToLocal ^r/RenderBox box global-position)
             ^w/Offset offset (.- overlay-space-offset (.-dragStartPoint this))
             delegate (w/DragBoundary.forRectOf (.-originalContext this))
-            size (box-size (.findRenderObject (.-context this)))
+            size (box-size (context-render-object (.-context this)))
             rect (.nearestPositionWithinBoundary delegate (.& offset (or size w/Size.zero)))
             offset (or ((.-onDragUpdate this) details (.-topLeft rect))
                        (.-topLeft rect))]
@@ -582,8 +598,12 @@
 
   ;; Current global bounds of the feedback, for custom catch-point functions.
   (^w/Rect feedbackRect [^DragAvatar this]
+    ;; Before the overlay's first layout fall back to the source's size — a zero
+    ;; rect aims :catch-point at its corner and mis-hits every drop target.
     (let [^w/Offset top-left (.-lastOffset this)
-          ^w/Size size (or (box-size (.findRenderObject (.-context this))) w/Size.zero)]
+          ^w/Size size (or (box-size (context-render-object (.-context this)))
+                           (.-sourceSize this)
+                           w/Size.zero)]
       (.& top-left size)))
 
   ;; Targets under the catch point, front-to-back. First the hit-test path

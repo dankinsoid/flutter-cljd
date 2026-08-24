@@ -14,33 +14,44 @@
    ["package:flutter_test/flutter_test.dart" :as ft]
    [flutter-cljd.widgets :as f]))
 
+(def ^:private tile-key (w/ValueKey "tile"))
+(def ^:private feedback-key (w/ValueKey "feedback"))
+
 (defn- ^w/Widget app
   "A draggable tile over a drop target. `:catch-point` routes through
    `DragAvatar.feedbackRect`, which is where the app's services grid aims the
    hit-test at the icon square's centre."
   [^bool show-source?]
-  (w/Directionality
-   .textDirection ui/TextDirection.ltr
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 800.0 600.0))
    .child
-   (w/Overlay
-    .initialEntries
-    [(w/OverlayEntry
-      .builder
-      (fn [_ctx]
-        (w/Column
-         .children
-         [(if show-source?
-            (f/draggable
-             :data {:id :a}
-             :catch-point (fn [^w/Rect feedback-rect _point]
-                            [(.-dx (.-center feedback-rect))
-                             (.-top feedback-rect)])
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child
+    (w/Overlay
+     .initialEntries
+     [(w/OverlayEntry
+       .builder
+       (fn [_ctx]
+         (w/Column
+          .children
+          [(if show-source?
+             ;; A painted box: deferToChild finds nothing to hit-test on a bare SizedBox.
+             (f/draggable
+              :data {:id :a}
+              :delay 100
+              :feedback (w/SizedBox .width 70.0 .height 70.0 .key feedback-key)
+              :catch-point (fn [^w/Rect feedback-rect _point]
+                             [(.-dx (.-center feedback-rect))
+                              (.-top feedback-rect)])
+              (w/Container .width 70.0 .height 70.0
+                           .color (ui/Color 0xFF00FF00) .key tile-key))
              (w/SizedBox .width 70.0 .height 70.0))
-            (w/SizedBox .width 70.0 .height 70.0))
-          (f/drag-target
-           :on-will-accept (fn [_data _off] true)
-           (fn [_ctx _status] (w/SizedBox .width 70.0 .height 70.0)))]))
-      )])))
+           (f/drag-target
+            :on-will-accept (fn [_data _off] true)
+            (fn [_ctx _status]
+              (w/Container .width 70.0 .height 70.0
+                           .color (ui/Color 0xFF0000FF))))])))]))))
 
 (deftest first-build-has-no-render-object
   :tags [:widget]
@@ -57,10 +68,12 @@
   ;; Removing the source mid-drag makes its findRenderObject return null while
   ;; the avatar still runs updateDrag -> feedbackRect.
   (await (.pumpWidget tester (app true)))
-  (let [^ft/TestGesture g (await (.startGesture tester (ui/Offset 35.0 35.0)))]
+  (let [^ft/TestGesture g (await (.startGesture tester (.getCenter tester (ft/find.byKey tile-key))))]
     (await (.pump tester (dc/Duration .milliseconds 200)))
     (await (.moveBy g (ui/Offset 0.0 30.0)))
     (await (.pump tester))
+    (is (= 1 (.-length (.evaluate (ft/find.byKey feedback-key))))
+        "the drag must be live, or this exercises nothing")
     (await (.pumpWidget tester (app false)))
     (await (.moveBy g (ui/Offset 0.0 10.0)))
     (await (.pump tester))
