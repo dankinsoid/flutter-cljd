@@ -9,12 +9,15 @@
    [clojure.test :refer [deftest is]]
    ["dart:core" :as dc]
    ["dart:ui" :as ui]
+   ["package:flutter/foundation.dart" :as fd]
+   ["package:flutter/gestures.dart" :as g]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter_test/flutter_test.dart" :as ft]
    [flutter-cljd.widgets :as f]))
 
 (def ^:private tile-key (w/ValueKey "tile"))
 (def ^:private feedback-key (w/ValueKey "feedback"))
+(def ^:private error-restore (atom nil))
 
 (defn- ^w/Widget tile-entry
   "The draggable, inset so a zeroed overlay offset is far from its true position.
@@ -78,3 +81,143 @@
             (str "feedback must follow the pointer, got " moved " want " want))))
     (await (.up g))
     (await (.pumpAndSettle tester))))
+
+(defn- collect-errors!
+  "Installs a FlutterError.onError sink and returns the atom it fills. The gesture
+   zone swallows throws raised while handling a pointer event, so a drag that dies
+   mid-gesture leaves no test failure behind — only this record.
+
+   `restore-errors!` MUST run before any `expect`: flutter_test asserts that a
+   test returned onError to its original state before assertions run."
+  []
+  (let [sink (atom [])
+        prev fd/FlutterError.onError]
+    (set! fd/FlutterError.onError
+          (fn [^fd/FlutterErrorDetails details]
+            (swap! sink conj details)
+            nil))
+    (ft/addTearDown (fn [] (set! fd/FlutterError.onError prev) nil))
+    (reset! error-restore (fn [] (set! fd/FlutterError.onError prev)))
+    sink))
+
+(defn- restore-errors! []
+  (when-some [f @error-restore]
+    (f)
+    (reset! error-restore nil)))
+
+(defn- report-errors! [sink label]
+  (doseq [^fd/FlutterErrorDetails d @sink]
+    (dc/print (str "GESTURE-ZONE THROW [" label "]: " (.-exception d)))
+    (dc/print (str (.-stack d)))))
+
+(defn- ^w/Widget services-tile
+  "The services grid's own composition: no `:feedback` (the child builder doubles
+   as it), a nested `drag-target`, `:return-on-drop`, and a `:catch-point` aimed
+   at the icon square's centre."
+  []
+  (f/draggable
+   :data {:id :a}
+   :enabled true
+   :delay 100
+   :return-on-drop true
+   :catch-point (fn [^w/Rect feedback-rect _point]
+                  [(.-dx (.-center feedback-rect))
+                   (+ (.-top feedback-rect) 12.0 35.0)])
+   (fn [_ctx _status]
+     (f/drag-target
+      :enabled true
+      :on-will-accept (fn [_data _off] false)
+      (fn [_ctx _st]
+        (w/Container .width 70.0 .height 70.0
+                     .color (ui/Color 0xFF00FF00) .key tile-key))))))
+
+(defn- ^w/Widget services-app []
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 800.0 600.0))
+   .child
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child
+    (w/Overlay
+     .initialEntries
+     [(w/OverlayEntry
+       .builder
+       (fn [_ctx]
+         (w/Align
+          .alignment w/Alignment.topLeft
+          .child
+          (w/Padding
+           .padding (w/EdgeInsets.only .left 100.0 .top 150.0)
+           .child
+           (services-tile)))))]))))
+
+(deftest services-grid-mouse-drag
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  ;; The app's own shape: child-as-feedback + nested drag-target + :catch-point,
+  ;; on macOS — HapticFeedback and the delayed recognizer are platform-gated.
+  (let [sink (collect-errors!)]
+    (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.macOS)
+    (await (.pumpWidget tester (services-app)))
+    (let [^ui/Offset grab (.getCenter tester (ft/find.byKey tile-key))
+          ^ft/TestGesture gest (await (.startGesture tester grab
+                                                     .kind g/PointerDeviceKind.mouse))]
+      (await (.pump tester (dc/Duration .milliseconds 200)))
+      (report-errors! sink "after hold")
+      (await (.moveBy gest (ui/Offset 0.0 25.0)))
+      (await (.pump tester))
+      (report-errors! sink "after move")
+      (await (.moveBy gest (ui/Offset 20.0 20.0)))
+      (await (.pump tester))
+      (await (.up gest))
+      ;; A capped settle: an unterminated drop animation would hang the runner.
+      (await (.pumpAndSettle tester (dc/Duration .milliseconds 16)
+                             ft/EnginePhase.sendSemanticsUpdate
+                             (dc/Duration .seconds 3)))
+      (report-errors! sink "after release")
+      (let [thrown (mapv (fn [^fd/FlutterErrorDetails d] (str (.-exception d))) @sink)
+            tiles (.-length (.evaluate (ft/find.byKey tile-key)))]
+        (restore-errors!)
+        (set! fd/debugDefaultTargetPlatformOverride nil)
+        (is (empty? thrown) (str "the drag must not throw: " thrown))
+        (is (= 1 tiles)
+            "after release exactly the in-place tile remains — no orphan feedback")))))
+
+(deftest mouse-drag-tracks-and-tears-down
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  ;; macOS drives a MOUSE; the harness default is touch, and the two take
+  ;; different recognizer paths.
+  (let [sink (collect-errors!)]
+    (await (.pumpWidget tester (app)))
+    (let [^ui/Offset grab (.getCenter tester (ft/find.byKey tile-key))
+          ^ui/Offset tile-tl (.getTopLeft tester (ft/find.byKey tile-key))
+          ^ft/TestGesture gest (await (.startGesture tester grab
+                                                     .kind g/PointerDeviceKind.mouse))
+          ^ui/Offset kick (ui/Offset 0.0 20.0)]
+      (await (.pump tester (dc/Duration .milliseconds 200)))
+      (await (.moveBy gest kick))
+      (await (.pump tester))
+      (report-errors! sink "after move")
+      (let [n-live (.-length (.evaluate (ft/find.byKey feedback-key)))
+            at-1 (when (pos? n-live) (feedback-top-left tester))]
+        (await (.moveBy gest (ui/Offset 30.0 15.0)))
+        (await (.pump tester))
+        (let [at-2 (when (pos? (.-length (.evaluate (ft/find.byKey feedback-key))))
+                     (feedback-top-left tester))]
+          (await (.up gest))
+          (await (.pumpAndSettle tester (dc/Duration .milliseconds 16)
+                                 ft/EnginePhase.sendSemanticsUpdate
+                                 (dc/Duration .seconds 3)))
+          (report-errors! sink "after release")
+          (let [thrown (mapv (fn [^fd/FlutterErrorDetails d] (str (.-exception d))) @sink)
+                left (.-length (.evaluate (ft/find.byKey feedback-key)))]
+            (restore-errors!)
+            (is (empty? thrown) (str "the drag must not throw: " thrown))
+            (is (= 1 n-live) "the mouse drag must mount exactly one feedback")
+            (is (and at-1 (< (.-distance (.- ^ui/Offset at-1 (.+ tile-tl kick))) 1.0))
+                (str "mouse feedback must track the pointer, got " at-1))
+            (is (and at-2 (< (.-distance (.- ^ui/Offset at-2
+                                             (.+ tile-tl (.+ kick (ui/Offset 30.0 15.0))))) 1.0))
+                (str "mouse feedback must keep tracking, got " at-2))
+            (is (zero? left) "releasing must tear the feedback overlay down")))))))
