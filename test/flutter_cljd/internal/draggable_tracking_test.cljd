@@ -110,6 +110,64 @@
     (dc/print (str "GESTURE-ZONE THROW [" label "]: " (.-exception d)))
     (dc/print (str (.-stack d)))))
 
+(defn- ^w/Widget throwing-tile
+  "A tile whose `:on-drag-start` throws — the app-side shape that stranded the
+   feedback: the callback runs after the overlay entry is inserted but before the
+   recognizer holds a Drag."
+  []
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 800.0 600.0))
+   .child
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child
+    (w/Overlay
+     .initialEntries
+     [(w/OverlayEntry
+       .builder
+       (fn [_ctx]
+         (w/Align
+          .alignment w/Alignment.topLeft
+          .child
+          (w/Padding
+           .padding (w/EdgeInsets.only .left 100.0 .top 150.0)
+           .child
+           (f/draggable
+            :data {:id :a}
+            :enabled true
+            :delay 100
+            :on-drag-start (fn [] (throw (dc/StateError "boom from on-drag-start")))
+            :feedback (w/SizedBox .width 70.0 .height 70.0 .key feedback-key)
+            (w/Container .width 70.0 .height 70.0
+                         .color (ui/Color 0xFF00FF00) .key tile-key))))))]))))
+
+(deftest a-throwing-on-drag-start-does-not-wedge-the-gesture
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [sink (collect-errors!)]
+    (await (.pumpWidget tester (throwing-tile)))
+    (let [^ui/Offset tile-tl (.getTopLeft tester (ft/find.byKey tile-key))
+          ^ft/TestGesture gest (await (.startGesture tester
+                                                     (.getCenter tester (ft/find.byKey tile-key))))
+          ^ui/Offset kick (ui/Offset 0.0 20.0)]
+      (await (.pump tester (dc/Duration .milliseconds 200)))
+      (await (.moveBy gest kick))
+      (await (.pump tester))
+      (let [tracked (when (pos? (.-length (.evaluate (ft/find.byKey feedback-key))))
+                      (feedback-top-left tester))]
+        (await (.up gest))
+        (await (.pumpAndSettle tester (dc/Duration .milliseconds 16)
+                               ft/EnginePhase.sendSemanticsUpdate
+                               (dc/Duration .seconds 3)))
+        (let [thrown (mapv (fn [^fd/FlutterErrorDetails d] (str (.-exception d))) @sink)
+              left (.-length (.evaluate (ft/find.byKey feedback-key)))]
+          (restore-errors!)
+          (is (some (fn [^dc/String s] (.contains s "boom from on-drag-start")) thrown)
+              (str "the callback's throw must be reported, got " thrown))
+          (is (and tracked (< (.-distance (.- ^ui/Offset tracked (.+ tile-tl kick))) 1.0))
+              (str "the drag must still track the pointer, got " tracked))
+          (is (zero? left) "release must still tear the feedback overlay down"))))))
+
 (defn- ^w/Widget services-tile
   "The services grid's own composition: no `:feedback` (the child builder doubles
    as it), a nested `drag-target`, `:return-on-drop`, `:haptic-on`, and a

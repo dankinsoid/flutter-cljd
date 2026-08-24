@@ -5,6 +5,7 @@
    [flutter-cljd.internal.builder :as bd]
    [cljd.flutter :as f]
    ["dart:core" :as core]
+   ["package:flutter/foundation.dart" :as fd]
    ["package:flutter/painting.dart" :as p]
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
@@ -29,6 +30,28 @@
 (declare DragAvatar)
 (declare DragTarget)
 (declare DragTargetState)
+
+(defn call-guarded
+  "Invokes `f` with `args`, returning its value, or nil when it threw. A throw is
+  surfaced through `FlutterError.reportError` rather than propagated.
+
+  Consumer callbacks run at points where the drag is half-wired — the overlay
+  entry is inserted but the recognizer has no `Drag` yet, or a target is entered
+  but not yet left. Letting one escape strands the feedback on screen forever
+  with no move or end ever delivered, so a broken callback must not take the
+  gesture down with it. `where` names the callback in the report."
+  [f where & args]
+  (when (some? f)
+    (try
+      (apply f args)
+      (catch core/Object e st
+        (fd/FlutterError.reportError
+         (fd/FlutterErrorDetails
+          .exception e
+          .stack (when (dart/is? st core/StackTrace) st)
+          .library "flutter-cljd"
+          .context (fd/ErrorDescription (str "while calling " where))))
+        nil))))
 
 ;; Targets whose accept region may extend past their layout box, so a single
 ;; hit-test at the catch point can't discover them. They register here on mount
@@ -377,8 +400,9 @@
                                   (.-feedbackOffset widget)
                                   (.-catchPoint widget)
                                   (fn [details ^w/Offset offset]
-                                    (when (and (.-mounted this) (.-onDragUpdate widget))
-                                      ((.-onDragUpdate widget) details)))
+                                    (when (.-mounted this)
+                                      (call-guarded (.-onDragUpdate widget) ":on-drag-update"
+                                                    details)))
                                   (fn [^w/Velocity velocity ^w/Offset offset ^w/Offset final-offset ^bool was-accepted]
                                     (.willEndDrag this velocity offset final-offset was-accepted))
                                   (fn [^w/Velocity velocity ^w/Offset offset ^bool was-accepted]
@@ -417,8 +441,7 @@
                                   this)]
           (.registerAvatar this avatar)
           (.prepare avatar)
-          (when-let [on-drag-started (.-onDragStarted widget)]
-            (on-drag-started))
+          (call-guarded (.-onDragStarted widget) ":on-drag-start")
           avatar))))
 
   (willEndDrag [^DraggableState this
@@ -433,11 +456,11 @@
     (when (and was-accepted (contains? (.-haptics (.-widget this)) :drop))
       (try (s/HapticFeedback.selectionClick)
            (catch core/Object _ nil)))
-    (when (and (.-mounted this) (.-onDragWillEnd (.-widget this)))
-      ((.-onDragWillEnd (.-widget this))
-       {:was-accepted was-accepted
-        :velocity velocity
-        :offset offset})))
+    (when (.-mounted this)
+      (call-guarded (.-onDragWillEnd (.-widget this)) ":on-drag-will-end"
+                    {:was-accepted was-accepted
+                     :velocity velocity
+                     :offset offset})))
 
   (didEndDrag [^DraggableState this
                ^w/Velocity velocity
@@ -448,11 +471,11 @@
                       (.-activeCount! this (dec (.-activeCount this)))))
     (when-not (.-mounted this)
       (.disposeRecognizerIfInactive this))
-    (when (and (.-mounted this) (.-onDragEnd (.-widget this)))
-      ((.-onDragEnd (.-widget this))
-       {:was-accepted was-accepted
-        :velocity velocity
-        :offset offset}))
+    (when (.-mounted this)
+      (call-guarded (.-onDragEnd (.-widget this)) ":on-drag-end"
+                    {:was-accepted was-accepted
+                     :velocity velocity
+                     :offset offset}))
     ;; Landed. :return-on-drop sends a displaced child home (:returning → :idle);
     ;; otherwise it just rests where it was dropped (:idle).
     (when (.-mounted this)
@@ -849,8 +872,12 @@
     (assert (not (-> this .-candidateAvatars (contains? avatar))))
     (assert (not (-> this .-rejectedAvatars (contains? avatar))))
     (let [^DragTarget widget (.-widget this)
+          ;; A throwing predicate reports and rejects — never accepts by default.
           ^bool resolved-will-accept (or (nil? (.-onWillAccept widget))
-                                         ((.-onWillAccept widget) (.-data avatar) (.-lastOffset avatar)))]
+                                         (boolean (call-guarded (.-onWillAccept widget)
+                                                                ":on-will-accept"
+                                                                (.-data avatar)
+                                                                (.-lastOffset avatar))))]
       (if resolved-will-accept
         (do
           (.setState this #(.-candidateAvatars! this (conj (.-candidateAvatars this) avatar)))
@@ -867,8 +894,7 @@
                         (.-rejectedAvatars! this (disj (.-rejectedAvatars this) avatar))
                         (.-candidateAvatars! this (disj (.-candidateAvatars this) avatar))
                         nil))
-      (when-let [on-leave (-> this .-widget .-onLeave)]
-        (on-leave (.-data avatar))))
+      (call-guarded (-> this .-widget .-onLeave) ":on-leave" (.-data avatar)))
     nil)
 
   ;; Fires :on-accept at release but keeps the avatar in candidateAvatars, so
@@ -877,16 +903,15 @@
   ;; completes — see leaveAllEntered in dragCompletion.
   (didDrop [^DragTargetState this ^DragAvatar avatar]
     (assert (-> this .-candidateAvatars (contains? avatar)))
-    (when (.-mounted this)
-      (when-let [on-accept (-> this .-widget .-onAccept)]
-        (when (some? (.-data avatar))
-          (on-accept (.-data avatar) (.-lastOffset avatar)))))
+    (when (and (.-mounted this) (some? (.-data avatar)))
+      (call-guarded (-> this .-widget .-onAccept) ":on-accept"
+                    (.-data avatar) (.-lastOffset avatar)))
     nil)
 
   (didMove [^DragTargetState this ^DragAvatar avatar]
     (when (and (.-mounted this) (some? (.-data avatar)))
-      (when-let [on-move (-> this .-widget .-onMove)]
-        (on-move (.-data avatar) (.-lastOffset avatar))))
+      (call-guarded (-> this .-widget .-onMove) ":on-move"
+                    (.-data avatar) (.-lastOffset avatar)))
     nil)
 
   ;; Rebuild to re-read hovering avatars' stages (e.g. :dragging → :dropping).
