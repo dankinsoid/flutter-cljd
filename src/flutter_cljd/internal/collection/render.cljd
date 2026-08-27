@@ -2088,8 +2088,10 @@
    list's :spacing, wrap's :run-spacing — survives; a size-only `head - ext` pack
    drops it, and walk!'s extent-only reuse then leaks the no-gap offset into the
    visible window. `head` is cache[0]'s offset (index cf), `size`/
-   `ext` the measured Size and main paint extent of i, `head-max-end` cache[0]'s
-   :max-end. The absolute base stays approximate (a lone off-screen child can't know
+   `ext` the measured Size and main paint extent of i. The entry becomes the new
+   cache head, so its :max-end is its own :end (a head has no predecessor);
+   stitch-prefix at the call site restores the global running max across the seam.
+   The absolute base stays approximate (a lone off-screen child can't know
    its run) but the geometry SHAPE is canonical — spacing/cross via :place. Returns
    the cache entry plus :base-state (the flow state BEFORE i, for the new baseState).
    Pure.
@@ -2097,7 +2099,7 @@
    Invariant (user directive): estimates may decide WHERE the window starts and shape
    the extents OUTSIDE it, but the cells INSIDE the materialized window are ALWAYS
    placed by the one canonical flow walk (:anchor-seeded state + :place per child)."
-  [layout env ^int i ^double head size ^double ext ^double head-max-end]
+  [layout env ^int i ^double head size ^double ext]
   (let [place-fn (:place layout)
         anchor-fn (:anchor layout)
         init-fn (:init layout)
@@ -2112,7 +2114,7 @@
         ^double cross (double (or (:cross gm) 0.0))
         ^double end (+ noff ext)]
     {:offset noff :cross cross :extent ext :end end
-     :max-end (math/min end head-max-end)
+     :max-end end
      ;; :state = flow state AFTER i (before cf): reconstructs placing cf back at head
      :state (if anchor-fn (anchor-fn env (inc i) head) (init-fn env))
      :base-state (if anchor-fn (anchor-fn env i noff) (init-fn env))
@@ -2136,13 +2138,12 @@
       (let [_ (.-passMaterialized! rs (inc (.-passMaterialized rs)))
             ^double ext (.paintExtentOf rs ^r/RenderBox c)
             ^double head (double (:offset (nth cache 0)))
-            ^double head-max-end (double (:max-end (nth cache 0)))
-            e (leading-step-entry layout env i head (.-size ^r/RenderBox c) ext head-max-end)
+            e (leading-step-entry layout env i head (.-size ^r/RenderBox c) ext)
             ^double noff (double (:offset e))
             ^double cross (double (:cross e))]
         (set-layout-offset! c noff)
         (set-cross-axis-offset! c cross)
-        (.-cache! rs (into [(dissoc e :base-state)] cache))
+        (.-cache! rs (stitch-prefix [(dissoc e :base-state)] cache))
         (.-cacheFirst! rs i)
         (.-baseState! rs (:base-state e))
         true)

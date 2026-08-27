@@ -975,7 +975,7 @@
         head 1000.0
         ext 60.0
         size (ui/Size 300.0 ext)
-        e (render/leading-step-entry list env 41 head size ext 1200.0)]
+        e (render/leading-step-entry list env 41 head size ext)]
     (testing "offset carries the inter-item gap: head - ext - spacing (not head - ext)"
       (is (= (- head ext spacing) (:offset e))))            ; 1000 - 60 - 8 = 932
     (testing "the laid child ends exactly `spacing` below the head — a real gap"
@@ -996,7 +996,7 @@
         ext 60.0
         size (ui/Size 300.0 ext)
         i 41
-        e (render/leading-step-entry list env i head size ext 1200.0)
+        e (render/leading-step-entry list env i head size ext)
         walk (tw/flow-run-entries list env
                                   [[i size ext] [(inc i) size ext]]
                                   (:base-state e))]
@@ -1005,6 +1005,13 @@
     (testing "and lands the head (cf) back at `head` — the run is contiguous"
       (is (= head (:offset (nth walk 1)))))))
 
+(deftest leading-step-max-end-is-own-end
+  ;; a head has no predecessor — clamping below :end blinds bsearch-max-end
+  (let [env {:axis :vertical :cross-extent 300.0 :item-count 2200}
+        list (lay/list-layout {:spacing 8.0})
+        e (render/leading-step-entry list env 41 1000.0 (ui/Size 300.0 60.0) 60.0)]
+    (is (= (:end e) (:max-end e)))))
+
 (deftest leading-step-wrap-preserves-run-height-pack
   ;; a lone off-screen child can't know its run, so it packs one run height.
   (let [env {:axis :vertical :cross-extent 300.0 :item-count 2200}
@@ -1012,7 +1019,7 @@
         head 1000.0
         ext 50.0
         size (ui/Size 100.0 ext)
-        e (render/leading-step-entry wrap env 41 head size ext 1200.0)]
+        e (render/leading-step-entry wrap env 41 head size ext)]
     (is (= (- head ext) (:offset e)))                       ; head - run height
     (is (= 0.0 (:cross e)))
     (is (true? (:canon e)))))
@@ -1025,7 +1032,7 @@
         head 1000.0
         ext 50.0
         size (ui/Size 100.0 ext)
-        e (render/leading-step-entry wrap env 41 head size ext 1200.0)]
+        e (render/leading-step-entry wrap env 41 head size ext)]
     (is (= (- head ext rsp) (:offset e)))
     (testing "the cell ends exactly one run gap above the head"
       (is (= (- head rsp) (:end e))))
@@ -1046,7 +1053,7 @@
         head 1000.0
         ext 50.0
         size (ui/Size 150.0 ext)
-        e (render/leading-step-entry masonry env 41 head size ext 1200.0)]
+        e (render/leading-step-entry masonry env 41 head size ext)]
     (testing ":run-start (furthest column end) carries the main-axis gap the
               :flow-end back-off dropped"
       (is (= (- head ext rsp) (:offset e))))
@@ -1092,7 +1099,7 @@
       (is (= 90.0 (:cross (nth entries 1)))))                ; multi-column, NOT 0
     (testing "the single-child estimate would instead put index 5 at cross 0 (column)"
       (let [col (render/leading-step-entry wrapl env 5 (:offset cp)
-                                           (ui/Size 90 40) 40.0 1200.0)]
+                                           (ui/Size 90 40) 40.0)]
         (is (= 0.0 (:cross col)))))))
 
 ;; --- structural-invariant guard (estimate-shaped entry in the visible window) ---
