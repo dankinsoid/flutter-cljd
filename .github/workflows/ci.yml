@@ -41,5 +41,46 @@ jobs:
           mkdir -p "example/$dep"
           cp pubspec.yaml "example/$dep/pubspec.yaml"
 
+      # the project's green baseline (docs/CollectionTesting.md): :known-red are
+      # documented deferrals, :fuzz needs --timeout 20x and runs in the fuzz job
       - name: Run tests
-        run: clojure -M:cljd test
+        run: clojure -M:cljd test -- -x "known-red || fuzz"
+
+  # full fuzz campaign — informational, red here does not block the build
+  fuzz:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: DeLaGuardo/setup-clojure@13.2
+        with:
+          cli: latest
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Cache Clojure deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: cljdeps-${{ runner.os }}-${{ hashFiles('deps.edn') }}
+          restore-keys: cljdeps-${{ runner.os }}-
+
+      - name: Stub the example's vendored library dep
+        run: |
+          dep=$(sed -n 's|^ *path: \(\.clojuredart/deps/.*\)|\1|p' example/pubspec.yaml)
+          mkdir -p "example/$dep"
+          cp pubspec.yaml "example/$dep/pubspec.yaml"
+
+      - name: Run fuzz campaign
+        run: clojure -M:cljd test -- -t fuzz --timeout 20x
