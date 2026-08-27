@@ -34,5 +34,12 @@ jobs:
           key: cljdeps-${{ runner.os }}-${{ hashFiles('deps.edn') }}
           restore-keys: cljdeps-${{ runner.os }}-
 
+      # pub's example convention resolves ./example, whose dep path only a local ClojureDart compile creates
+      - name: Stub the example's vendored library dep
+        run: |
+          dep=$(sed -n 's|^ *path: \(\.clojuredart/deps/.*\)|\1|p' example/pubspec.yaml)
+          mkdir -p "example/$dep"
+          cp pubspec.yaml "example/$dep/pubspec.yaml"
+
       - name: Run tests
         run: clojure -M:cljd test
