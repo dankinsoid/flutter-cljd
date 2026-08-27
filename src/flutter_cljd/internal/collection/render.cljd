@@ -2505,7 +2505,9 @@
   (let [env (lay/make-env c (.-itemCount rs) (env-agg rs))
         env (if-let [prep (:prepare layout)] (assoc env :ctx (prep env)) env)
         approx-fn (:approx-offset layout)]
-    (if (or (nil? approx-fn) (not (pos? (double (or (:avg-main env) 0.0)))))
+    (if (or (nil? approx-fn) (not (pos? (double (or (:avg-main env) 0.0))))
+            ;; infinite cache window: the fill loop's (>= off we) never fires
+            (not (.-isFinite (.-remainingCacheExtent c))))
       (flow-layout! rs layout c)   ; can't estimate yet — stay on real geometry
       (let [^r/RenderSliverBoxChildManager mgr (.-childManager rs)]
         (.didStartLayout mgr)
@@ -2558,15 +2560,19 @@
                         (set-cross-axis-offset! child 0.0)
                         (if (>= off we)
                           [i (+ off ext) false]
-                          (let [after (.childAfter rs child)
-                                nxt (if (and after (= (.indexOf rs ^r/RenderBox after) (inc i)))
-                                      after
-                                      (.insertAndLayoutChild rs
-                                       ^r/BoxConstraints (measure-fn env (inc i))
-                                       .after child .parentUsesSize true))]
-                            (if (nil? nxt)
-                              [i (+ off ext) true]
-                              (recur ^r/RenderBox nxt (inc i)))))))]
+                          ;; wrap-style staircase offsets can crawl toward `we`;
+                          ;; without this bound the fill materializes O(n) per frame
+                          (if (and item-count (>= (inc i) n))
+                            [i (+ off ext) true]
+                            (let [after (.childAfter rs child)
+                                  nxt (if (and after (= (.indexOf rs ^r/RenderBox after) (inc i)))
+                                        after
+                                        (.insertAndLayoutChild rs
+                                         ^r/BoxConstraints (measure-fn env (inc i))
+                                         .after child .parentUsesSize true))]
+                              (if (nil? nxt)
+                                [i (+ off ext) true]
+                                (recur ^r/RenderBox nxt (inc i))))))))]
                 ;; collect anything beyond the last placed index
                 (let [^int trailing (loop [cc (.-lastChild rs) ^int ntr 0]
                                       (if (and cc (> (.indexOf rs ^r/RenderBox cc) last-i))
