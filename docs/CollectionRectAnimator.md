@@ -4,6 +4,16 @@
 > `tween.cljd`). Supersedes the v1 two-path scheme (`MoveRender` position-glide +
 > `tween-layout` size-morph, committed at 636cf22).
 >
+> **Status: experimental.** Two anchor defects are open, reproduced and tagged
+> `:known-red` in `fuzz_red_test.cljd`:
+> - **NEW-16** — a morph into a denser layout re-anchors onto the capture
+>   window's first child, not the item the user was looking at (~115px off);
+>   closing it needs the capture to cover the END window, which is only known
+>   after the set-point the capture itself produces.
+> - **NEW-17** — an insert above the window with `pixels` resting on
+>   `maxScrollExtent` drifts the anchor's consumed fraction by ~6px on masonry
+>   (untraced).
+>
 > §1–§8a are the rect-animator model: what is animated and why. §9 is the scroll
 > model the sliver host needs to make it hold — pass modes, the rebase transport,
 > the anchor. A `>` note under a heading marks a section a later one refines;

@@ -6,7 +6,7 @@
 
 ClojureDart wrapper for Flutter Material widgets, designed to simplify and compact Flutter development in ClojureDart. It provides concise, Clojure-like syntax to work with Flutter’s Material components and types, making code more readable and expressive for Clojure developers building Flutter apps.
 
-> **Status:** the API is alpha — names and signatures may still change between versions. The implementation itself is mature: 680+ commits and an extensive test suite, including fuzz-tested layout and virtualization engines (see [Testing](#testing)).
+> **Status:** the API is alpha — names and signatures may still change between versions. The hand-written core is extensively tested (680+ commits, ~9k lines of tests — see [Testing](#testing)). The collection/grid subsystem is **experimental**: two known anchor defects are open (listed under Testing) and its test coverage is vertical-LTR only.
 
 ![Example app — masonry collection layout](./docs/assets/example-app.png)
 
@@ -159,24 +159,32 @@ Beyond the widget wrappers, the library ships several extensions to Flutter, eac
 
 - [Animations](./docs/Animations.md) — declarative animation system combining motion descriptions with flexible widget animations.
 - [Button](./docs/Button.md) — universal button with minimal default styling and full control over appearance via modifiers.
-- [Collection Rect Animator](./docs/CollectionRectAnimator.md) — design of the unified keyed animator that drives insert/move/resize transitions in collection layouts.
+- [Collection Rect Animator](./docs/CollectionRectAnimator.md) — design of the unified keyed animator that drives insert/move/resize transitions in collection layouts (experimental subsystem, see [Testing](#testing)).
 - [Collection Testing](./docs/CollectionTesting.md) — how the virtualization engine is verified: a `RenderViewport` simulation harness, an invariant oracle battery, and a seeded fuzzer.
 
 ## Testing
 
-The suite spans 22 test files and goes well beyond unit tests:
+The suite is ~9k lines of hand-written tests (generated Dart excluded from every count here):
 
-- unit tests for types, widgets, borders, and animations;
-- a `RenderViewport` simulation harness with an invariant oracle battery for the collection virtualization engine;
-- seeded fuzz tests over random operation sequences, plus deterministic reproduction suites for previously found issues;
-- dedicated tests for the grid layout solver and geometry.
+- a real-widget harness that mounts the public widgets under `testWidgets`, with an invariant-oracle battery for the collection virtualization engine;
+- a deterministic seeded fuzzer over random operation sequences, with shrinking of failing episodes;
+- deterministic reproduction suites for previously found issues — `:known-red` tags the open ones;
+- dedicated tests for the grid layout solver, geometry, types, widgets, borders, and animations.
+
+Coverage is currently **vertical-LTR**: horizontal axes, `:reverse`, and RTL are not systematically exercised.
+
+Known open defects in the experimental collection/grid subsystem (both tagged `:known-red`):
+
+- **NEW-16** — a morph into a denser layout can re-anchor onto the capture window's first child instead of the item the user was looking at (~115px off after the transition).
+- **NEW-17** — an insert above the window while resting on `maxScrollExtent` drifts the anchor's consumed fraction by ~6px on masonry (untraced).
 
 ```sh
-make test      # or: clojure -M:cljd test
-make check     # compile the example + dart analyze the generated Dart
+clojure -M:cljd test -- -x "known-red || fuzz"   # the green baseline
+clojure -M:cljd test -- -t fuzz --timeout 20x    # the fuzz campaign
+make check                                       # compile the example + dart analyze
 ```
 
-See [Collection Testing](./docs/CollectionTesting.md) for the methodology. Tests run in CI on every push and pull request.
+See [Collection Testing](./docs/CollectionTesting.md) for the methodology. CI runs the green baseline on every push and pull request, plus a non-blocking full fuzz job.
 
 ## Contributing
 
