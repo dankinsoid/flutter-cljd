@@ -58,11 +58,11 @@ Agent reports contained claims worth checking. These were opened and read direct
 | Flutter Liquid Glass | "Good support announced yesterday" | **Not confirmed.** [flutter.dev/blog](https://flutter.dev/blog) has one September post: Material/Cupertino decoupling (Sep 9). Liquid Glass is *promised*, no API, no date |
 | `ImageFilter.shader` | Backdrop reaches the shader on-GPU | **Confirmed** — [API docs](https://api.flutter.dev/flutter/dart-ui/ImageFilter/ImageFilter.shader.html). First uniform `vec2` = input size, first `sampler2D` filled by the engine. Impeller-only; Y axis flipped on GLES |
 | `drawVertices` on Impeller | Broken on iOS (#127486) | **Closed**, fix landed. Mesh path is open |
-| `liquid_glass_renderer` | "Main Flutter reference" | Core is sound, but dormant since 2026-04, `0.2.0-dev.4`, 16-shape cap, blur artifacts are structural → **write our own** |
-| `duo_motion` | "275 tests, direct basis for the task" | Exists, but **0 stars, 0 forks**. Idea source, not a 1:1 reference |
+| `liquid_glass_renderer` | Suggested as the reference | Correct SDFs and a cached geometry pass; last commit 2026-04, `0.2.0-dev.4`, 16-shape cap. Blur is a separate clipped layer while the shader displaces UVs, so edge samples read outside the clip → **own implementation planned** |
+| `duo_motion` | Suggested as a 1:1 basis | Exists (Apache 2.0, four `.frag` files, no external users yet). Useful for its shader maths; its constants are unverified against the original |
 | `riveo_page_curl` | Page curl works as a fragment shader | **Confirmed** — [340 stars](https://github.com/Rahiche/riveo_page_curl), `page_curl.frag` over a snapshot |
 | gl-transitions | Named "liquid" transitions | **Partly.** `crosswarp`, `WaterDrop`, `Dreamy`, `Fold`, `Rolls`, `BookFlip` exist. `ripple` and `undulatingBurnOut` **do not** |
-| `flutter_tearable_cloth` | Cloth already done | Physics yes (80×60, Verlet, tearing, MIT). Rendering is **lines on CustomPainter** — no widget on the mesh |
+| `flutter_tearable_cloth` | Cloth already solved | Physics yes (80×60, Verlet, tearing, MIT). Rendering draws lines and points via CustomPainter, so a widget is not textured onto the mesh |
 
 ---
 
@@ -191,7 +191,7 @@ specular reuses the same light vector.
 
 - **Cloth** — take the physics from `flutter_tearable_cloth`, write the rendering: `drawVertices`
   with snapshot UVs, plus light baked into vertex colors (`drawVertices` has no lighting, and
-  without it drapery reads as a flat coloured rag).
+  without it drapery reads flat — folds show only as texture distortion, never as shading).
 - **GPU fluid** — the only effect needing true ping-pong. Applying it to *widgets* appears to be
   unexplored. Try **advected noise** first (analytic velocity field, one pass); only go to real
   Navier–Stokes if that falls short. Bloom pairs well: it reveals flow structure, and reuses the
@@ -205,10 +205,10 @@ specular reuses the same light vector.
 **Separate repo:** shaders and materials. They are self-contained — a `.frag` plus a thin
 binding — and this keeps them portable for a possible contribution to
 [fluttershaders.com](https://fluttershaders.com/) (9 shaders there, 7 of them post-process
-filters; no glass, no materials, no composition). Keep all maths in the `.frag` and only
-parameter passing in the binding, so a shader detaches as one file. Note that site's shaders
-are deliberately isolated teaching examples — our strength is composition, which would need
-breaking apart before it made a good contribution.
+filters over an image; glass, materials and composed height fields are not covered). Keep all maths in the `.frag` and only
+parameter passing in the binding, so a shader detaches as one file. That site's shaders are deliberately isolated,
+one technique each — our strength is composition, which would need breaking apart before it
+made a useful contribution there.
 
 **This repo:** staggered spring scroll, and bottom-sheet stretch as its 1D case. It wedges
 between the layout's target position and the painted position, so it belongs inside the
