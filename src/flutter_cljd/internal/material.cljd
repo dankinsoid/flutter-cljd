@@ -1,0 +1,210 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.material
+  "Material controls and their platform-adaptive variants."
+  (:require
+   ["package:flutter/cupertino.dart" :as cup]
+   ["package:flutter/material.dart" :as m]
+   ["package:flutter/services.dart" :as s]
+   [flutter-cljd.core :as c]
+   [flutter-cljd.internal.scaffold :as scf]
+   [flutter-cljd.types :as t]
+   [flutter-cljd.utils :as ut]))
+
+(defn- ^bool? opt-bool [v] (some-> v boolean))
+
+;; --- text field ---
+
+(defn- ^s/TextInputType keyboard-type [k]
+  (if (instance? s/TextInputType k)
+    k
+    (case k
+      :text s/TextInputType.text
+      :multiline s/TextInputType.multiline
+      :number s/TextInputType.number
+      :decimal (s/TextInputType.numberWithOptions .decimal true)
+      :phone s/TextInputType.phone
+      :datetime s/TextInputType.datetime
+      :email s/TextInputType.emailAddress
+      :url s/TextInputType.url
+      :visible-password s/TextInputType.visiblePassword
+      :name s/TextInputType.name
+      :street-address s/TextInputType.streetAddress
+      :none s/TextInputType.none
+      (throw (Exception. (str "Invalid keyboard type: " k))))))
+
+(defn- ^s/TextInputAction text-input-action [a]
+  (if (instance? s/TextInputAction a)
+    a
+    (case a
+      :done s/TextInputAction.done
+      :go s/TextInputAction.go
+      :next s/TextInputAction.next
+      :previous s/TextInputAction.previous
+      :search s/TextInputAction.search
+      :send s/TextInputAction.send
+      :newline s/TextInputAction.newline
+      :none s/TextInputAction.none
+      :unspecified s/TextInputAction.unspecified
+      (throw (Exception. (str "Invalid text input action: " a))))))
+
+(defn- ^s/TextCapitalization text-capitalization [cap]
+  (if (instance? s/TextCapitalization cap)
+    cap
+    (case cap
+      :none s/TextCapitalization.none
+      :words s/TextCapitalization.words
+      :sentences s/TextCapitalization.sentences
+      :characters s/TextCapitalization.characters
+      (throw (Exception. (str "Invalid text capitalization: " cap))))))
+
+(defn- ^m/InputBorder? input-border [b]
+  (cond
+    (nil? b) nil
+    (instance? m/InputBorder b) b
+    (= b :none) m/InputBorder.none
+    (= b :underline) (m/UnderlineInputBorder)
+    (= b :outline) (m/OutlineInputBorder)
+    :else (throw (Exception. (str "Invalid input border: " b " (expected :none, :underline, :outline or an InputBorder)")))))
+
+(def ^:private decoration-keys
+  [:hint :hint-style :label :label-style :helper :error :border :dense
+   :content-padding :filled :fill-color :prefix :suffix :prefix-icon
+   :suffix-icon :counter-text])
+
+(defn ^m/InputDecoration input-decoration [d]
+  (if (instance? m/InputDecoration d)
+    d
+    (let [{:keys [hint hint-style label label-style helper error border dense
+                  content-padding filled fill-color prefix suffix prefix-icon
+                  suffix-icon counter-text]} d]
+      (m/InputDecoration
+       .hintText hint
+       .hintStyle (some-> hint-style t/text-style)
+       .labelText label
+       .labelStyle (some-> label-style t/text-style)
+       .helperText helper
+       .errorText error
+       .border (input-border border)
+       .isDense (opt-bool dense)
+       .contentPadding (some-> content-padding t/insets)
+       .filled (opt-bool filled)
+       .fillColor (some-> fill-color t/color)
+       .prefix prefix
+       .suffix suffix
+       .prefixIcon prefix-icon
+       .suffixIcon suffix-icon
+       .counterText counter-text))))
+
+(defn ^m/Widget text-field* [opts]
+  (let [{:keys [key controller focus-node on-changed on-submitted on-editing-complete
+                on-tap style cursor-color text-align autofocus obscure enabled
+                read-only min-lines max-length]} opts
+        decoration (let [d (:decoration opts)]
+                     (if (instance? m/InputDecoration d)
+                       d
+                       (input-decoration (merge (select-keys opts decoration-keys) d))))]
+    (m/TextField
+     .key (t/widget-key key)
+     .controller controller
+     .focusNode focus-node
+     .onChanged on-changed
+     .onSubmitted on-submitted
+     .onEditingComplete on-editing-complete
+     .onTap on-tap
+     .style (some-> style t/text-style)
+     .cursorColor (some-> cursor-color t/color)
+     .textAlign (if (some? text-align) (t/text-align text-align) m/TextAlign.start)
+     .autofocus (boolean autofocus)
+     .obscureText (boolean obscure)
+     .enabled (opt-bool enabled)
+     .readOnly (boolean read-only)
+     ;; an explicit nil means unbounded lines
+     .maxLines (if (contains? opts :max-lines) (some-> (:max-lines opts) int) 1)
+     .minLines (some-> min-lines int)
+     .maxLength (some-> max-length int)
+     .keyboardType (some-> (:keyboard-type opts) keyboard-type)
+     .textInputAction (some-> (:text-input-action opts) text-input-action)
+     .textCapitalization (text-capitalization (:text-capitalization opts :none))
+     .autocorrect (boolean (:autocorrect opts true))
+     .decoration decoration)))
+
+;; --- switch ---
+
+(defn ^m/Widget switch* [value on-changed opts]
+  (let [{:keys [key active-thumb-color active-track-color inactive-thumb-color
+                inactive-track-color]} opts
+        thumb (some-> (or active-thumb-color (:active-color opts)) t/color)]
+    (if (:adaptive opts true)
+      (m/Switch.adaptive
+       .key (t/widget-key key)
+       .value (boolean value)
+       .onChanged on-changed
+       .activeThumbColor thumb
+       .activeTrackColor (some-> active-track-color t/color)
+       .inactiveThumbColor (some-> inactive-thumb-color t/color)
+       .inactiveTrackColor (some-> inactive-track-color t/color))
+      (m/Switch
+       .key (t/widget-key key)
+       .value (boolean value)
+       .onChanged on-changed
+       .activeThumbColor thumb
+       .activeTrackColor (some-> active-track-color t/color)
+       .inactiveThumbColor (some-> inactive-thumb-color t/color)
+       .inactiveTrackColor (some-> inactive-track-color t/color)))))
+
+;; --- app bar ---
+
+(defn ^m/AppBar app-bar* [opts]
+  (let [{:keys [key title leading actions background-color foreground-color elevation
+                scrolled-under-elevation center-title toolbar-height title-spacing bottom]} opts]
+    (m/AppBar
+     .key (t/widget-key key)
+     .title (if (string? title) (m/Text title) title)
+     .leading leading
+     .automaticallyImplyLeading (boolean (:automatically-imply-leading opts true))
+     .actions (some-> actions ut/flatten-children)
+     .bottom bottom
+     .backgroundColor (some-> background-color t/color)
+     .foregroundColor (some-> foreground-color t/color)
+     .elevation (some-> elevation double)
+     .scrolledUnderElevation (some-> scrolled-under-elevation double)
+     .centerTitle (opt-bool center-title)
+     .toolbarHeight (some-> toolbar-height double)
+     .titleSpacing (some-> title-spacing double))))
+
+;; --- adaptive ---
+
+(defn- adaptive-opts
+  "`[cupertino? opts]` with the platform's `:cupertino`/`:material` overrides
+  merged over the shared options."
+  [opts]
+  (let [cupertino? (and (:adaptive opts true) (c/cupertino?))]
+    [cupertino? (merge (dissoc opts :cupertino :material)
+                       (if cupertino? (:cupertino opts) (:material opts)))]))
+
+(defn ^m/Widget activity-indicator* [opts]
+  (let [[cupertino? {:keys [key color size stroke-width value]}] (adaptive-opts opts)]
+    (if cupertino?
+      (cup/CupertinoActivityIndicator
+       .key (t/widget-key key)
+       .color (some-> color t/color)
+       .radius (if (some? size) (/ (double size) 2.0) 10.0))
+      (let [indicator (m/CircularProgressIndicator
+                       .key (t/widget-key key)
+                       .color (some-> color t/color)
+                       .strokeWidth (some-> stroke-width double)
+                       .value (some-> value double))]
+        (if (some? size)
+          (m/SizedBox .width (double size) .height (double size) .child indicator)
+          indicator)))))
+
+(defn ^m/Widget adaptive-scaffold* [opts body]
+  (let [[cupertino? opts] (adaptive-opts opts)]
+    (if cupertino?
+      (cup/CupertinoPageScaffold
+       .key (t/widget-key (:key opts))
+       .navigationBar (:navigation-bar opts)
+       .backgroundColor (some-> (:background-color opts) t/color)
+       .resizeToAvoidBottomInset (boolean (:resize-to-avoid-bottom-inset opts true))
+       .child body)
+      (scf/scaffold* (dissoc opts :navigation-bar) body))))

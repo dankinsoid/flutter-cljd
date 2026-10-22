@@ -989,3 +989,34 @@
 
 (deftest test-gesture-unknown-key
   (is (thrown? Error (f/gesture {:on-vertical-drag-updat (fn [_] nil)} (m/Text "x")))))
+
+(deftest test-text-field
+  (let [ctrl (m/TextEditingController)
+        widget (f/text-field {:controller ctrl :hint "Search" :border :none :dense true
+                              :cursor-color :red :max-lines nil :min-lines 5})
+        d (.-decoration widget)]
+    (is (instance? m/TextField widget))
+    (is (identical? (.-controller widget) ctrl))
+    (is (= (.-hintText d) "Search"))
+    (is (= (.-border d) m/InputBorder.none))
+    (is (true? (.-isDense d)))
+    (is (nil? (.-maxLines widget)))
+    (is (= (.-minLines widget) 5)))
+  (testing "max-lines defaults to 1; keyboard type"
+    (let [widget (f/text-field :keyboard-type :email :text-input-action :search)]
+      (is (= (.-maxLines widget) 1))
+      (is (= (.-keyboardType widget) m/TextInputType.emailAddress))
+      (is (= (.-textInputAction widget) m/TextInputAction.search)))))
+
+(deftest test-switch
+  (let [widget (f/switch true (fn [_] nil) :adaptive false :active-track-color :green)]
+    (is (instance? m/Switch widget))
+    (is (true? (.-value widget)))
+    (is (some? (.-activeTrackColor widget)))))
+
+(deftest test-app-bar
+  (let [widget (f/app-bar :title "Settings" :elevation 0 :actions [(m/Text "a") nil])]
+    (is (instance? m/AppBar widget))
+    (is (instance? m/Text (.-title widget)))
+    (is (= (.-elevation widget) 0.0))
+    (is (= (count (.-actions widget)) 1))))

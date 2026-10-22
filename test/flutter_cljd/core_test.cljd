@@ -6,7 +6,10 @@
    ["package:flutter/foundation.dart" :as fd]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter_test/flutter_test.dart" :as ft]
-   [flutter-cljd.core :as c]))
+   ["package:flutter/cupertino.dart" :as cup]
+   ["package:flutter/material.dart" :as m]
+   [flutter-cljd.core :as c]
+   [flutter-cljd.widgets :as f]))
 
 (def ^:private probe-key (w/ValueKey "probe"))
 
@@ -82,3 +85,16 @@
     (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.iOS)
     (is (true? (c/cupertino?)))
     (set! fd/debugDefaultTargetPlatformOverride nil)))
+
+(deftest adaptive-widgets-follow-platform
+  (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.iOS)
+  (let [ind (f/activity-indicator {:size 28 :material {:stroke-width 3}})]
+    (is (instance? cup/CupertinoActivityIndicator ind))
+    (is (= (.-radius ind) 14.0)))
+  (is (instance? cup/CupertinoPageScaffold (f/adaptive-scaffold {:background-color :black} (w/SizedBox))))
+  (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.android)
+  (let [ind (f/activity-indicator {:cupertino {:size 28} :material {:stroke-width 3}})]
+    (is (instance? m/CircularProgressIndicator ind))
+    (is (= (.-strokeWidth ind) 3.0)))
+  (is (instance? m/Scaffold (f/adaptive-scaffold {:background-color :black} (w/SizedBox))))
+  (set! fd/debugDefaultTargetPlatformOverride nil))

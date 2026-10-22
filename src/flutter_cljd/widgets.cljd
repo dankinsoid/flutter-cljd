@@ -77,6 +77,7 @@
    [flutter-cljd.internal.custom-paint :as cpt]
    [flutter-cljd.internal.gestures :as gst]
    [flutter-cljd.internal.on-screen-open :as oso]
+   [flutter-cljd.internal.material :as mat]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -3550,3 +3551,117 @@ Options: `:behavior` — `:defer-to-child` (default), `:opaque`, or
   [& args]
   (let [[opts child] (ut/key-values-and-child args)]
     (gst/pointer-listener* opts child)))
+
+;; ---- Material & adaptive controls ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget text-field
+  "A Material text input.
+
+Options (a map or key-value pairs):
+
+- `:controller` — a `TextEditingController` (owns the text; create it with
+  `:managed`); `:focus-node`
+- `:on-changed` `(fn [text])`, `:on-submitted` `(fn [text])`,
+  `:on-editing-complete` `(fn [])`, `:on-tap` `(fn [])`
+- `:style` — any `text-style` value; `:cursor-color`; `:text-align`
+- `:max-lines` — default 1; an explicit `nil` grows without bound;
+  `:min-lines`, `:max-length`
+- `:keyboard-type` — `:text`, `:multiline`, `:number`, `:decimal`, `:phone`,
+  `:datetime`, `:email`, `:url`, `:visible-password`, `:name`,
+  `:street-address`, `:none` (or a `TextInputType`)
+- `:text-input-action` — `:done`, `:go`, `:next`, `:previous`, `:search`,
+  `:send`, `:newline`, …; `:text-capitalization` — `:none`, `:words`,
+  `:sentences`, `:characters`
+- `:autofocus`, `:obscure`, `:enabled`, `:read-only`, `:autocorrect` (default true)
+- decoration — top-level shortcuts or a `:decoration` map (or an
+  `InputDecoration`): `:hint`, `:hint-style`, `:label`, `:label-style`,
+  `:helper`, `:error`, `:border` (`:none`, `:underline`, `:outline` or an
+  `InputBorder`), `:dense`, `:content-padding`, `:filled`, `:fill-color`,
+  `:prefix`, `:suffix`, `:prefix-icon`, `:suffix-icon`, `:counter-text`
+- `:key`
+
+```clojure
+(text-field {:controller ctrl
+             :on-changed #(swap! state assoc :query %)
+             :hint \"Search\" :border :none :dense true
+             :style {:size 15 :color :white}})
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/material/TextField-class.html)"
+  [& args]
+  (mat/text-field* (ut/key-values-map args)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget switch
+  "An on/off toggle. `on-changed` `(fn [new-value])`; `nil` disables it.
+
+Adaptive by default: Cupertino-styled where `flutter-cljd.core/cupertino?`
+(iOS/macOS), Material elsewhere; `:adaptive false` forces Material.
+
+Options: `:adaptive`, `:active-thumb-color` (alias `:active-color`),
+`:active-track-color`, `:inactive-thumb-color`, `:inactive-track-color`, `:key`.
+
+```clojure
+(switch on? #(reset! on-atom %))
+(switch on? on-change :adaptive false :active-track-color :green)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/material/Switch-class.html)"
+  [value on-changed & args]
+  (mat/switch* value on-changed (ut/key-values-map args)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget app-bar
+  "A Material app bar, for `scaffold`'s `:app-bar`.
+
+Options: `:title` (string or widget), `:leading`, `:actions` (widgets),
+`:automatically-imply-leading` (default true — a back button when the route
+can pop), `:background-color`, `:foreground-color` (title, icons),
+`:elevation`, `:scrolled-under-elevation`, `:center-title`, `:toolbar-height`,
+`:title-spacing`, `:bottom` (a `PreferredSizeWidget`), `:key`.
+
+```clojure
+(scaffold :app-bar (app-bar :title \"Settings\" :elevation 0) body)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/material/AppBar-class.html)"
+  [& args]
+  (mat/app-bar* (ut/key-values-map args)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget activity-indicator
+  "An indeterminate busy spinner: `CupertinoActivityIndicator` where
+`flutter-cljd.core/cupertino?`, `CircularProgressIndicator` elsewhere.
+
+Options:
+
+- `:color` — any `color` value
+- `:size` — diameter; Cupertino default 20, Material default its theme's
+- `:stroke-width` — Material only
+- `:value` — `0..1` makes the Material indicator determinate
+- `:adaptive` — `false` forces Material
+- `:cupertino`, `:material` — option maps merged over the shared ones on that
+  platform only, e.g. `{:cupertino {:size 28} :material {:stroke-width 3}}`
+- `:key`
+
+[Flutter docs](https://api.flutter.dev/flutter/cupertino/CupertinoActivityIndicator-class.html)"
+  [& args]
+  (mat/activity-indicator* (ut/key-values-map args)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget adaptive-scaffold
+  "A page scaffold: `CupertinoPageScaffold` where `flutter-cljd.core/cupertino?`,
+Material `scaffold` elsewhere. The trailing child is the body.
+
+Options: `:background-color`, `:resize-to-avoid-bottom-inset`, `:key`;
+Cupertino: `:navigation-bar` (an `ObstructingPreferredSizeWidget`); Material:
+every `scaffold` option. `:cupertino`/`:material` maps merge over the shared
+options on that platform only; `:adaptive false` forces Material.
+
+```clojure
+(adaptive-scaffold {:background-color :black} body)
+```"
+  [& args]
+  (let [[opts body] (ut/key-values-and-child args)]
+    (mat/adaptive-scaffold* opts body)))
