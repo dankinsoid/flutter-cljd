@@ -76,6 +76,7 @@
    [flutter-cljd.internal.image :as img]
    [flutter-cljd.internal.custom-paint :as cpt]
    [flutter-cljd.internal.gestures :as gst]
+   [flutter-cljd.internal.on-screen-open :as oso]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -2399,6 +2400,31 @@ Args:
      (when (not= :resumed state)
        (action)))
    child))
+
+;; @ai-generated(solo)
+(defn ^w/Widget on-screen-open
+  "Calls `on-open` (no args) each time the screen around `child` opens for the
+user — on mount, when an opaque route covering it pops, and when the app
+returns to the foreground while it is the top route — so screen-view
+analytics count re-entries, not just mounts. Wrap a screen's root.
+
+A screen is open when its route is the top route, onstage, and the app is in
+the foreground. Sheets and dialogs (non-opaque routes) on top don't close it:
+dismissing them doesn't fire. Firing runs post-frame and coalesces several
+rebuilds in one frame into one call.
+
+Options (leading map):
+
+- `:id` — what the screen shows; a change fires again while open (e.g. a
+  detail screen switching items in place).
+- `:once?` — fire on the first open only.
+
+```clojure
+(on-screen-open #(track! :home-viewed) home)
+(on-screen-open {:id playlist-id} #(track! :playlist-viewed playlist-id) page)
+```"
+  ([on-open child] (oso/on-screen-open* {} on-open child))
+  ([opts on-open child] (oso/on-screen-open* (or opts {}) on-open child)))
 
 (defn ^w/Widget observe-visibility
   "A widget that calls a function when the widget's visibility changes.

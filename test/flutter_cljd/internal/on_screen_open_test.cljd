@@ -1,0 +1,54 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.on-screen-open-test
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget app [^w/Widget home]
+  (w/Directionality
+   .textDirection ui/TextDirection.ltr
+   .child
+   (w/Navigator
+    .onGenerateRoute (fn [settings]
+                       (w/PageRouteBuilder
+                        .settings settings
+                        .pageBuilder (fn [_ _ _] home))))))
+
+(defn- push-opaque! [^ft/WidgetTester tester]
+  (let [^w/NavigatorState nav (.state tester (ft/find.byType w/Navigator))]
+    (.push nav (w/PageRouteBuilder .pageBuilder (fn [_ _ _] (w/SizedBox.expand))))
+    nil))
+
+(defn- pop! [^ft/WidgetTester tester]
+  (let [^w/NavigatorState nav (.state tester (ft/find.byType w/Navigator))]
+    (.pop nav)
+    nil))
+
+(deftest fires-on-mount-and-uncover
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [opens (atom 0)]
+    (await (.pumpWidget tester (app (f/on-screen-open #(swap! opens inc) (w/SizedBox.expand)))))
+    (await (.pump tester))
+    (is (= 1 @opens) "mount")
+    (push-opaque! tester)
+    (await (.pumpAndSettle tester))
+    (is (= 1 @opens) "covered: no fire")
+    (pop! tester)
+    (await (.pumpAndSettle tester))
+    (is (= 2 @opens) "uncovered")))
+
+(deftest once-fires-only-the-first-time
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [opens (atom 0)]
+    (await (.pumpWidget tester (app (f/on-screen-open {:once? true} #(swap! opens inc) (w/SizedBox.expand)))))
+    (await (.pump tester))
+    (push-opaque! tester)
+    (await (.pumpAndSettle tester))
+    (pop! tester)
+    (await (.pumpAndSettle tester))
+    (is (= 1 @opens))))

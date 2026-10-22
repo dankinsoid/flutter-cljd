@@ -1,0 +1,81 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.on-screen-open
+  "`on-screen-open`: a callback per time the screen around it opens for the
+  user, so screen-open analytics count re-entries, not just mounts (the iOS
+  `onScreenOpen` / `viewDidAppear` model).
+
+  A screen is OPEN when its route is the navigator's top route
+  (`ModalRoute.isCurrentOf`), the route is onstage (`TickerMode` — the Overlay
+  disables it for routes buried under an opaque route), and the app is in the
+  foreground (lifecycle `inactive`/`resumed`). The callback fires once per:
+    - mount (or `:id` change), as soon as the screen is open;
+    - uncover: an opaque route on top popped and the screen is top again;
+    - resume: the app came back from `hidden`/`paused` while the screen is top.
+  Non-opaque routes on top (sheets, dialogs) don't hide the screen: their
+  dismissal doesn't re-fire. A resume while such a route is on top is dropped,
+  not deferred to its dismissal — only the top route counts a resume.
+
+  Firing runs post-frame, so several rebuilds within one frame (e.g. an `:id`
+  swap right after mount) collapse into one call with the latest callback."
+  (:require
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   [cljd.flutter :as f]
+   [flutter-cljd.internal.lifecycle-observer :as lco]))
+
+(defn- background?
+  ;; nil before the platform reports a state (cold start) — foreground
+  []
+  (let [s (.-lifecycleState w/WidgetsBinding.instance)]
+    (or (= s ui/AppLifecycleState.hidden)
+        (= s ui/AppLifecycleState.paused)
+        (= s ui/AppLifecycleState.detached))))
+
+(defn- check!
+  "Fires the latest callback if the screen is armed and open, consuming a
+  pending resume either way. Idempotent: the post-frame check and the
+  lifecycle callback may both run it for the same resume."
+  [st*]
+  (let [st @st*]
+    (when-not (or (:disposed? st) (background?))
+      (let [open? (and (:visible? st) (:current? st))
+            armed? (or (:armed? st) (and open? (:resume-pending? st)))
+            fire? (and armed? open? (not (and (:once? st) (:fired? st))))]
+        (swap! st* assoc :resume-pending? false)
+        (when fire?
+          (swap! st* assoc :armed? false :fired? true)
+          ((:on-open st))))))
+  nil)
+
+(defn- on-lifecycle [st* state]
+  (case state
+    (:hidden :paused :detached) (swap! st* assoc :resume-pending? true)
+    (check! st*))
+  nil)
+
+(defn- dispose-state
+  ;; :dispose threads the managed value into this (`->`), so it must be a named fn
+  [st*]
+  (swap! st* assoc :disposed? true)
+  nil)
+
+(defn ^w/Widget on-screen-open* [{:keys [id once?]} on-open child]
+  (f/widget
+   :context ctx
+   :managed [st* (atom {:armed? true :id id}) :dispose dispose-state]
+   (let [;; nil outside any route (previews, tests) — treat as top
+         current? (not (false? (w/ModalRoute.isCurrentOf ctx)))
+         visible? (w/TickerMode.of ctx)
+         st (swap! st* (fn [st]
+                         (cond-> (assoc st
+                                        :on-open on-open
+                                        :once? once?
+                                        :current? current?
+                                        :visible? visible?)
+                           (not= id (:id st)) (assoc :id id :armed? true)
+                           ;; buried under an opaque route: the next uncover is an open
+                           (not visible?) (assoc :armed? true))))]
+     (when (or (:armed? st) (:resume-pending? st))
+       (.addPostFrameCallback w/WidgetsBinding.instance
+                              (fn [_] (check! st*) nil)))
+     (lco/LifeCycleObserver (fn [state] (on-lifecycle st* state)) child))))
