@@ -986,3 +986,6 @@
   (is (thrown? Exception (f/intrinsic :depth (m/Text "x"))))
   (is (true? (.-offstage (f/offstage (m/Text "x")))))
   (is (false? (.-offstage (f/offstage false (m/Text "x"))))))
+
+(deftest test-gesture-unknown-key
+  (is (thrown? Error (f/gesture {:on-vertical-drag-updat (fn [_] nil)} (m/Text "x")))))

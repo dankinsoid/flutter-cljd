@@ -1,0 +1,48 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.gestures-test
+  "gesture/pointer-listener forward user callbacks to the recognizers."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(def ^:private box-key (w/ValueKey "box"))
+
+(defn- ^w/Widget host [^w/Widget child]
+  (w/Directionality
+   .textDirection ui/TextDirection.ltr
+   .child (w/Align .alignment w/Alignment.topLeft .child child)))
+
+(defn- ^w/Widget box []
+  (w/Container .key box-key .width 200.0 .height 200.0 .color (ui/Color 0xFF00FF00)))
+
+(deftest vertical-drag-callbacks-fire
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [log (atom [])]
+    (await (.pumpWidget
+            tester
+            (host (f/gesture {:on-vertical-drag-start (fn [_] (swap! log conj :start))
+                              :on-vertical-drag-update (fn [d] (swap! log conj (.-dy (.-delta d))))
+                              :on-vertical-drag-end (fn [_] (swap! log conj :end))}
+                             (box)))))
+    (await (.drag tester (ft/find.byKey box-key) (ui/Offset 0.0 80.0)))
+    (await (.pump tester))
+    (is (= :start (first @log)))
+    (is (= :end (last @log)))
+    (is (pos? (reduce + (filter number? @log))))))
+
+(deftest pointer-listener-observes
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [log (atom [])]
+    (await (.pumpWidget
+            tester
+            (host (f/pointer-listener :behavior :translucent
+                                      :on-down (fn [_] (swap! log conj :down))
+                                      :on-up (fn [_] (swap! log conj :up))
+                                      (box)))))
+    (await (.tap tester (ft/find.byKey box-key)))
+    (is (= [:down :up] @log))))

@@ -75,6 +75,7 @@
    [flutter-cljd.internal.semantics :as sem]
    [flutter-cljd.internal.image :as img]
    [flutter-cljd.internal.custom-paint :as cpt]
+   [flutter-cljd.internal.gestures :as gst]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -3416,3 +3417,65 @@ e.g. inactive tabs that must keep their state. Animations inside keep ticking.
   ([child] (offstage true child))
   ([hidden child]
    (w/Offstage .offstage (boolean hidden) .child child)))
+
+;; ---- Gestures & pointers ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget gesture
+  "Recognizes gestures on `child` — drags, pans, scales, raw taps. For a tappable
+control prefer `button` (feedback, focus, semantics, enabled state); reach for
+`gesture` for drags and custom interactions.
+
+Callbacks (a map or key-value pairs before the child), each receiving Flutter's
+details object (`.-delta`, `.-globalPosition`, `.-velocity`, …) or nothing:
+
+- taps: `:on-tap-down`, `:on-tap-up`, `:on-tap`, `:on-tap-cancel`,
+  `:on-secondary-tap(-down/-up/-cancel)`, `:on-double-tap(-down/-cancel)`
+- long press: `:on-long-press(-down/-cancel/-start/-move-update/-up/-end)`
+- `:on-vertical-drag-down`, `-start`, `-update`, `-end`, `-cancel`
+- `:on-horizontal-drag-down`, `-start`, `-update`, `-end`, `-cancel`
+- `:on-pan-down`, `-start`, `-update`, `-end`, `-cancel` (either axis)
+- `:on-scale-start`, `-update`, `-end` (pinch; a superset of pan — don't
+  combine with pan callbacks)
+
+Options: `:behavior` (`:defer-to-child` default, `:opaque`, `:translucent`),
+`:exclude-from-semantics`, `:drag-start-behavior` (`:start`/`:down`), `:key`.
+An unknown key asserts, so a misspelled callback doesn't silently vanish.
+
+Recognizers compete in the gesture arena with ancestors' and descendants' —
+e.g. a vertical drag here loses to a vertical scroll view inside `child` over
+the scroll view's area.
+
+```clojure
+(gesture {:on-vertical-drag-update (fn [d] (swap! offset + (.-dy (.-delta d))))
+          :on-vertical-drag-end (fn [d] (settle! (.-dy (.-pixelsPerSecond (.-velocity d)))))}
+  sheet)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/GestureDetector-class.html)"
+  [& args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (gst/gesture* opts child)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget pointer-listener
+  "Observes raw pointer events over `child` without entering the gesture arena,
+so it never steals a gesture from anything else.
+
+Callbacks (each receives the `PointerEvent`): `:on-down`, `:on-move`, `:on-up`,
+`:on-cancel`, `:on-hover` (mouse without buttons), `:on-signal` (scroll wheel),
+`:on-pan-zoom-start`/`-update`/`-end` (trackpad).
+
+Options: `:behavior` — `:defer-to-child` (default), `:opaque`, or
+`:translucent` (observe and let the events reach what is behind), `:key`.
+
+```clojure
+(pointer-listener {:behavior :translucent
+                   :on-down (fn [e] (record! (.-position e)))}
+  app)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Listener-class.html)"
+  [& args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (gst/pointer-listener* opts child)))

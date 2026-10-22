@@ -1,0 +1,72 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.gestures
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+(def gesture-keys
+  "Every callback key `gesture` forwards to `GestureDetector`."
+  #{:on-tap-down :on-tap-up :on-tap :on-tap-cancel :on-secondary-tap :on-secondary-tap-down :on-secondary-tap-up :on-secondary-tap-cancel :on-double-tap-down :on-double-tap :on-double-tap-cancel :on-long-press-down :on-long-press-cancel :on-long-press :on-long-press-start :on-long-press-move-update :on-long-press-up :on-long-press-end :on-vertical-drag-down :on-vertical-drag-start :on-vertical-drag-update :on-vertical-drag-end :on-vertical-drag-cancel :on-horizontal-drag-down :on-horizontal-drag-start :on-horizontal-drag-update :on-horizontal-drag-end :on-horizontal-drag-cancel :on-pan-down :on-pan-start :on-pan-update :on-pan-end :on-pan-cancel :on-scale-start :on-scale-update :on-scale-end})
+
+(defn ^w/Widget gesture* [opts child]
+  (let [unknown (remove (into gesture-keys [:key :behavior :exclude-from-semantics :drag-start-behavior])
+                        (keys opts))]
+    ;; a misspelled callback would otherwise be dropped silently
+    (assert (empty? unknown) (str "gesture: unknown options " (vec unknown)))
+    (w/GestureDetector
+     .key (t/widget-key (:key opts))
+     .onTapDown (:on-tap-down opts)
+     .onTapUp (:on-tap-up opts)
+     .onTap (:on-tap opts)
+     .onTapCancel (:on-tap-cancel opts)
+     .onSecondaryTap (:on-secondary-tap opts)
+     .onSecondaryTapDown (:on-secondary-tap-down opts)
+     .onSecondaryTapUp (:on-secondary-tap-up opts)
+     .onSecondaryTapCancel (:on-secondary-tap-cancel opts)
+     .onDoubleTapDown (:on-double-tap-down opts)
+     .onDoubleTap (:on-double-tap opts)
+     .onDoubleTapCancel (:on-double-tap-cancel opts)
+     .onLongPressDown (:on-long-press-down opts)
+     .onLongPressCancel (:on-long-press-cancel opts)
+     .onLongPress (:on-long-press opts)
+     .onLongPressStart (:on-long-press-start opts)
+     .onLongPressMoveUpdate (:on-long-press-move-update opts)
+     .onLongPressUp (:on-long-press-up opts)
+     .onLongPressEnd (:on-long-press-end opts)
+     .onVerticalDragDown (:on-vertical-drag-down opts)
+     .onVerticalDragStart (:on-vertical-drag-start opts)
+     .onVerticalDragUpdate (:on-vertical-drag-update opts)
+     .onVerticalDragEnd (:on-vertical-drag-end opts)
+     .onVerticalDragCancel (:on-vertical-drag-cancel opts)
+     .onHorizontalDragDown (:on-horizontal-drag-down opts)
+     .onHorizontalDragStart (:on-horizontal-drag-start opts)
+     .onHorizontalDragUpdate (:on-horizontal-drag-update opts)
+     .onHorizontalDragEnd (:on-horizontal-drag-end opts)
+     .onHorizontalDragCancel (:on-horizontal-drag-cancel opts)
+     .onPanDown (:on-pan-down opts)
+     .onPanStart (:on-pan-start opts)
+     .onPanUpdate (:on-pan-update opts)
+     .onPanEnd (:on-pan-end opts)
+     .onPanCancel (:on-pan-cancel opts)
+     .onScaleStart (:on-scale-start opts)
+     .onScaleUpdate (:on-scale-update opts)
+     .onScaleEnd (:on-scale-end opts)
+     .behavior (some-> (:behavior opts) t/hit-test-behavior)
+     .excludeFromSemantics (boolean (:exclude-from-semantics opts))
+     .dragStartBehavior (t/drag-start-behavior (:drag-start-behavior opts :start))
+     .child child)))
+
+(defn ^w/Widget pointer-listener* [opts child]
+  (w/Listener
+   .key (t/widget-key (:key opts))
+   .onPointerDown (:on-down opts)
+   .onPointerMove (:on-move opts)
+   .onPointerUp (:on-up opts)
+   .onPointerCancel (:on-cancel opts)
+   .onPointerHover (:on-hover opts)
+   .onPointerSignal (:on-signal opts)
+   .onPointerPanZoomStart (:on-pan-zoom-start opts)
+   .onPointerPanZoomUpdate (:on-pan-zoom-update opts)
+   .onPointerPanZoomEnd (:on-pan-zoom-end opts)
+   .behavior (t/hit-test-behavior (:behavior opts :defer-to-child))
+   .child child))
