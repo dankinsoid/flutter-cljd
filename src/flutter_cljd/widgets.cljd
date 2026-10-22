@@ -71,6 +71,8 @@
    [flutter-cljd.internal.sliver-collection :as scol]
    [flutter-cljd.internal.collection.layout :as clay]
    [flutter-cljd.internal.collection.box :as cbox]
+   [flutter-cljd.internal.semantics :as sem]
+   [flutter-cljd.internal.image :as img]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -3085,3 +3087,178 @@ Overscan (velocity-scaled directional read-ahead, on by default):
 Keep-alive: `:auto-keep-alive` (default `true`)"
   [& args]
   (scol/sliver-collection* args))
+
+;; ---- Icons & images ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget icon
+  "A glyph from an icon font (`IconData`, e.g. `m/Icons.search`).
+
+Options (a map or key-value pairs after the icon):
+
+- `:key`
+- `:size` — number. Defaults to the ambient `IconTheme` (24).
+- `:color` — any `color` value. Defaults to the ambient `IconTheme`.
+- `:semantic-label` — string announced by screen readers; without it the icon
+  is invisible to them.
+- `:fill`, `:weight`, `:grade`, `:optical-size` — variable-font axes (Material
+  Symbols).
+- `:text-direction` — `:ltr`/`:rtl`; mirrors icons with `matchTextDirection`.
+
+```clojure
+(icon m/Icons.search)
+(icon m/Icons.error_outline :size 14 :color :red)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Icon-class.html)"
+  [icon-data & args]
+  (let [{:keys [key size color semantic-label fill weight grade optical-size text-direction]}
+        (ut/key-values-map args)]
+    (w/Icon
+     icon-data
+     .key (t/widget-key key)
+     .size (some-> size double)
+     .color (some-> color t/color)
+     .semanticLabel semantic-label
+     .fill (some-> fill double)
+     .weight (some-> weight double)
+     .grade (some-> grade double)
+     .opticalSize (some-> optical-size double)
+     .textDirection (some-> text-direction t/text-direction))))
+
+;; @ai-generated(solo)
+(defn ^w/Widget image
+  "Displays an image.
+
+`src` is anything `flutter-cljd.types/image-provider` accepts: an
+`ImageProvider`, an asset path, an `http(s)://` URL, or a
+`{:asset|:network|:memory …}` map.
+
+Options (a map or key-value pairs after `src`):
+
+- `:key`
+- `:width`, `:height` — numbers; omitted sides take the image's natural size.
+- `:fit` — `:cover`, `:contain`, `:fill`, `:fit-width`, `:fit-height`, `:none`,
+  `:scale-down` (see `box-fit`).
+- `:alignment` — any `alignment` value, default `:center`.
+- `:placeholder` — widget (or `(fn [ctx])`) shown until the first frame
+  decodes; cache hits skip it.
+- `:error` — widget or `(fn [ctx error])` shown when loading fails.
+- `:semantic-label`, `:exclude-from-semantics`
+- `:color` + `:blend-mode` — tint.
+- `:repeat` — `:x`, `:y`, `:xy` (or `true`).
+- `:filter-quality` — `:none`, `:low`, `:medium` (default), `:high`.
+- `:gapless-playback` — keep the old image while a new `src` loads.
+
+```clojure
+(image \"assets/cover.png\" :fit :cover)
+(image \"https://example.com/a.png\"
+       {:width 48 :height 48 :fit :cover
+        :placeholder (colored :grey)
+        :error (icon m/Icons.broken_image)})
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Image-class.html)"
+  [src & args]
+  (img/image* src (ut/key-values-map args)))
+
+;; ---- Accessibility ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget semantics
+  "Annotates `child` for screen readers and other accessibility tools.
+
+Options (a map or key-value pairs before the child; all optional):
+
+- `:label`, `:value`, `:hint`, `:tooltip` — strings announced for the node.
+- `:button`, `:header`, `:link`, `:image`, `:text-field`, `:hidden`,
+  `:obscured`, `:read-only`, `:live-region` — role/state flags (booleans).
+- `:enabled`, `:selected`, `:checked`, `:toggled`, `:focusable`, `:focused` —
+  state flags; omitted means \"not applicable\", not false.
+- `:on-tap`, `:on-long-press` — accessibility actions.
+- `:container` — start a new semantics node instead of annotating the
+  enclosing one.
+- `:merge` — merge the whole subtree (this node and descendants) into one node
+  read as a unit (`MergeSemantics`), e.g. an icon + text tile.
+- `:exclude-children` — drop the descendants' semantics, keeping only this
+  node's annotations.
+- `:explicit-child-nodes` — keep descendants as separate child nodes.
+- `:sort-key` — number (traversal order) or a `SemanticsSortKey`.
+- `:identifier` — a stable id for UI tests (not announced).
+
+```clojure
+(semantics {:header true} (text \"Settings\"))
+(semantics {:button true :enabled false :label \"Play\" :merge true} tile)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Semantics-class.html)"
+  [& args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (sem/semantics* opts child)))
+
+(defn ^w/Widget merge-semantics
+  "Merges the semantics of `child`'s whole subtree into one node, read as a unit.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/MergeSemantics-class.html)"
+  [child]
+  (w/MergeSemantics .child child))
+
+(defn ^w/Widget exclude-semantics
+  "Hides `child`'s subtree from accessibility tools (when `excluding`, default
+true) — e.g. decorative images or text duplicated by a parent label.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ExcludeSemantics-class.html)"
+  ([child] (exclude-semantics true child))
+  ([excluding child]
+   (w/ExcludeSemantics .excluding (boolean excluding) .child child)))
+
+;; ---- Effects ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget backdrop-filter
+  "Applies an image filter to everything already painted BEHIND `child` (the
+backdrop), within this widget's bounds — frosted glass, not a blur of `child`
+itself.
+
+The filter is anything `flutter-cljd.types/image-filter` accepts, given
+directly or as `:filter`; `:blur` is a shortcut for a gaussian blur sigma.
+
+Options:
+
+- `:filter` — an image filter value.
+- `:blur` — blur sigma (number or `[x y]`), with optional `:tile-mode`.
+- `:blend-mode` — how the filtered backdrop is composited, default `:src-over`.
+- `:enabled` — `false` skips filtering (keeps the layer), default true.
+- `:key`
+
+The filter covers the nearest ancestor clip — wrap in `clip-rect` or
+`clip-corners` to bound it to a shape, otherwise it may filter the whole
+layer behind.
+
+```clojure
+(clip-corners 16 (backdrop-filter {:blur 20} (colored :transparent)))
+(backdrop-filter (t/image-filter {:dilate 2}) child)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/BackdropFilter-class.html)"
+  [arg0 & args]
+  (let [[opts child] (if (or (map? arg0) (keyword? arg0))
+                       (ut/key-values-and-child (cons arg0 args))
+                       [{:filter arg0} (first args)])
+        spec (cond
+               (contains? opts :filter) (:filter opts)
+               (contains? opts :blur) (select-keys opts [:blur :tile-mode])
+               :else (throw (Exception. (str "backdrop-filter: expected :filter or :blur, got " opts))))]
+    (w/BackdropFilter
+     .key (t/widget-key (:key opts))
+     .filter (t/image-filter spec)
+     .blendMode (t/blend-mode (:blend-mode opts :src-over))
+     .enabled (boolean (:enabled opts true))
+     .child child)))
+
+(defn ^w/Widget backdrop-blur
+  "Gaussian-blurs the backdrop behind `child` by `sigma` (number or `[x y]`).
+Shorthand for `(backdrop-filter {:blur sigma} child)` — see there for clipping.
+Figma's background-blur radius maps to roughly this sigma."
+  [sigma child]
+  (backdrop-filter {:blur sigma} child))

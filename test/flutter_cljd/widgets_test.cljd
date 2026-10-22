@@ -863,3 +863,58 @@
 
   (testing "missing builder throws"
     (is (thrown? Exception (f/collection 3)))))
+
+(deftest test-icon
+  (let [widget (f/icon m/Icons.search :size 14 :color :red :semantic-label "Search")]
+    (is (instance? m/Icon widget))
+    (is (= (.-icon widget) m/Icons.search))
+    (is (= (.-size widget) 14.0))
+    (is (= (.-color widget) (t/color :red)))
+    (is (= (.-semanticLabel widget) "Search")))
+  (testing "theme defaults stay unset"
+    (let [widget (f/icon m/Icons.search)]
+      (is (nil? (.-size widget)))
+      (is (nil? (.-color widget))))))
+
+(deftest test-image
+  (let [widget (f/image "assets/a.png" :fit :cover :width 10 :height 20)]
+    (is (instance? m/Image widget))
+    (is (instance? m/AssetImage (.-image widget)))
+    (is (= (.-fit widget) m/BoxFit.cover))
+    (is (= (.-width widget) 10.0))
+    (is (= (.-height widget) 20.0))
+    (is (nil? (.-frameBuilder widget)))
+    (is (nil? (.-errorBuilder widget))))
+  (testing "placeholder and error install builders"
+    (let [widget (f/image "https://example.com/a.png"
+                          {:placeholder (m/Text "…") :error (m/Text "!")})]
+      (is (instance? m/NetworkImage (.-image widget)))
+      (is (some? (.-frameBuilder widget)))
+      (is (some? (.-errorBuilder widget))))))
+
+(deftest test-semantics
+  (testing "flags and label"
+    (let [widget (f/semantics {:button true :enabled false :label "Play"} (m/Text "x"))
+          props (.-properties widget)]
+      (is (instance? m/Semantics widget))
+      (is (true? (.-button props)))
+      (is (false? (.-enabled props)))
+      (is (= (.-label props) "Play"))
+      (is (nil? (.-header props)))))
+  (testing ":merge wraps in MergeSemantics"
+    (let [widget (f/semantics :header true :merge true (m/Text "x"))]
+      (is (instance? m/MergeSemantics widget))
+      (is (true? (.-header (.-properties (.-child widget)))))))
+  (testing "exclude-semantics"
+    (is (true? (.-excluding (f/exclude-semantics (m/Text "x")))))
+    (is (false? (.-excluding (f/exclude-semantics false (m/Text "x")))))))
+
+(deftest test-backdrop-filter
+  (let [widget (f/backdrop-blur 5 (m/Text "x"))]
+    (is (instance? m/BackdropFilter widget))
+    (is (= (.-filter widget) (t/image-filter 5)))
+    (is (true? (.-enabled widget))))
+  (let [widget (f/backdrop-filter {:filter {:dilate 2} :enabled false} (m/Text "x"))]
+    (is (= (.-filter widget) (t/image-filter {:dilate 2})))
+    (is (false? (.-enabled widget))))
+  (is (thrown? Exception (f/backdrop-filter {:color :red} (m/Text "x")))))

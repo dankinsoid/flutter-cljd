@@ -1,0 +1,43 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.image
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+(defn- ^w/ImageRepeat image-repeat [r]
+  (cond
+    (instance? w/ImageRepeat r) r
+    (or (nil? r) (false? r)) w/ImageRepeat.noRepeat
+    :else (case r
+            :x w/ImageRepeat.repeatX
+            :y w/ImageRepeat.repeatY
+            (true :xy) w/ImageRepeat.repeat
+            (throw (Exception. (str "Invalid image repeat: " r " (expected :x, :y, :xy or false)"))))))
+
+(defn ^w/Widget image* [src opts]
+  (let [{:keys [key width height fit alignment placeholder error semantic-label
+                exclude-from-semantics color blend-mode repeat filter-quality
+                gapless-playback]} opts]
+    (w/Image
+     .key (t/widget-key key)
+     .image (t/image-provider src)
+     .width (some-> width double)
+     .height (some-> height double)
+     .fit (t/box-fit fit)
+     .alignment (if (some? alignment) (t/alignment-geometry alignment) w/Alignment.center)
+     .semanticLabel semantic-label
+     .excludeFromSemantics (boolean exclude-from-semantics)
+     .color (some-> color t/color)
+     .colorBlendMode (some-> blend-mode t/blend-mode)
+     .repeat (image-repeat repeat)
+     .filterQuality (t/filter-quality (or filter-quality :medium))
+     .gaplessPlayback (boolean gapless-playback)
+     ;; frame is nil until the first decoded frame; was-sync is true for cache hits
+     .frameBuilder (when (some? placeholder)
+                     (fn [ctx ^w/Widget child ^int? frame ^bool was-sync]
+                       ^w/Widget (if (or was-sync (some? frame))
+                                   child
+                                   (if (fn? placeholder) (placeholder ctx) placeholder))))
+     .errorBuilder (when (some? error)
+                     (fn [ctx err _stack]
+                       ^w/Widget (if (fn? error) (error ctx err) error))))))

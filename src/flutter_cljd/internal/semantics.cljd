@@ -1,0 +1,50 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.semantics
+  (:require
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter/semantics.dart" :as sem]
+   [flutter-cljd.types :as t]))
+
+(defn- ^bool? opt-bool [v] (some-> v boolean))
+
+(defn ^w/Widget semantics* [opts child]
+  (let [{:keys [key label value hint tooltip identifier sort-key
+                button header link image enabled selected checked toggled
+                focusable focused hidden read-only obscured live-region text-field
+                container explicit-child-nodes exclude-children merge
+                on-tap on-long-press]} opts
+        node (w/Semantics
+              .key (when-not merge (t/widget-key key))
+              .container (boolean container)
+              .explicitChildNodes (boolean explicit-child-nodes)
+              .excludeSemantics (boolean exclude-children)
+              .label (some-> label str)
+              .value (some-> value str)
+              .hint (some-> hint str)
+              .tooltip (some-> tooltip str)
+              .identifier (some-> identifier str)
+              .sortKey (cond
+                         (nil? sort-key) nil
+                         (instance? sem/SemanticsSortKey sort-key) sort-key
+                         :else (sem/OrdinalSortKey (double sort-key)))
+              .button (opt-bool button)
+              .header (opt-bool header)
+              .link (opt-bool link)
+              .image (opt-bool image)
+              .enabled (opt-bool enabled)
+              .selected (opt-bool selected)
+              .checked (opt-bool checked)
+              .toggled (opt-bool toggled)
+              .focusable (opt-bool focusable)
+              .focused (opt-bool focused)
+              .hidden (opt-bool hidden)
+              .readOnly (opt-bool read-only)
+              .obscured (opt-bool obscured)
+              .liveRegion (opt-bool live-region)
+              .textField (opt-bool text-field)
+              .onTap on-tap
+              .onLongPress on-long-press
+              .child child)]
+    (if merge
+      (w/MergeSemantics .key (t/widget-key key) .child node)
+      node)))
