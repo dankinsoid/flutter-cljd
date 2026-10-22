@@ -1,6 +1,12 @@
 (ns flutter-cljd.core
   (:require
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/foundation.dart" :as fd]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
    [cljd.flutter :as f :refer [widget]]
+   [flutter-cljd.types :as t]
    [flutter-cljd.inherited-keys :as inh]
    [flutter-cljd.utils :as ut :refer [??]]))
 
@@ -88,3 +94,131 @@
   [context local]
   (and (get-inherited context inh/enabled)
        (not (false? local))))
+
+;; -------------------------
+;; MARK: Environment
+;; -------------------------
+
+;; @ai-generated(solo)
+(defn ^w/MediaQueryData media-query
+  "The nearest `MediaQueryData`. Rebuilds the caller on ANY media change (size,
+   insets, text scale, brightness, …) — prefer the granular getters below
+   (`screen-size`, `safe-insets`, `view-insets`), which subscribe to one aspect.
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/MediaQuery/of.html)"
+  [^w/BuildContext context]
+  (w/MediaQuery.of context))
+
+(defn ^ui/Size screen-size
+  "The size of the media (the window, in logical pixels). Subscribes the caller
+   to size changes only (`MediaQuery.sizeOf`)."
+  [^w/BuildContext context]
+  (w/MediaQuery.sizeOf context))
+
+(defn ^w/EdgeInsets safe-insets
+  "The parts of the display obscured by system UI (notch, status and navigation
+   bars) — `MediaQuery.paddingOf`. Already reduced by any ancestor `safe-area`
+   that consumed them."
+  [^w/BuildContext context]
+  (w/MediaQuery.paddingOf context))
+
+(defn ^w/EdgeInsets view-insets
+  "The parts of the display fully obscured by system UI, typically the on-screen
+   keyboard (`.bottom`) — `MediaQuery.viewInsetsOf`."
+  [^w/BuildContext context]
+  (w/MediaQuery.viewInsetsOf context))
+
+(defn text-direction
+  "The ambient text direction as `:ltr`/`:rtl`, or `nil` without a
+   `Directionality` ancestor. `flutter-cljd.types/text-direction` converts it
+   back to a `TextDirection`."
+  [^w/BuildContext context]
+  (let [d (w/Directionality.maybeOf context)]
+    (cond
+      (nil? d) nil
+      (= d ui/TextDirection.rtl) :rtl
+      :else :ltr)))
+
+(defn ^ui/Rect? global-rect
+  "The global (screen) rect of `context`'s render box, or `nil` before layout,
+   after unmount, or when the render object isn't a box — e.g. a popover anchor
+   for a share sheet. Read it in callbacks, not during build: a build sees the
+   previous frame's layout."
+  [^w/BuildContext context]
+  ;; untyped: findRenderObject is null before layout and a hint casts first
+  (let [ro (.findRenderObject context)]
+    (when (and (instance? r/RenderBox ro) (.-attached ^r/RenderBox ro) (.-hasSize ^r/RenderBox ro))
+      (let [^r/RenderBox box ro]
+        (let [tl (.localToGlobal box w/Offset.zero)
+              size (.-size box)]
+          (ui/Rect.fromLTWH (.-dx tl) (.-dy tl) (.-width size) (.-height size)))))))
+
+(defn cupertino?
+  "True on iOS and macOS — where Flutter's own `.adaptive` constructors render
+   Cupertino widgets. Reads
+   `defaultTargetPlatform`, so `debugDefaultTargetPlatformOverride` applies in
+   tests and previews. Adaptive widgets (`switch`, `activity-indicator`,
+   `adaptive-scaffold`) switch on this."
+  []
+  (let [p fd/defaultTargetPlatform]
+    (or (= p fd/TargetPlatform.iOS) (= p fd/TargetPlatform.macOS))))
+
+(defn app-lifecycle-state
+  "The app's current lifecycle state as a keyword — `:resumed`, `:inactive`,
+   `:hidden`, `:paused`, `:detached` — or `nil` before the platform reported one
+   (cold start). See `flutter-cljd.types/app-lifecycle-state` for their meaning
+   and `life-cycle-observer` to react to changes."
+  []
+  (let [s (.-lifecycleState w/WidgetsBinding.instance)]
+    (cond
+      (nil? s) nil
+      (= s ui/AppLifecycleState.resumed) :resumed
+      (= s ui/AppLifecycleState.inactive) :inactive
+      (= s ui/AppLifecycleState.hidden) :hidden
+      (= s ui/AppLifecycleState.paused) :paused
+      :else :detached)))
+
+(defn post-frame!
+  "Runs `f` (no args) once, right after the current frame is laid out and
+   painted — the place to read geometry (`global-rect`) or start work that must
+   not run during build. Schedules a frame if none is pending."
+  [f]
+  (.addPostFrameCallback w/WidgetsBinding.instance (fn [_] (f) nil))
+  (.ensureVisualUpdate w/WidgetsBinding.instance)
+  nil)
+
+;; @ai-generated(solo)
+(defn ^ui/Size measure-text
+  "Lays out `text` (a string or an `InlineSpan`) and returns its `Size` — e.g.
+   to size a cell ahead of building it.
+
+   `style` is anything `flutter-cljd.types/text-style` accepts (a map or a
+   `TextStyle`); it is not merged with any `DefaultTextStyle`, so pass the full
+   style the widget will render with. Options:
+   - `:max-width` — wrap width (default unbounded, one line per paragraph)
+   - `:max-lines` — line cap; overflow is cut, not ellipsized
+   - `:text-direction` — `:ltr` (default) / `:rtl` / `TextDirection`
+   - `:text-scaler` — a `TextScaler` (default none; pass
+     `(MediaQuery.textScalerOf ctx)` to match rendered text)
+
+   ```clojure
+   (.-height (measure-text title {:size 12 :height 1.33} {:max-width 120 :max-lines 2}))
+   ```"
+  ([text style] (measure-text text style {}))
+  ([text style {:keys [max-width max-lines text-direction text-scaler]}]
+   (let [span (if (instance? w/InlineSpan text)
+                text
+                (w/TextSpan .text (str text) .style (t/text-style style)))
+         ;; a span's own style wins over `style`, which becomes its default
+         span (if (instance? w/InlineSpan text)
+                (w/TextSpan .style (t/text-style style) .children [span])
+                span)
+         tp (w/TextPainter
+             .text span
+             .textDirection (t/text-direction (or text-direction :ltr))
+             .maxLines (some-> max-lines int)
+             .textScaler (or text-scaler w/TextScaler.noScaling))]
+     (.layout tp .maxWidth (if max-width (double max-width) dc/double.infinity))
+     (let [size (.-size tp)]
+       (.dispose tp)
+       size))))

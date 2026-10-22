@@ -1,0 +1,84 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.core-test
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   ["dart:ui" :as ui]
+   ["package:flutter/foundation.dart" :as fd]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.core :as c]))
+
+(def ^:private probe-key (w/ValueKey "probe"))
+
+(deftest media-and-direction-getters
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [seen (atom nil)]
+    (await (.pumpWidget
+            tester
+            (w/MediaQuery
+             .data (w/MediaQueryData
+                    .size (ui/Size 400.0 800.0)
+                    .padding (w/EdgeInsets.only .top 44.0)
+                    .viewInsets (w/EdgeInsets.only .bottom 300.0))
+             .child
+             (w/Directionality
+              .textDirection ui/TextDirection.rtl
+              .child
+              (w/Builder
+               .builder
+               (fn [ctx]
+                 (reset! seen {:size (c/screen-size ctx)
+                               :safe (c/safe-insets ctx)
+                               :view (c/view-insets ctx)
+                               :mq (c/media-query ctx)
+                               :dir (c/text-direction ctx)})
+                 (w/SizedBox.shrink)))))))
+    (is (= (:size @seen) (ui/Size 400.0 800.0)))
+    (is (= (.-top (:safe @seen)) 44.0))
+    (is (= (.-bottom (:view @seen)) 300.0))
+    (is (instance? w/MediaQueryData (:mq @seen)))
+    (is (= (:dir @seen) :rtl))))
+
+(deftest text-direction-without-ancestor-is-nil
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [seen (atom :unset)]
+    (await (.pumpWidget tester (w/Builder .builder (fn [ctx]
+                                                      (reset! seen (c/text-direction ctx))
+                                                      (w/SizedBox.shrink)))))
+    (is (nil? @seen))))
+
+(deftest global-rect-after-layout
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget
+          tester
+          (w/Directionality
+           .textDirection ui/TextDirection.ltr
+           .child
+           (w/Align
+            .alignment w/Alignment.topLeft
+            .child
+            (w/Padding
+             .padding (w/EdgeInsets.only .left 10.0 .top 20.0)
+             .child (w/SizedBox .key probe-key .width 30.0 .height 40.0))))))
+  (let [ctx (.element tester (ft/find.byKey probe-key))]
+    (is (= (c/global-rect ctx) (ui/Rect.fromLTWH 10.0 20.0 30.0 40.0)))))
+
+(deftest measure-text-wraps
+  (let [one (c/measure-text "Hello" {:size 10})
+        wrapped (c/measure-text "Hello Hello Hello" {:size 10} {:max-width 60})
+        capped (c/measure-text "Hello Hello Hello" {:size 10} {:max-width 60 :max-lines 1})]
+    (is (> (.-width one) 0.0))
+    (is (<= (.-width wrapped) 60.0))
+    (is (> (.-height wrapped) (.-height one)))
+    (is (= (.-height capped) (.-height one)))))
+
+(deftest cupertino-follows-target-platform
+  (testing "android is material, iOS is cupertino"
+    (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.android)
+    (is (false? (c/cupertino?)))
+    (set! fd/debugDefaultTargetPlatformOverride fd/TargetPlatform.iOS)
+    (is (true? (c/cupertino?)))
+    (set! fd/debugDefaultTargetPlatformOverride nil)))
