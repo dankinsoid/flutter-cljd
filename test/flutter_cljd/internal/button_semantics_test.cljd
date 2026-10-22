@@ -1,0 +1,52 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.button-semantics-test
+  "A button announces itself to screen readers: button role, enabled state, label."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget host [^w/Widget child]
+  (w/Directionality .textDirection ui/TextDirection.ltr .child child))
+
+(defn- button-props
+  "SemanticsProperties of the button node in the pumped tree, or nil."
+  [^ft/WidgetTester tester]
+  (some (fn [^w/Semantics s]
+          (let [p (.-properties s)]
+            (when (.-button p) p)))
+        (.widgetList tester (ft/find.byType w/Semantics))))
+
+(deftest enabled-button-has-role-and-tap
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/button (fn [] nil) (w/Text "Go")))))
+  (let [p (button-props tester)]
+    (is (some? p))
+    (is (true? (.-enabled p)))
+    (is (some? (.-onTap p)))))
+
+(deftest disabled-button-reads-disabled
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/disabled (f/button (fn [] nil) (w/Text "Go"))))))
+  (let [p (button-props tester)]
+    (is (some? p))
+    (is (false? (.-enabled p)))
+    (is (nil? (.-onTap p)))))
+
+(deftest semantics-label-overrides
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/button {:on-tap (fn [] nil) :semantics-label "Next"}
+                                             (w/Text "→")))))
+  (is (= "Next" (.-label (button-props tester)))))
+
+(deftest excluded-button-has-no-role
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/button {:on-tap (fn [] nil) :exclude-from-semantics true}
+                                             (w/Text "Go")))))
+  (is (nil? (button-props tester))))

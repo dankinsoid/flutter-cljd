@@ -719,6 +719,11 @@ Event handlers:
 - `:on-focus-change` — Executed when focus state changes
 - `:focus-node` — Custom focus node for the button
 - `:mouse-cursor` — Mouse cursor to display on hover
+- `:semantics-label` — Accessibility label; overrides the label merged from the child's text
+
+Accessibility: the button is one semantics node with the button role and an
+enabled flag (false when disabled or without primary handlers); the child's
+text merges into it.
 
 Inherited properties (can be set via `with-inherited` or passed directly):
 

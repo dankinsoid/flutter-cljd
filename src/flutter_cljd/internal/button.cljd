@@ -20,7 +20,7 @@
                  on-secondary-tap-up on-secondary-tap-down on-secondary-tap-cancel
                  on-highlight-changed on-hover mouse-cursor enable-feedback
                  exclude-from-semantics focus-node can-request-focus
-                 on-focus-change autofocus]
+                 on-focus-change autofocus semantics-label]
   :extends (w/StatefulWidget .key key)
 
   (createState [_] (ButtonState false false nil nil nil nil nil #{}))
@@ -293,6 +293,7 @@
     (let [^Button widget (.-widget this)
           primary-enabled? (primary-button-enabled? this widget)
           secondary-enabled? (secondary-button-enabled? this widget)
+          excluded? (boolean (.-exclude-from-semantics widget))
           action-map {w/ActivateIntent (w/CallbackAction.
                                         .onInvoke #(activate-on-intent this %))
                       w/ButtonActivateIntent (w/CallbackAction.
@@ -357,11 +358,15 @@
                 .mouseCursor effective-mouse-cursor
                 .child
                 (w/Semantics.
-                 .onTap (when-not (or (.-exclude-from-semantics widget)
-                                      (nil? (.-on-tap widget)))
+                 ;; One button node (role + enabled state) that the child's
+                 ;; text merges into, like Material buttons.
+                 .container (not excluded?)
+                 .button (when-not excluded? true)
+                 .enabled (when-not excluded? (boolean primary-enabled?))
+                 .label (when-not excluded? (some-> (.-semantics-label widget) str))
+                 .onTap (when (and (not excluded?) primary-enabled? (.-on-tap widget))
                           #(handle-tap this))
-                 .onLongPress (when-not (or (.-exclude-from-semantics widget)
-                                            (nil? (.-on-long-press widget)))
+                 .onLongPress (when (and (not excluded?) primary-enabled? (.-on-long-press widget))
                                 #(handle-long-press this))
                  .child
                  ((.-child widget)
@@ -433,7 +438,8 @@
        (:focus-node args)
        (c/get-inherited ctx inh/can-request-focus (:can-request-focus args))
        (:on-focus-change args)
-       (c/get-inherited ctx inh/autofocus (:autofocus args)))))))
+       (c/get-inherited ctx inh/autofocus (:autofocus args))
+       (:semantics-label args))))))
 
 (defn ^w/Widget with-button-modifier*
   [modifier child]
