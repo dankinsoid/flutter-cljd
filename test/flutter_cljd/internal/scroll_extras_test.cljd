@@ -1,0 +1,87 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.scroll-extras-test
+  "with-scroll-behavior, list :on-visible-range and draggable :auto-scroll."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget host [^w/Widget child]
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 400.0 600.0))
+   .child
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child child)))
+
+(defn- ^w/ScrollPosition scroll-position [^ft/WidgetTester tester]
+  (let [^w/ScrollableState st (.state tester (ft/find.byType w/Scrollable))]
+    (.-position st)))
+
+(deftest scroll-behavior-physics-applies
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/with-scroll-behavior
+                                     {:physics :always-bouncing}
+                                     (f/list (w/SizedBox .height 10.0))))))
+  ;; a primary ListView prepends its own AlwaysScrollable; look down the chain
+  (let [chain (take-while some? (iterate (fn [^w/ScrollPhysics p] (.-parent p))
+                                         (.-physics (scroll-position tester))))]
+    (is (some #(instance? w/BouncingScrollPhysics %) chain))))
+
+(deftest visible-range-reports-and-tracks-the-end
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [reports (atom [])]
+    (await (.pumpWidget tester (host (f/list 100
+                                             :item-extent 50
+                                             :cache-extent 0
+                                             :on-visible-range (fn [r] (swap! reports conj r))
+                                             (fn [_ i] (w/Text (str i)))))))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (is (= {:first 0 :last 11 :near-end? false} (last @reports)))
+    (.jumpTo (scroll-position tester) 4400.0)
+    (await (.pump tester))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (let [r (last @reports)]
+      (is (= {:first 88 :last 99} (select-keys r [:first :last])))
+      (is (true? (:near-end? r))))
+    (let [n (count @reports)]
+      (await (.pump tester (dc/Duration .milliseconds 300)))
+      (is (= n (count @reports)) "no report without a change"))))
+
+(def ^:private tile-key (w/ValueKey "tile"))
+
+(deftest auto-scroll-near-the-trailing-edge
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget
+          tester
+          (host
+           (w/Overlay
+            .initialEntries
+            [(w/OverlayEntry
+              .builder
+              (fn [_ctx]
+                (f/scroll
+                 (w/Column
+                  .children
+                  [(f/draggable :data :a :auto-scroll true
+                                (w/Container .key tile-key .width 100.0 .height 100.0
+                                             .color (ui/Color 0xFF00FF00)))
+                   (w/SizedBox .height 2000.0)]))))]))))
+  (let [^ft/TestGesture g (await (.startGesture tester (.getCenter tester (ft/find.byKey tile-key))))]
+    (await (.moveBy g (ui/Offset 0.0 20.0)))
+    (await (.pump tester))
+    ;; within 90px of the 600px viewport's bottom
+    (await (.moveTo g (ui/Offset 50.0 590.0)))
+    (await (.pump tester (dc/Duration .milliseconds 200)))
+    (is (> (.-pixels (scroll-position tester)) 0.0))
+    (await (.up g))
+    (await (.pumpAndSettle tester))
+    (let [settled (.-pixels (scroll-position tester))]
+      (await (.pump tester (dc/Duration .milliseconds 200)))
+      (is (= settled (.-pixels (scroll-position tester))) "stops after the drag ends"))))

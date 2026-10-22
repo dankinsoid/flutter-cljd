@@ -1,0 +1,106 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.visible-range
+  "`list`'s `:on-visible-range`: reports the materialized item range.
+
+  Each item is wrapped in a tiny stateful shell that registers its index on
+  mount and drops it on dispose. A lazy list builds only the items within the
+  viewport plus the cache extent and disposes the rest, so the set of mounted
+  indices IS the materialized range — no scroll-offset math (which breaks with
+  variable item extents) and no per-item visibility detector. The cache extent
+  makes `:last` sit a little past the last visible item: free look-ahead for
+  prefetching. Automatic keep-alives are forced off so scrolled-away items
+  really dispose (a kept-alive far item would inflate the range).
+
+  State atom, refreshed every build so a debounced flush reads current config:
+    {:mounted #{idx} :timer Timer? :burst-start ms? :last range?
+     :n :threshold :on-visible :min :max}"
+  (:require
+   ["dart:async" :as async]
+   ["dart:core" :as dc]
+   [cljd.flutter :as f]))
+
+(defn- compute-visible
+  [{:keys [mounted n threshold]}]
+  (when (seq mounted)
+    (let [lo (reduce min mounted)
+          hi (reduce max mounted)]
+      {:first lo
+       :last hi
+       :near-end? (boolean (and n (>= hi (- (dec n) threshold))))})))
+
+(defn- flush! [st]
+  (let [s @st
+        v (compute-visible s)]
+    (when (and v (not= v (:last s)))
+      (swap! st assoc :last v)
+      ((:on-visible s) v)))
+  nil)
+
+(defn- schedule!
+  ;; Trailing debounce: restart a `min`-ms timer on every mark, but never let
+  ;; the flush slip past `max` ms after the burst's first mark, so a continuous
+  ;; scroll still reports at a bounded cadence.
+  [st]
+  (let [now (.-millisecondsSinceEpoch (dc/DateTime.now))
+        {:keys [timer burst-start] mn :min mx :max} @st
+        burst-start (or burst-start now)
+        wait (max 0 (min mn (- (+ burst-start mx) now)))]
+    (when timer (.cancel ^async/Timer timer))
+    (swap! st assoc
+           :burst-start burst-start
+           :timer (async/Timer. (dc/Duration .milliseconds wait)
+                                (fn []
+                                  (swap! st assoc :timer nil :burst-start nil)
+                                  (flush! st)
+                                  nil))))
+  nil)
+
+(defn- mark! [st i mounted?]
+  (swap! st update :mounted (if mounted? conj disj) i)
+  (schedule! st)
+  nil)
+
+(defn- dispose-state [st]
+  (when-some [^async/Timer t (:timer @st)] (.cancel t))
+  nil)
+
+;; :managed create/dispose run once per element (re-created only when the
+;; closed-over [st i] change), so index i registers on mount and drops on
+;; unmount even as the item's content rebuilds in place.
+(defn- cell-register! [st i]
+  (mark! st i true)
+  {:st st :i i})
+
+(defn- cell-unmount [{:keys [st i]}]
+  (mark! st i false)
+  nil)
+
+(defn- cell-shell [st i child]
+  (f/widget
+   :managed [_res (cell-register! st i) :dispose cell-unmount]
+   child))
+
+(defn- debounce-window [v]
+  (cond
+    (nil? v) [150 250]
+    (number? v) [v v]
+    :else (let [[mn mx] v] [mn (or mx mn)])))
+
+(defn tracking-list
+  "Builds the list through `build` (`(fn [args children] widget)`) with every
+  item wrapped to report into `(:on-visible-range args)`."
+  [args children build]
+  (f/widget
+   :managed [st (atom {:mounted #{} :timer nil :burst-start nil :last nil})
+             :dispose dispose-state]
+   (let [item-builder (:item-builder args)
+         [mn mx] (debounce-window (:visible-range-debounce args))]
+     (swap! st assoc
+            :n (if item-builder (:item-count args) (count children))
+            :threshold (:near-end-threshold args 3)
+            :on-visible (:on-visible-range args)
+            :min mn
+            :max mx)
+     (build (cond-> (assoc args :add-automatic-keep-alives false)
+              item-builder (assoc :item-builder (fn [ctx i] (cell-shell st i (item-builder ctx i)))))
+            (vec (map-indexed (fn [i c] (cell-shell st i c)) children))))))

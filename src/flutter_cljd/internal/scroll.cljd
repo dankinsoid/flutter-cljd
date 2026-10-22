@@ -6,6 +6,7 @@
    [flutter-cljd.internal.grid.opts :as grid-opts]
    [flutter-cljd.internal.grid.sliver :as grid-sliver]
    [flutter-cljd.internal.sliver-collection :as scol]
+   [flutter-cljd.internal.visible-range :as vr]
    [flutter-cljd.types :as t]
    [flutter-cljd.utils :as ut]))
 
@@ -20,7 +21,9 @@
       (let [without-last (butlast raw-args)
             pl (last without-last)
             [item-fn sep-fn kv-rest]
-            (if (fn? pl)
+            ;; a fn right after an option key is that option's value
+            ;; (e.g. :on-visible-range), not an item builder
+            (if (and (fn? pl) (not (keyword? (last (butlast without-last)))))
               [pl l (butlast without-last)]
               [l nil without-last])
             args (ut/key-values-map kv-rest)
@@ -38,9 +41,8 @@
 
 ;; --- list ---
 
-(defn ^m/Widget list* [raw-args]
-  (let [[args children] (parse-scroll-args raw-args)
-        key (t/widget-key (:key args))
+(defn- ^m/Widget list-view* [args children]
+  (let [key (t/widget-key (:key args))
         direction (t/axis (or (:axis args) :vertical))
         reverse (boolean (:reverse args))
         controller (:controller args)
@@ -116,6 +118,12 @@
        .addRepaintBoundaries add-repaint-boundaries
        .addSemanticIndexes add-semantic-indexes
        .children children))))
+
+(defn ^m/Widget list* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)]
+    (if (:on-visible-range args)
+      (vr/tracking-list args children list-view*)
+      (list-view* args children))))
 
 ;; --- grid ---
 

@@ -2580,7 +2580,8 @@ Options:
 - `:enabled` — bool; when false the widget collapses to the bare child — no gesture recognizer, no Listener node, zero hit-test footprint, so other gestures pass through freely. Effective state is this AND'd with the inherited `enabled` (see `enabled`/`disabled`, default true): either being false disables, and a disabled region can't be re-enabled here
 - `:return-on-drop` — bool (default false). By default a dropped child stays where it landed; when true it returns to its home position instead. Reactive: flipping it true later sends an already-displaced child home at that moment
 - `:return-animation` — animation options for going home: both the feedback flying back when a drag ends off-target (rejected or dropped on nothing) and the `:return-on-drop` child slide. A `{:duration :curve :on-end}` map (or a plain ms number, or `[dur curve on-end]`); `0` duration snaps instantly. Defaults to the inherited animation theme (see `with-animation`)
-- `:drop-animation` — same shape, for the feedback docking onto the target that accepted it. Defaults to the inherited animation theme"
+- `:drop-animation` — same shape, for the feedback docking onto the target that accepted it. Defaults to the inherited animation theme
+- `:auto-scroll` — `true` or `{:zone 90 :max-speed 14}`: while dragging, when the pointer is within `:zone` px of the nearest enclosing scrollable's leading/trailing edge, scroll that way at up to `:max-speed` px per 16ms tick (faster closer to the edge), clamped to the scroll extent, until the drag ends — so drop targets scrolled out of view stay reachable. The scrollable must stay mounted while dragging (an eager `scroll`, or a lazy list whose dragged cell isn't scrolled away)"
   [& args]
   (let [[opts child] (ut/key-values-and-child args)]
     (drg/draggable* opts child)))
@@ -2644,11 +2645,32 @@ Examples:
 ```
 
 Scroll options: `:axis` (`:vertical`/`:horizontal`), `:reverse`, `:controller`,
-`:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`), `:shrink-wrap`,
+`:primary`, `:physics` (`:bouncing`/`:clamping`/`:never`/`:always`/`:always-bouncing`, see `t/scroll-physics`), `:shrink-wrap`,
 `:padding`, `:clip`, `:cache-extent`.
 
 Extra: `:item-extent`,
-`:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`."
+`:add-automatic-keep-alives`, `:add-repaint-boundaries`, `:add-semantic-indexes`.
+
+Visible range — the feedback loop a pager needs to know which items to load:
+
+- `:on-visible-range` — `(fn [{:keys [first last near-end?]}])`, called with the
+  index range of the MATERIALIZED items (the viewport plus the cache extent,
+  so `:last` runs a little ahead — free prefetch look-ahead), trailing-debounced
+  and only when the range changes. `near-end?` is true when `last` is within
+  `:near-end-threshold` items of the end (never for an infinite builder).
+  Turns automatic keep-alives off, so scrolled-away items dispose. It fires on
+  item mount/unmount only: a data change that mounts or disposes nothing
+  reports nothing (rebuild with a new `:key` to force a re-report).
+- `:near-end-threshold` — default 3.
+- `:visible-range-debounce` — `[min-ms max-ms]` (default `[150 250]`): wait
+  `min` ms after the last change, but never more than `max` ms after the first
+  one of a burst; a number sets both.
+
+```clojure
+(list items
+      :on-visible-range (fn [{:keys [last near-end?]}] (when near-end? (load-more!)))
+      (fn [ctx item] (row item)))
+```"
   [& args]
   (scrl/list* args))
 
@@ -2931,6 +2953,29 @@ Options: `:controller`, `:thickness`, `:radius`, `:interactive`,
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/scrollbar* args child)))
+
+;; @ai-generated(solo)
+(defn ^w/Widget with-scroll-behavior
+  "Overrides the `ScrollBehavior` for every scrollable below `child` — physics,
+scrollbars, overscroll indicator, drag devices — on top of the ambient one (or
+`:base`). Options are those of `flutter-cljd.types/scroll-behavior`. For the
+whole app pass `(t/scroll-behavior …)` as the app root's `scrollBehavior`.
+
+```clojure
+(with-scroll-behavior {:scrollbars false} content)        ;; hide desktop scrollbars
+(with-scroll-behavior :physics :always-bouncing content)   ;; bounce even when content fits
+(with-scroll-behavior {:drag-devices #{:touch :mouse}} content)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ScrollConfiguration-class.html)"
+  [& args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (bd/builder*
+     (fn [ctx]
+       (w/ScrollConfiguration
+        .behavior (t/scroll-behavior (or (:base opts) (w/ScrollConfiguration.of ctx))
+                                     (dissoc opts :base))
+        .child child)))))
 
 ;; ---- Slivers ----
 

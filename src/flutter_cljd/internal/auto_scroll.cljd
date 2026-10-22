@@ -1,0 +1,98 @@
+;; @ai-generated(guided)
+(ns flutter-cljd.internal.auto-scroll
+  "Edge auto-scroll for a drag in flight: while the pointer sits within `:zone`
+  px of the enclosing scrollable's leading/trailing edge, a 16ms timer nudges
+  the scroll position toward that edge, faster the closer the pointer (up to
+  `:max-speed` px per tick). The drag owns the finger, so without this a drop
+  target scrolled out of view is unreachable."
+  (:require
+   ["dart:async" :as da]
+   ["dart:core" :as dc]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]))
+
+(def ^:private defaults {:zone 90.0 :max-speed 14.0})
+
+(defn normalize
+  "`:auto-scroll` option → `{:zone :max-speed}` or nil when off."
+  [v]
+  (cond
+    (or (nil? v) (false? v)) nil
+    (true? v) defaults
+    (map? v) (merge defaults v)
+    :else (throw (Exception. (str "Invalid :auto-scroll: " v " (expected true, false or {:zone :max-speed})")))))
+
+(defn- ^double edge-speed
+  "Signed screen-axis speed: negative toward the leading edge."
+  [^double p ^double lead ^double extent ^double zone ^double max-speed]
+  (let [to-lead (- p lead)
+        to-trail (- (+ lead extent) p)]
+    (cond
+      (< to-lead zone) (- (* max-speed (- 1.0 (/ (max 0.0 to-lead) zone))))
+      (< to-trail zone) (* max-speed (- 1.0 (/ (max 0.0 to-trail) zone)))
+      :else 0.0)))
+
+(defn- tick! [st]
+  (let [{:keys [pos scrollable zone max-speed]} @st]
+    (when (and (some? pos) (some? scrollable))
+      (let [^w/ScrollableState scrollable scrollable]
+        (when (.-mounted scrollable)
+          ;; untyped: null before layout, and a hinted binding casts first
+          (let [ro (.findRenderObject (.-context scrollable))]
+            (when (and (instance? r/RenderBox ro) (.-hasSize ^r/RenderBox ro))
+              (let [^r/RenderBox box ro
+                    ^w/Offset pos pos
+                    tl (.localToGlobal box w/Offset.zero)
+                    size (.-size box)
+                    dir (.-axisDirection scrollable)
+                    vertical? (= (w/axisDirectionToAxis dir) w/Axis.vertical)
+                    speed (if vertical?
+                            (edge-speed (.-dy pos) (.-dy tl) (.-height size) zone max-speed)
+                            (edge-speed (.-dx pos) (.-dx tl) (.-width size) zone max-speed))
+                    ;; reversed axes grow scroll offset toward the screen's leading edge
+                    delta (if (w/axisDirectionIsReversed dir) (- speed) speed)]
+                (when-not (zero? delta)
+                  (let [position (.-position scrollable)
+                        target (-> (+ (.-pixels position) delta)
+                                   (max (.-minScrollExtent position))
+                                   (min (.-maxScrollExtent position)))]
+                    (when (not= target (.-pixels position))
+                      (.jumpTo position target))))))))))
+    nil))
+
+(defn- stop! [st]
+  (when-some [^da/Timer t (:timer @st)] (.cancel t))
+  (swap! st assoc :timer nil :pos nil)
+  nil)
+
+(defn- start! [st]
+  (stop! st)
+  (swap! st assoc :timer (da/Timer.periodic (dc/Duration .milliseconds 16) (fn [_] (tick! st))))
+  nil)
+
+(defn dispose!
+  "`:managed` dispose: cancel a running timer."
+  [st]
+  (stop! st))
+
+(defn attach!
+  "Called each build: records the nearest scrollable and the options."
+  [st ^w/BuildContext ctx opts]
+  (swap! st merge opts {:scrollable (w/Scrollable.maybeOf ctx)})
+  nil)
+
+(defn wrap-callbacks
+  "Draggable options whose drag callbacks also drive the auto-scroll of `st`;
+  the user's callbacks still run. Scrolling lasts until the drag ends (the drop
+  or return animation included)."
+  [st {:keys [on-drag-start on-drag-update on-drag-end] :as opts}]
+  (assoc opts
+         :on-drag-start (fn []
+                          (start! st)
+                          (when on-drag-start (on-drag-start)))
+         :on-drag-update (fn [^w/DragUpdateDetails details]
+                           (swap! st assoc :pos (.-globalPosition details))
+                           (when on-drag-update (on-drag-update details)))
+         :on-drag-end (fn [info]
+                        (stop! st)
+                        (when on-drag-end (on-drag-end info)))))

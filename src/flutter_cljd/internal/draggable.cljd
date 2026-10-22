@@ -3,6 +3,7 @@
    [flutter-cljd.types :as t]
    [flutter-cljd.core :as c]
    [flutter-cljd.internal.builder :as bd]
+   [flutter-cljd.internal.auto-scroll :as as]
    [cljd.flutter :as f]
    ["dart:core" :as core]
    ["package:flutter/foundation.dart" :as fd]
@@ -939,7 +940,7 @@
                  "; expected a subset of " haptic-events))
     events))
 
-(defn ^w/Widget draggable* [{:keys [key
+(defn- ^w/Widget draggable-impl* [{:keys [key
                           delay
                           feedback
                           data
@@ -1004,6 +1005,16 @@
         return-animation
         drop-animation
         child)))))
+
+;; @ai-generated(solo)
+(defn ^w/Widget draggable* [opts child]
+  (if-some [auto (as/normalize (:auto-scroll opts))]
+    (f/widget
+     :context ctx
+     :managed [st (atom {}) :dispose as/dispose!]
+     (do (as/attach! st ctx auto)
+         (draggable-impl* (as/wrap-callbacks st opts) child)))
+    (draggable-impl* opts child)))
 
 (defn ^w/Widget drag-target*
   [{:keys [key builder on-will-accept on-accept on-leave on-move accept-region hit-test-behavior enabled]}]
