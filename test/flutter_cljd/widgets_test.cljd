@@ -619,7 +619,16 @@
   (testing "Text with style"
     (let [widget (f/text "Hello" {:color :red :font-size 20})]
       (is (= (-> widget .-style .-color) (t/color :red)))
-      (is (= (-> widget .-style .-fontSize) 20.0)))))
+      (is (= (-> widget .-style .-fontSize) 20.0))))
+
+  (testing "InlineSpan builds Text.rich, so DefaultTextStyle and the text scaler apply"
+    (let [span (t/text-span "Hello" {:color :red})
+          widget (f/text span {:max-lines 2})]
+      (is (instance? m/Text widget))
+      (is (nil? (.-data widget)))
+      (is (identical? (.-textSpan widget) span))
+      (is (nil? (.-textScaler widget)))
+      (is (= (.-maxLines widget) 2)))))
 
 (deftest test-cross-axis-alignment
   (testing "Valid cross-axis alignments"

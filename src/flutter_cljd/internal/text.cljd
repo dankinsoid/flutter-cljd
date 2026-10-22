@@ -18,23 +18,24 @@
         text-width-basis (args :text-width-basis)
         text-height-behavior (args :text-height-behavior)
         selection-color (some-> args :selection-color t/color)]
+    ;; Text.rich, not RichText: RichText skips the DefaultTextStyle merge and
+    ;; the ambient MediaQuery text scaler.
     (if (instance? m/InlineSpan string)
-      ;; RichText's textAlign/overflow/textScaler/textWidthBasis are
-      ;; non-nullable, so pass their Flutter defaults instead of nil.
-      (m/RichText
-       .text string
+      (m/Text.rich
+       string
        .key key
-       .textAlign (or text-align m/TextAlign.start)
-       .textDirection text-direction
-       .softWrap (if (some? soft-wrap) soft-wrap true)
-       .overflow (or overflow m/TextOverflow.clip)
-       .textScaler (or text-scaler m/TextScaler.noScaling)
-       .maxLines max-lines
-       .locale locale
+       .style (t/text-style (:style args args))
        .strutStyle strut-style
-       .textWidthBasis (or text-width-basis m/TextWidthBasis.parent)
+       .textAlign text-align
+       .textDirection text-direction
+       .locale locale
+       .softWrap soft-wrap
+       .overflow overflow
+       .textScaler text-scaler
+       .maxLines max-lines
+       .semanticsLabel semantics-label
+       .textWidthBasis text-width-basis
        .textHeightBehavior text-height-behavior
-       .selectionRegistrar (args :selection-registrar)
        .selectionColor selection-color)
 
       (m/Text
