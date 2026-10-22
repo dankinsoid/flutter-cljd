@@ -1366,38 +1366,40 @@ The builder function is not called during layout if the parent passes the same c
   (lbd/layout-builder* builder))
 
 (defn ^w/Widget future-builder
-  "Builds a widget tree that can depend on the parent widget's size.
+  "Builds a widget tree from the latest snapshot of a `Future`.
 
-- `builder` — `(fn [context constraints])`
+- `future` — the `Future` to track. Pass the same instance across rebuilds:
+  a new future restarts the snapshot at `ConnectionState.waiting`.
+- `builder` — `(fn [context snapshot])`, where `snapshot` is an `AsyncSnapshot`
+  (`.-connectionState`, `.-hasData`/`.-data`, `.-hasError`/`.-error`).
 
-Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
+```clojure
+(future-builder load-profile
+  (fn [ctx snapshot]
+    (if (.-hasData snapshot)
+      (text (:name (.-data snapshot)))
+      (text \"Loading…\"))))
+```
 
-The builder function is called in the following situations:
-
-- The first time the widget is laid out.
-- When the parent widget passes different layout constraints.
-- When the parent widget updates this widget.
-- When the dependencies that the builder function subscribes to change.
-
-The builder function is not called during layout if the parent passes the same constraints repeatedly."
+[Flutter docs](https://api.flutter.dev/flutter/widgets/FutureBuilder-class.html)"
   [future builder]
   (fbd/future-builder* future builder))
 
 (defn ^w/Widget stream-builder
-  "Builds a widget tree that can depend on the parent widget's size.
+  "Builds a widget tree from the latest event of a `Stream`.
 
-- `builder` — `(fn [context constraints])`
+- `stream` — the `Stream` to listen to. Pass the same instance across rebuilds:
+  a new stream resubscribes and resets the snapshot.
+- `builder` — `(fn [context snapshot])`, where `snapshot` is an `AsyncSnapshot`
+  holding the most recent data or error; called on every event.
 
-Similar to the `builder` except that the framework calls the builder function at layout time and provides the parent widget's constraints. This is useful when the parent constrains the child's size and doesn't depend on the child's intrinsic size. The LayoutBuilder's final size will match its child's size.
+```clojure
+(stream-builder messages
+  (fn [ctx snapshot]
+    (text (str \"Unread: \" (count (.-data snapshot))))))
+```
 
-The builder function is called in the following situations:
-
-- The first time the widget is laid out.
-- When the parent widget passes different layout constraints.
-- When the parent widget updates this widget.
-- When the dependencies that the builder function subscribes to change.
-
-The builder function is not called during layout if the parent passes the same constraints repeatedly."
+[Flutter docs](https://api.flutter.dev/flutter/widgets/StreamBuilder-class.html)"
   [stream builder]
   (sbd/stream-builder* stream builder))
 
@@ -1717,10 +1719,9 @@ Example:
 (keyed :my-text
   (text \"Hello World\"))
 
-;; Use with a stateful widget to preserve state
+;; Keep a stateful child's state when its position among siblings changes
 (keyed \"counter-1\"
-  (stateful-widget
-    (counter-widget)))
+  (counter-widget))
 ```
 
 [Flutter docs](https://api.flutter.dev/flutter/widgets/KeyedSubtree-class.html)"
@@ -2605,7 +2606,7 @@ Examples:
 ;; separated — second fn builds separators
 (list items
            (fn [ctx item] (text (:name item)))
-           (fn [ctx i] (divider)))
+           (fn [ctx i] (sized :h 1 (colored :grey))))
 ;; infinite builder (no data source)
 (list (fn [ctx i] (text (str i))))
 ```
