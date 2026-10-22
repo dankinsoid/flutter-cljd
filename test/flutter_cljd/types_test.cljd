@@ -106,7 +106,12 @@
       (is (= (.-green color) 128))
       (is (= (.-blue color) 0))
       (is (= (.-alpha color) 128))))
-  
+
+  (testing "Color from [r g b] / [r g b o] vectors"
+    (is (= (t/color [255 128 0]) (t/color 255 128 0)))
+    (is (= (t/color [255 128 0 0.5]) (t/color 255 128 0 0.5)))
+    (is (thrown? Exception (t/color [255 128]))))
+
   (testing "Color from hex string"
       (let [color (t/color "#80FF0000")]
       (is (= (.-red color) 255))

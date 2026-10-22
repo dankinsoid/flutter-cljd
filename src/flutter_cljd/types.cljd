@@ -612,6 +612,10 @@
    (cond
      (instance? m/Color value) value
      (number? value) (in-default-space (m/Color value))
+     (vector? value) (case (count value)
+                       3 (let [[r g b] value] (color r g b))
+                       4 (let [[r g b o] value] (color r g b o))
+                       (throw (Exception. (str "Invalid color vector: " value " (expected [r g b] or [r g b o])"))))
      (string? value) (let [hex (-> value str/lower-case)]
                        (if (re-matches #"^#([0-9a-f]{6}|[0-9a-f]{8})$" hex)
                          (in-default-space
