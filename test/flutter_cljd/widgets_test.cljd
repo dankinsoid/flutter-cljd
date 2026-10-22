@@ -944,3 +944,45 @@
       (is (instance? m/Opacity (f/opacity 0.5 child)))
       (is (instance? m/Transform (f/scale 2 child)))
       (is (instance? m/FractionalTranslation (f/fractional-translation [0.5 0.5] child))))))
+
+(deftest test-custom-paint
+  (let [paint-fn (fn [_canvas _size] nil)]
+    (testing "fn first, size, no child"
+      (let [widget (f/custom-paint paint-fn :size 40)]
+        (is (instance? m/CustomPaint widget))
+        (is (some? (.-painter widget)))
+        (is (nil? (.-foregroundPainter widget)))
+        (is (= (.-size widget) (m/Size 40.0 40.0)))
+        (is (nil? (.-child widget)))))
+    (testing "map with child"
+      (let [widget (f/custom-paint {:foreground-paint paint-fn :complex true} (m/Text "x"))]
+        (is (nil? (.-painter widget)))
+        (is (some? (.-foregroundPainter widget)))
+        (is (true? (.-isComplex widget)))
+        (is (instance? m/Text (.-child widget)))))
+    (testing ":deps gates shouldRepaint; without it every rebuild repaints"
+      (let [p (fn [deps] (.-painter (f/custom-paint {:paint paint-fn :deps deps})))
+            always (fn [] (.-painter (f/custom-paint paint-fn)))]
+        (is (false? (.shouldRepaint (p [1 2]) (p [1 2]))))
+        (is (true? (.shouldRepaint (p [1 3]) (p [1 2]))))
+        (is (true? (.shouldRepaint (always) (always))))))))
+
+(deftest test-shader-mask
+  (let [g {:type :linear :colors [:black :transparent]}]
+    (testing "gradient first"
+      (let [widget (f/shader-mask g (m/Text "x"))]
+        (is (instance? m/ShaderMask widget))
+        (is (= (.-blendMode widget) m/BlendMode.modulate))))
+    (testing "options map"
+      (let [widget (f/shader-mask {:gradient g :blend-mode :src-in} (m/Text "x"))]
+        (is (= (.-blendMode widget) m/BlendMode.srcIn))))
+    (is (thrown? Exception (f/shader-mask {:shader nil :gradient nil} (m/Text "x"))))))
+
+(deftest test-intrinsic-offstage
+  (is (instance? m/IntrinsicHeight (f/intrinsic :height (m/Text "x"))))
+  (let [widget (f/intrinsic :width {:step-width 8} (m/Text "x"))]
+    (is (instance? m/IntrinsicWidth widget))
+    (is (= (.-stepWidth widget) 8.0)))
+  (is (thrown? Exception (f/intrinsic :depth (m/Text "x"))))
+  (is (true? (.-offstage (f/offstage (m/Text "x")))))
+  (is (false? (.-offstage (f/offstage false (m/Text "x"))))))

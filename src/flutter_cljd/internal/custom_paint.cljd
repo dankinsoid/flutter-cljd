@@ -1,0 +1,38 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.custom-paint
+  (:require
+   ["dart:ui" :as ui]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
+   [flutter-cljd.types :as t]))
+
+;; `deps` = ::always repaints on every rebuild: the paint fn is usually a fresh
+;; closure per build, so comparing painters can't tell whether it changed.
+(deftype FnPainter [paintFn deps ^w/Listenable? repaintListenable]
+  :extends (r/CustomPainter .repaint repaintListenable)
+  (paint [this ^ui/Canvas canvas ^ui/Size size]
+    ((.-paintFn this) canvas size)
+    nil)
+  (shouldRepaint [this ^r/CustomPainter old]
+    (or (= ::always (.-deps this))
+        (not (instance? FnPainter old))
+        (not= (.-deps this) (.-deps ^FnPainter old)))))
+
+(defn- ^r/CustomPainter? painter [p deps repaint]
+  (cond
+    (nil? p) nil
+    (instance? r/CustomPainter p) p
+    (fn? p) (FnPainter p deps repaint)
+    :else (throw (Exception. (str "custom-paint: expected a (fn [canvas size]) or a CustomPainter, got " p)))))
+
+(defn ^w/Widget custom-paint* [opts child]
+  (let [{:keys [key size repaint will-change complex]} opts
+        deps (if (contains? opts :deps) (:deps opts) ::always)]
+    (w/CustomPaint
+     .key (t/widget-key key)
+     .painter (painter (:paint opts) deps repaint)
+     .foregroundPainter (painter (:foreground-paint opts) deps repaint)
+     .size (if (some? size) (t/size size) ui/Size.zero)
+     .isComplex (boolean complex)
+     .willChange (boolean will-change)
+     .child child)))

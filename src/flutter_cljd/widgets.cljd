@@ -2,6 +2,7 @@
   "The Flutter widgets framework. [Docs](https://api.flutter.dev/flutter/widgets/widgets-library.html)"
   (:refer-clojure :exclude [list])
   (:require
+   ["dart:ui" :as ui]
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.inherited-keys :as inh]
    [flutter-cljd.internal.builder :as bd]
@@ -73,6 +74,7 @@
    [flutter-cljd.internal.collection.box :as cbox]
    [flutter-cljd.internal.semantics :as sem]
    [flutter-cljd.internal.image :as img]
+   [flutter-cljd.internal.custom-paint :as cpt]
    [flutter-cljd.types :as t]))
 
 (defn ^w/Widget absorb-pointer
@@ -3289,3 +3291,128 @@ Shorthand for `(backdrop-filter {:blur sigma} child)` — see there for clipping
 Figma's background-blur radius maps to roughly this sigma."
   [sigma child]
   (backdrop-filter {:blur sigma} child))
+
+;; ---- Painting ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget custom-paint
+  "Paints on a canvas with a function, behind (`:paint`) and/or in front of
+(`:foreground-paint`) an optional child.
+
+A paint function is `(fn [canvas size])` — draw on the `Canvas` within `size`
+using `flutter-cljd.types/paint` for the `Paint`s; a ready `CustomPainter` is
+accepted too. The first argument may be the paint function itself.
+
+Options:
+
+- `:paint`, `:foreground-paint` — paint functions (or `CustomPainter`s).
+- `:size` — anything `size` accepts; the size when there is no child (default
+  zero, so a childless paint needs `:size` or tight constraints).
+- `:deps` — repaint only when this value changes between builds. Without it,
+  every rebuild repaints (paint closures are new each build, so there is
+  nothing to compare).
+- `:repaint` — a `Listenable` (e.g. an `AnimationController`) that triggers a
+  repaint without rebuilding — the cheap path for animation; paint reads the
+  current value from it.
+- `:complex`, `:will-change` — raster-cache hints.
+- `:key`
+
+```clojure
+(custom-paint
+  (fn [canvas size]
+    (.drawCircle canvas (.center size m/Offset.zero) 10.0 (t/paint {:color :red})))
+  :size 40)
+
+(custom-paint {:paint (fn [canvas size] (draw-wave canvas size (.-value controller)))
+               :repaint controller}
+  child)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/CustomPaint-class.html)"
+  [arg0 & args]
+  (let [[opts tail] (ut/key-values-and-rest (if (fn? arg0)
+                                              (cons {:paint arg0} args)
+                                              (cons arg0 args)))]
+    (cpt/custom-paint* opts (first tail))))
+
+;; @ai-generated(solo)
+(defn ^w/Widget shader-mask
+  "Paints `child` through a shader: the shader's colors combine with the child's
+pixels by `:blend-mode` — gradient fades, gradient-filled text/icons.
+
+The first argument is a gradient (anything `gradient` accepts: a `Gradient` or
+a `{:type :linear …}` map), or an options map:
+
+- `:gradient` — a gradient value, stretched over the child's bounds.
+- `:shader` — `(fn [rect] Shader)` for anything else.
+- `:blend-mode` — default `:modulate` (multiply, so transparent shader areas
+  hide the child); `:src-in` recolors the child's opaque pixels.
+- `:key`
+
+```clojure
+;; fade the bottom edge out
+(shader-mask {:gradient {:type :linear :begin :top :end :bottom
+                         :colors [:black :transparent]}
+              :blend-mode :dst-in}
+  content)
+;; gradient-filled icon
+(shader-mask {:gradient g :blend-mode :src-in} (icon m/Icons.star))
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/ShaderMask-class.html)"
+  [arg0 & args]
+  (let [opts? (and (map? arg0) (or (contains? arg0 :gradient) (contains? arg0 :shader)))
+        [opts child] (if opts?
+                       (ut/key-values-and-child (cons arg0 args))
+                       (let [[o c] (ut/key-values-and-child args)]
+                         [(assoc o :gradient arg0) c]))
+        shader-fn (:shader opts)
+        gradient (some-> (:gradient opts) t/gradient)]
+    (when-not (or shader-fn gradient)
+      (throw (Exception. (str "shader-mask: expected :gradient or :shader, got " opts))))
+    (w/ShaderMask
+     .key (t/widget-key (:key opts))
+     .shaderCallback (fn [^ui/Rect rect]
+                       ^ui/Shader (if shader-fn
+                                    (shader-fn rect)
+                                    (.createShader ^w/Gradient gradient rect)))
+     .blendMode (t/blend-mode (:blend-mode opts :modulate))
+     .child child)))
+
+;; ---- Layout ----
+
+;; @ai-generated(solo)
+(defn ^w/Widget intrinsic
+  "Sizes `child` to its intrinsic height (`:height`) or width (`:width`) —
+e.g. so a row's children can stretch to the tallest one. Expensive: it lays
+the subtree out twice; avoid it in long lists.
+
+Options for `:width`: `:step-width`, `:step-height` — round the intrinsic size
+up to a multiple of these.
+
+```clojure
+(intrinsic :height (row {:cross-axis-alignment :stretch} a divider b))
+(intrinsic :width {:step-width 8} child)
+```
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/IntrinsicHeight-class.html)"
+  [axis & args]
+  (let [[opts child] (ut/key-values-and-child args)]
+    (case axis
+      (:height :h :vertical :v) (w/IntrinsicHeight .key (t/widget-key (:key opts)) .child child)
+      (:width :w :horizontal) (w/IntrinsicWidth
+                               .key (t/widget-key (:key opts))
+                               .stepWidth (some-> (:step-width opts) double)
+                               .stepHeight (some-> (:step-height opts) double)
+                               .child child)
+      (throw (Exception. (str "intrinsic: axis must be :height or :width, got " axis))))))
+
+(defn ^w/Widget offstage
+  "Keeps `child` mounted but invisible while `hidden` (default true): its state
+survives, but it takes no space and gets no paint, hit testing or semantics —
+e.g. inactive tabs that must keep their state. Animations inside keep ticking.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Offstage-class.html)"
+  ([child] (offstage true child))
+  ([hidden child]
+   (w/Offstage .offstage (boolean hidden) .child child)))
