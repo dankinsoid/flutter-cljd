@@ -8,14 +8,21 @@
 
 (defn ^m/Widget opacity*
   ([opacity args child]
-   (m/Opacity
-    .key (t/widget-key (args :key))
-    .opacity (clipped-opacity opacity)
-    .alwaysIncludeSemantics (:always-include-semantics args false)
-    .child child))
-  ([opacity child]
-   (if (map? opacity)
-     (opacity* (:opacity opacity 1.0) opacity child)
+   (if (instance? m/Animation opacity)
+     (m/FadeTransition
+      .key (t/widget-key (args :key))
+      .opacity opacity
+      .alwaysIncludeSemantics (:always-include-semantics args false)
+      .child child)
      (m/Opacity
+      .key (t/widget-key (args :key))
       .opacity (clipped-opacity opacity)
-      .child child))))
+      .alwaysIncludeSemantics (:always-include-semantics args false)
+      .child child)))
+  ([opacity child]
+   (cond
+     (map? opacity) (opacity* (:opacity opacity 1.0) opacity child)
+     (instance? m/Animation opacity) (opacity* opacity {} child)
+     :else (m/Opacity
+            .opacity (clipped-opacity opacity)
+            .child child))))

@@ -39,7 +39,7 @@
    .quarterTurns (int quarter-turns)
    .child child))
 
-(defn ^m/Widget scale* [scale args child]
+(defn- ^m/Widget scale-static* [scale args child]
   (let [scale-x (cond (map? scale) (:x scale 1)
                       (coll? scale) (or (first scale) 1)
                       :else scale)
@@ -53,16 +53,45 @@
                 args
                 child)))
 
+(defn ^m/Widget scale* [scale args child]
+  (if (instance? m/Animation scale)
+    (m/ScaleTransition
+     .key (t/widget-key (:key args))
+     .scale scale
+     .alignment (or (some-> (:alignment args) t/alignment) m/Alignment.center)
+     .filterQuality (some-> (:filter-quality args) t/filter-quality)
+     .child child)
+    (scale-static* scale args child)))
+
 (defn ^m/Widget translate* [offset args child]
-  (let [offset (t/offset offset)]
-    (transform* (t/mat4-translation (.-dx offset) (.-dy offset)) args child)))
+  (if (instance? m/Animation offset)
+    (let [^m/Animation animation offset
+          {:keys [key transform-hit-tests filter-quality]} args]
+      (m/AnimatedBuilder
+       .key (t/widget-key key)
+       .animation animation
+       .builder (fn [_ ^m/Widget? c]
+                  (m/Transform.translate
+                   .offset (t/offset (.-value animation))
+                   .transformHitTests (?? (some-> transform-hit-tests boolean) true)
+                   .filterQuality (some-> filter-quality t/filter-quality)
+                   .child c))
+       .child child))
+    (let [offset (t/offset offset)]
+      (transform* (t/mat4-translation (.-dx offset) (.-dy offset)) args child))))
 
 (defn ^m/Widget fractional-translation* [offset {:keys [key transform-hit-tests]} child]
-  (m/FractionalTranslation
+  (if (instance? m/Animation offset)
+    (m/SlideTransition
+     .key (t/widget-key key)
+     .position offset
+     .transformHitTests (?? (some-> transform-hit-tests boolean) true)
+     .child child)
+    (m/FractionalTranslation
    .key (t/widget-key key)
    .translation (t/offset offset)
    .transformHitTests (?? (some-> transform-hit-tests boolean) true)
-   .child child))
+   .child child)))
 
 (defn ^m/Widget transform-macro [value fun args]
   (if (keyword? value)

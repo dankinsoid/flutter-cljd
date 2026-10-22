@@ -1639,9 +1639,15 @@ Examples:
 ```clojure
 (opacity 0.5 (text \"Hello, World!\"))
 (opacity 0.5 :always-include-semantics true (text \"Hello, World!\"))
+(opacity route-animation page) ;; Animation<double> → FadeTransition
 ```
 
-[Flutter docs](https://api.flutter.dev/flutter/widgets/Opacity-class.html)"
+Passing an `Animation<double>` instead of a number fades with it, repainting
+without rebuilding (`FadeTransition`) — e.g. a route's transition animation.
+
+[Flutter docs](https://api.flutter.dev/flutter/widgets/Opacity-class.html)
+
+[Transition flutter docs](https://api.flutter.dev/flutter/widgets/FadeTransition-class.html)"
   [opacity & args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (op/opacity* opacity args child)))
@@ -2211,7 +2217,13 @@ Example:
   ;; Scale with options
   (scale 2.0 {:alignment :center}
     (text \"Centered scaling\"))
-  ```"
+
+  ;; Driven by an Animation<double> (ScaleTransition, uniform)
+  (scale controller (text \"Pulsing\"))
+  ```
+
+  An `Animation<double>` scale applies uniformly via `ScaleTransition`
+  (`:alignment`, `:filter-quality` apply), repainting without rebuilding."
   [scale & args]
   (tr/transform-macro scale tr/scale* args))
 
@@ -2239,7 +2251,14 @@ Example:
   ;; With transform options
   (translate [100 50] {:transform-hit-tests false}
     (text \"Moved without hit testing\"))
-  ```"
+
+  ;; Driven by an Animation<Offset> (pixels)
+  (translate offset-animation (text \"Sliding\"))
+  ```
+
+  An `Animation` of offsets (anything `offset` accepts) re-translates on every
+  tick without rebuilding `child`. For a slide measured in the child's own
+  size, use `fractional-translation`."
   [offset & args]
   (tr/transform-macro offset tr/translate* args))
 
@@ -2267,7 +2286,15 @@ Example:
   ;; Using Offset
   (fractional-translation (offset 0.25 0.75)
     (text \"Fractionally moved\"))
+
+  ;; Slide in from below with a route animation (SlideTransition)
+  (fractional-translation
+    (.drive animation (m/Tween .begin (m/Offset 0.0 1.0) .end m/Offset.zero))
+    page)
   ```
+
+  An `Animation<Offset>` slides via `SlideTransition`, repainting without
+  rebuilding `child`.
 
   [Flutter docs](https://api.flutter.dev/flutter/widgets/FractionalTranslation-class.html)"
   [offset & args]

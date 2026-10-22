@@ -918,3 +918,29 @@
     (is (= (.-filter widget) (t/image-filter {:dilate 2})))
     (is (false? (.-enabled widget))))
   (is (thrown? Exception (f/backdrop-filter {:color :red} (m/Text "x")))))
+
+(deftest test-animation-driven-transforms
+  (let [child (m/Text "x")
+        d (m/AlwaysStoppedAnimation 0.5)
+        o (m/AlwaysStoppedAnimation (m/Offset 0.0 1.0))]
+    (testing "opacity → FadeTransition"
+      (let [widget (f/opacity d child)]
+        (is (instance? m/FadeTransition widget))
+        (is (identical? (.-opacity widget) d))))
+    (testing "scale → ScaleTransition"
+      (let [widget (f/scale d :alignment :top-left child)]
+        (is (instance? m/ScaleTransition widget))
+        (is (identical? (.-scale widget) d))
+        (is (= (.-alignment widget) m/Alignment.topLeft))))
+    (testing "fractional-translation → SlideTransition"
+      (let [widget (f/fractional-translation o child)]
+        (is (instance? m/SlideTransition widget))
+        (is (identical? (.-position widget) o))))
+    (testing "translate → AnimatedBuilder of Transform.translate"
+      (let [widget (f/translate o child)]
+        (is (instance? m/AnimatedBuilder widget))
+        (is (instance? m/Text (.-child widget)))))
+    (testing "static values are unchanged"
+      (is (instance? m/Opacity (f/opacity 0.5 child)))
+      (is (instance? m/Transform (f/scale 2 child)))
+      (is (instance? m/FractionalTranslation (f/fractional-translation [0.5 0.5] child))))))
