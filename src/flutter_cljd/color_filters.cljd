@@ -3,22 +3,27 @@
    ["package:flutter/material.dart" :as m]
    ["dart:core" :as c]))
 
-(def identity (m/ColorFilter.matrix (#/(c/List.from c/double) [1 0 0 0 0 
-                                                               0 1 0 0 0 
-                                                               0 0 1 0 0 
-                                                               0 0 0 1 0])))
-  
-(def invert (m/ColorFilter.matrix (#/(c/List.from c/double) [-1 0 0 0 255 
-                                                             0 -1 0 0 255 
-                                                             0 0 -1 0 255 
-                                                             0 0 0 1 0])))
-  
-(def sepia (m/ColorFilter.matrix (#/(c/List.from c/double) [0.393 0.769 0.189 0 0 
-                                                            0.349 0.686 0.168 0 0 
-                                                            0.272 0.534 0.131 0 0 
-                                                            0 0 0 1 0])))
-  
-(def greyscale (m/ColorFilter.matrix (#/(c/List.from c/double) [0.2126 0.7152 0.0722 0 0 
-                                                                0.2126 0.7152 0.0722 0 0 
-                                                                0.2126 0.7152 0.0722 0 0 
-                                                                0 0 0 1 0])))
+(defn- ^m/ColorFilter matrix
+  "`List<double>.from` throws on int elements at runtime, so every entry is coerced."
+  [values]
+  (m/ColorFilter.matrix (#/(c/List.from c/double) (map double values))))
+
+(def identity (matrix [1 0 0 0 0
+                       0 1 0 0 0
+                       0 0 1 0 0
+                       0 0 0 1 0]))
+
+(def invert (matrix [-1 0 0 0 255
+                     0 -1 0 0 255
+                     0 0 -1 0 255
+                     0 0 0 1 0]))
+
+(def sepia (matrix [0.393 0.769 0.189 0 0
+                    0.349 0.686 0.168 0 0
+                    0.272 0.534 0.131 0 0
+                    0 0 0 1 0]))
+
+(def greyscale (matrix [0.2126 0.7152 0.0722 0 0
+                        0.2126 0.7152 0.0722 0 0
+                        0.2126 0.7152 0.0722 0 0
+                        0 0 0 1 0]))

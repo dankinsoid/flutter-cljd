@@ -1,6 +1,7 @@
 (ns flutter-cljd.types-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [flutter-cljd.types :as t]
+            [flutter-cljd.color-filters :as clr-f]
             ["package:flutter/material.dart" :as m]))
 
 ;; These tests assert structural facts (keyword -> Material color, hex parsing,
@@ -237,3 +238,40 @@
       (is (= (.-maxWidth constraints) 100.0))
       (is (= (.-minHeight constraints) 200.0))
       (is (= (.-maxHeight constraints) 200.0)))))
+
+;; Matrix filters are built via `List<double>.from`, which throws on int
+;; literals; constructing them is the regression check.
+(deftest test-color-filter
+  (testing "Keyword matrix filters construct"
+    (doseq [k [:identity :invert :sepia :greyscale]]
+      (is (instance? m/ColorFilter (t/color-filter k)) (str k))))
+
+  (testing "Gamma filters"
+    (is (= (t/color-filter :linear-to-srgb-gamma) (m/ColorFilter.linearToSrgbGamma)))
+    (is (= (t/color-filter :srgb-to-linear-gamma) (m/ColorFilter.srgbToLinearGamma))))
+
+  (testing "Flat int matrix equals the predefined filter"
+    (is (= (t/color-filter [1 0 0 0 0
+                            0 1 0 0 0
+                            0 0 1 0 0
+                            0 0 0 1 0])
+           clr-f/identity))
+    (is (= (t/color-filter [-1 0 0 0 255
+                            0 -1 0 0 255
+                            0 0 -1 0 255
+                            0 0 0 1 0])
+           clr-f/invert)))
+
+  (testing "Nested matrix with omitted alpha row"
+    (is (= (t/color-filter [[0.393 0.769 0.189 0 0]
+                            [0.349 0.686 0.168 0 0]
+                            [0.272 0.534 0.131 0 0]])
+           clr-f/sepia)))
+
+  (testing "Color and blend mode pair"
+    (is (= (t/color-filter [:red :multiply])
+           (m/ColorFilter.mode m/Colors.red m/BlendMode.multiply))))
+
+  (testing "Invalid input"
+    (is (thrown? Exception (t/color-filter :invalid)))
+    (is (thrown? Exception (t/color-filter "invalid")))))
