@@ -1141,13 +1141,13 @@
 
   (scale [this ^double factor]
     (->oklab-gradient
-     (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
+     (mapv #(.withValues ^ui/Color % .alpha (* (.-a ^ui/Color %) factor)) colors)
      stops gradient-type tm-id
      begin-align end-align center-align radius-val start-angle end-angle cs-id))
 
   (withOpacity [this ^double opacity]
     (->oklab-gradient
-     (mapv #(.withOpacity ^ui/Color % opacity) colors)
+     (mapv #(.withValues ^ui/Color % .alpha opacity) colors)
      stops gradient-type tm-id
      begin-align end-align center-align radius-val start-angle end-angle cs-id))
 
@@ -1500,12 +1500,12 @@
 
   (scale [this ^double factor]
     (->oklab-mesh-gradient
-     (mapv #(.withOpacity ^ui/Color % (* (.-opacity ^ui/Color %) factor)) colors)
+     (mapv #(.withValues ^ui/Color % .alpha (* (.-a ^ui/Color %) factor)) colors)
      grid-w grid-h points cs-id))
 
   (withOpacity [this ^double opacity]
     (->oklab-mesh-gradient
-     (mapv #(.withOpacity ^ui/Color % opacity) colors)
+     (mapv #(.withValues ^ui/Color % .alpha opacity) colors)
      grid-w grid-h points cs-id))
 
   ;; See OkLabGradient.lerpFrom — same contract.
