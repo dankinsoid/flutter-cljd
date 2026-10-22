@@ -2,7 +2,10 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [flutter-cljd.types :as t]
             [flutter-cljd.color-filters :as clr-f]
-            ["package:flutter/material.dart" :as m]))
+            ["package:flutter/material.dart" :as m]
+            ["package:flutter/cupertino.dart" :as cup]
+            ["package:flutter/widgets.dart" :as w]
+            ["dart:ui" :as ui]))
 
 ;; These tests assert structural facts (keyword -> Material color, hex parsing,
 ;; etc.). Force plain sRGB so literals map straight to the Flutter constants
@@ -111,6 +114,19 @@
     (is (= (t/color [255 128 0]) (t/color 255 128 0)))
     (is (= (t/color [255 128 0 0.5]) (t/color 255 128 0 0.5)))
     (is (thrown? Exception (t/color [255 128]))))
+
+  (testing "Color with alpha replaced"
+    (let [c (t/color :red 0.5)]
+      (is (= (.-a c) 0.5))
+      (is (= (.-r c) (.-r (t/color :red)))))
+    (is (= (.-a (t/color (t/color :blue) 0.25)) 0.25))
+    (is (= (.-a (t/color :red 2)) 1.0) "alpha is clamped to 0..1"))
+
+  (testing "Color from HSV / HSL maps"
+    (is (= (t/color {:hsv [0 1 1]}) (t/color 255 0 0)))
+    (is (= (t/color {:hsl [120 1 0.5]}) (t/color 0 255 0)))
+    (is (= (.-a (t/color {:hsv [0 1 1] :a 0.5})) 0.5))
+    (is (thrown? Exception (t/color {:rgb [1 2 3]}))))
 
   (testing "Color from hex string"
       (let [color (t/color "#80FF0000")]
@@ -280,3 +296,75 @@
   (testing "Invalid input"
     (is (thrown? Exception (t/color-filter :invalid)))
     (is (thrown? Exception (t/color-filter "invalid")))))
+
+
+(deftest test-scroll-physics
+  (testing "nil stays nil"
+    (is (nil? (t/scroll-physics nil))))
+
+  (testing ":always-bouncing is always-scrollable over bouncing"
+    (let [p (t/scroll-physics :always-bouncing)]
+      (is (instance? m/AlwaysScrollableScrollPhysics p))
+      (is (instance? m/BouncingScrollPhysics (.-parent p)))))
+
+  (testing "a vector chains outermost first"
+    (let [p (t/scroll-physics [:always :bouncing])]
+      (is (instance? m/AlwaysScrollableScrollPhysics p))
+      (is (instance? m/BouncingScrollPhysics (.-parent p)))
+      (is (nil? (.-parent (.-parent p))))))
+
+  (testing "Invalid physics"
+    (is (thrown? Exception (t/scroll-physics :invalid)))))
+
+(deftest test-scroll-behavior
+  (testing "base keywords"
+    (is (instance? m/MaterialScrollBehavior (t/scroll-behavior {})))
+    (is (instance? cup/CupertinoScrollBehavior (t/scroll-behavior :cupertino {}))))
+
+  (testing "options override the base"
+    (let [b (t/scroll-behavior :cupertino {:physics :always-bouncing :scrollbars false})]
+      (is (instance? w/ScrollBehavior b))
+      (is (= #{ui/PointerDeviceKind.touch}
+             (set (.-dragDevices (t/scroll-behavior {:drag-devices [:touch]})))))))
+
+  (testing "a ScrollBehavior passes through"
+    (let [b (m/MaterialScrollBehavior)]
+      (is (identical? b (t/scroll-behavior b))))))
+
+(deftest test-box-fit
+  (is (nil? (t/box-fit nil)))
+  (is (= (t/box-fit :cover) m/BoxFit.cover))
+  (is (= (t/box-fit :fit-width) m/BoxFit.fitWidth))
+  (is (= (t/box-fit :scale-down) m/BoxFit.scaleDown))
+  (is (= (t/box-fit m/BoxFit.fill) m/BoxFit.fill))
+  (is (thrown? Exception (t/box-fit :invalid))))
+
+(deftest test-image-filter
+  (is (= (t/image-filter 4) (ui/ImageFilter.blur .sigmaX 4.0 .sigmaY 4.0)))
+  (is (= (t/image-filter [2 3]) (ui/ImageFilter.blur .sigmaX 2.0 .sigmaY 3.0)))
+  (is (= (t/image-filter {:blur 5}) (ui/ImageFilter.blur .sigmaX 5.0 .sigmaY 5.0)))
+  (is (= (t/image-filter {:dilate 1}) (ui/ImageFilter.dilate .radiusX 1.0 .radiusY 1.0)))
+  (is (instance? ui/ImageFilter (t/image-filter {:color-filter :invert})))
+  (is (thrown? Exception (t/image-filter {:unknown 1}))))
+
+(deftest test-image-provider
+  (is (instance? m/NetworkImage (t/image-provider "https://example.com/a.png")))
+  (is (= (.-assetName (t/image-provider "assets/a.png")) "assets/a.png"))
+  (is (= (.-package (t/image-provider {:asset "a.png" :package "pkg"})) "pkg"))
+  (is (thrown? Exception (t/image-provider 42))))
+
+(deftest test-paint
+  (let [p (t/paint {:color :red :style :stroke :stroke-width 2 :cap :round
+                    :join :bevel :anti-alias false :blend-mode :multiply
+                    :mask-filter 3})]
+    (is (= (.toARGB32 (.-color p)) (.toARGB32 m/Colors.red)))
+    (is (= (.-style p) ui/PaintingStyle.stroke))
+    (is (= (.-strokeWidth p) 2.0))
+    (is (= (.-strokeCap p) ui/StrokeCap.round))
+    (is (= (.-strokeJoin p) ui/StrokeJoin.bevel))
+    (is (false? (.-isAntiAlias p)))
+    (is (= (.-blendMode p) ui/BlendMode.multiply))
+    (is (some? (.-maskFilter p))))
+  (let [p (ui/Paint)]
+    (is (identical? p (t/paint p))))
+  (is (thrown? Exception (t/paint {:style :dotted}))))

@@ -2,6 +2,7 @@
   (:require
    ["package:flutter/foundation.dart" :as fd]
    ["package:flutter/material.dart" :as m]
+   ["package:flutter/cupertino.dart" :as cup]
    ["package:flutter/services.dart" :as s]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter/animation.dart" :as a]
@@ -601,11 +602,28 @@
     - a number: 0xRRGGBB or 0xAARRGGBB
     - a hex string: \"#RRGGBB\" or \"#AARRGGBB\". Prefer using the number format for better performance.
     - a keyword: :blue, :red, :green, :yellow, :orange, :purple, :pink, :cyan, :magenta, :teal, :amber, :lime, :light-blue, :light-green, :deep-orange, :deep-purple, :indigo, :blue-grey, :grey, :black, :white, :transparent
+    - a map `{:hsv [h s v]}` or `{:hsl [h s l]}` — hue in degrees `0..360`,
+      the rest `0..1`; optional `:a` alpha `0..1` (default 1)
+
+   `(color value alpha)` returns `value` (any of the forms above) with its
+   alpha replaced by `alpha` (`0..1`) — the replacement for the deprecated
+   `Color.withOpacity`.
 
    Literals (everything except a ready `Color` instance) are interpreted in
    `default-color-space` — Display P3 unless overridden.
 
+   ```clojure
+   (color :red)
+   (color 0xFF3366)
+   (color [255 51 102])
+   (color :black 0.5)          ;; 50% black
+   (color {:hsv [210 0.6 0.9]})
+   ```
+
    [Flutter docs](https://api.flutter.dev/flutter/dart-ui/Color-class.html)"
+  ([value alpha]
+   (let [^m/Color c (color value)]
+     (.withValues c .alpha (max 0.0 (min 1.0 (double alpha))))))
   ([r g b] (in-default-space (m/Color.fromRGBO r g b 1.0)))
   ([r g b o] (in-default-space (m/Color.fromRGBO r g b o)))
   ([value]
@@ -616,6 +634,19 @@
                        3 (let [[r g b] value] (color r g b))
                        4 (let [[r g b o] value] (color r g b o))
                        (throw (Exception. (str "Invalid color vector: " value " (expected [r g b] or [r g b o])"))))
+     ;; alpha goes through withValues: HSV/HSLColor.toColor quantizes to 8 bits
+     (map? value) (let [^m/Color c (cond
+                                     (contains? value :hsv)
+                                     (let [[h s v] (:hsv value)]
+                                       (.toColor (m/HSVColor.fromAHSV 1.0 (double h) (double s) (double v))))
+
+                                     (contains? value :hsl)
+                                     (let [[h s l] (:hsl value)]
+                                       (.toColor (m/HSLColor.fromAHSL 1.0 (double h) (double s) (double l))))
+
+                                     :else
+                                     (throw (Exception. (str "Invalid color map: " value " (expected :hsv or :hsl)"))))]
+                    (in-default-space (.withValues c .alpha (double (:a value 1.0)))))
      (string? value) (let [hex (-> value str/lower-case)]
                        (if (re-matches #"^#([0-9a-f]{6}|[0-9a-f]{8})$" hex)
                          (in-default-space
@@ -2470,17 +2501,293 @@
       :translucent r/HitTestBehavior.translucent
       (throw (Exception. (str "Invalid hit test behavior: " value " (expected :defer-to-child, :opaque, :inactive, :translucent)"))))))
 
-(defn ^m/ScrollPhysics? scroll-physics [physics]
-  (when (some? physics)
-    (if (instance? m/ScrollPhysics physics)
-      physics
-      (case physics
-        :bouncing (m/BouncingScrollPhysics)
-        :clamping (m/ClampingScrollPhysics)
-        :never   (m/NeverScrollableScrollPhysics)
-        :always  (m/AlwaysScrollableScrollPhysics)
-        :page    (m/PageScrollPhysics)
-        (throw (Exception. (str "Invalid scroll physics: " physics " (expected :bouncing, :clamping, :never, :always, or :page)")))))))
+(defn- ^m/ScrollPhysics scroll-physics-of [physics ^m/ScrollPhysics? parent]
+  (if (instance? m/ScrollPhysics physics)
+    (if parent (.applyTo ^m/ScrollPhysics physics parent) physics)
+    (case physics
+      :bouncing (m/BouncingScrollPhysics .parent parent)
+      :clamping (m/ClampingScrollPhysics .parent parent)
+      :never    (m/NeverScrollableScrollPhysics .parent parent)
+      :always   (m/AlwaysScrollableScrollPhysics .parent parent)
+      :page     (m/PageScrollPhysics .parent parent)
+      :always-bouncing (m/AlwaysScrollableScrollPhysics .parent (m/BouncingScrollPhysics .parent parent))
+      (throw (Exception. (str "Invalid scroll physics: " physics " (expected :bouncing, :clamping, :never, :always, :always-bouncing, or :page)"))))))
+
+(defn ^m/ScrollPhysics? scroll-physics
+  "Converts `physics` to `ScrollPhysics`; `nil` stays `nil` (the ambient
+   `ScrollConfiguration` decides).
+
+   Possible values:
+    - instance of `ScrollPhysics`
+    - `:bouncing`, `:clamping`, `:never`, `:always`, `:page`
+    - `:always-bouncing` — accepts a drag and bounces even when the content
+      fits the viewport (iOS `alwaysBounce`): `:always` over `:bouncing`
+    - a vector chaining physics outermost first: `[:always :bouncing]` is
+      `AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics())`
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/ScrollPhysics-class.html)"
+  [physics]
+  (cond
+    (nil? physics) nil
+    (vector? physics) (reduce (fn [parent p] (scroll-physics-of p parent))
+                              nil
+                              (rseq physics))
+    :else (scroll-physics-of physics nil)))
+
+(defn ^ui/PointerDeviceKind pointer-device-kind
+  "Converts a keyword to a `PointerDeviceKind`: `:touch`, `:mouse`, `:stylus`,
+   `:inverted-stylus`, `:trackpad`, `:unknown`."
+  [kind]
+  (if (instance? ui/PointerDeviceKind kind)
+    kind
+    (case kind
+      :touch ui/PointerDeviceKind.touch
+      :mouse ui/PointerDeviceKind.mouse
+      :stylus ui/PointerDeviceKind.stylus
+      :inverted-stylus ui/PointerDeviceKind.invertedStylus
+      :trackpad ui/PointerDeviceKind.trackpad
+      :unknown ui/PointerDeviceKind.unknown
+      (throw (Exception. (str "Invalid pointer device kind: " kind " (expected :touch, :mouse, :stylus, :inverted-stylus, :trackpad or :unknown)"))))))
+
+(declare scroll-view-keyboard-dismiss-behavior)
+
+;; @ai-generated(solo)
+(defn ^w/ScrollBehavior scroll-behavior
+  "Builds a `ScrollBehavior` — how every scrollable below a
+   `ScrollConfiguration` (or an app root's `scrollBehavior`) behaves by default.
+
+   `base` is the behavior the options override: a `ScrollBehavior`, or
+   `:material` (default), `:cupertino`, `:default` (the plain widgets-layer one).
+   It may also be given as `:base` inside `opts`.
+
+   Options (all optional; omitted ones defer to `base`):
+    - `:physics` — anything `scroll-physics` accepts, e.g. `:always-bouncing`
+    - `:scrollbars` — `false` hides the desktop scrollbars
+    - `:overscroll` — `false` hides the overscroll glow/stretch indicator
+    - `:drag-devices` — a collection of `pointer-device-kind`s that can drag-scroll
+      (e.g. `#{:touch :mouse}` to let a mouse drag lists on desktop)
+    - `:keyboard-dismiss` — `:manual` or `:on-drag`
+
+   ```clojure
+   (scroll-behavior :cupertino {:physics :always-bouncing})
+   (scroll-behavior {:scrollbars false})
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/widgets/ScrollBehavior-class.html)"
+  ([opts]
+   (if (instance? w/ScrollBehavior opts)
+     opts
+     (scroll-behavior (:base opts :material) opts)))
+  ([base opts]
+   (let [^w/ScrollBehavior base (cond
+                                  (instance? w/ScrollBehavior base) base
+                                  (= base :material) (m/MaterialScrollBehavior)
+                                  (= base :cupertino) (cup/CupertinoScrollBehavior)
+                                  (= base :default) (w/ScrollBehavior)
+                                  :else (throw (Exception. (str "Invalid scroll behavior base: " base " (expected a ScrollBehavior, :material, :cupertino or :default)"))))
+         {:keys [physics scrollbars overscroll drag-devices keyboard-dismiss]} opts]
+     (if (and (nil? physics) (nil? scrollbars) (nil? overscroll)
+              (nil? drag-devices) (nil? keyboard-dismiss))
+       base
+       (.copyWith base
+                  .physics (scroll-physics physics)
+                  .scrollbars (some-> scrollbars boolean)
+                  .overscroll (some-> overscroll boolean)
+                  .dragDevices (some->> drag-devices
+                                        (map pointer-device-kind)
+                                        (#/(dc/Set.of ui/PointerDeviceKind)))
+                  .keyboardDismissBehavior (some-> keyboard-dismiss
+                                                   scroll-view-keyboard-dismiss-behavior))))))
+
+(defn ^m/BoxFit? box-fit
+  "Converts `fit` to a `BoxFit` — how a box (an image) is inscribed into another.
+   `nil` stays `nil` (the widget's default).
+
+   Possible values: instance of `BoxFit`, `:cover`, `:contain`, `:fill`,
+   `:fit-width`, `:fit-height`, `:none`, `:scale-down`.
+
+   [Flutter docs](https://api.flutter.dev/flutter/painting/BoxFit.html)"
+  [fit]
+  (cond
+    (nil? fit) nil
+    (instance? m/BoxFit fit) fit
+    :else (case fit
+            :cover m/BoxFit.cover
+            :contain m/BoxFit.contain
+            :fill m/BoxFit.fill
+            :fit-width m/BoxFit.fitWidth
+            :fit-height m/BoxFit.fitHeight
+            :none m/BoxFit.none
+            :scale-down m/BoxFit.scaleDown
+            (throw (Exception. (str "Invalid box fit: " fit " (expected :cover, :contain, :fill, :fit-width, :fit-height, :none or :scale-down)"))))))
+
+(defn ^m/ImageProvider image-provider
+  "Converts `src` to an `ImageProvider`.
+
+   Possible values:
+    - instance of `ImageProvider`
+    - a string starting with `http://` or `https://` — `NetworkImage`
+    - any other string — an asset path (`AssetImage`)
+    - `{:asset path :package pkg}` / `{:network url :scale s :headers {…}}`
+    - `{:memory bytes :scale s}` — a `Uint8List` of encoded image bytes
+
+   [Flutter docs](https://api.flutter.dev/flutter/painting/ImageProvider-class.html)"
+  [src]
+  (cond
+    (instance? m/ImageProvider src) src
+    (string? src) (if (re-find #"^https?://" src)
+                    (m/NetworkImage src)
+                    (m/AssetImage src))
+    (map? src) (cond
+                 (:asset src) (m/AssetImage (:asset src) .package (:package src))
+                 (:network src) (m/NetworkImage (:network src)
+                                                .scale (double (:scale src 1.0))
+                                                .headers (some->> (:headers src)
+                                                                  (into {} (map (fn [[k v]] [(name k) (str v)])))
+                                                                  (#/(dc/Map.of dc/String dc/String))))
+                 (:memory src) (m/MemoryImage (:memory src) .scale (double (:scale src 1.0)))
+                 :else (throw (Exception. (str "Invalid image source map: " src " (expected :asset, :network or :memory)"))))
+    :else (throw (Exception. (str "Invalid image source: " src)))))
+
+(defn ^ui/FilterQuality filter-quality
+  "Converts a keyword to a `FilterQuality`: `:none`, `:low`, `:medium`, `:high`."
+  [quality]
+  (if (instance? ui/FilterQuality quality)
+    quality
+    (case quality
+      :none ui/FilterQuality.none
+      :low ui/FilterQuality.low
+      :medium ui/FilterQuality.medium
+      :high ui/FilterQuality.high
+      (throw (Exception. (str "Invalid filter quality: " quality " (expected :none, :low, :medium or :high)"))))))
+
+(defn ^ui/ImageFilter image-filter
+  "Converts `filter` to an `ImageFilter` (for `backdrop-filter`, `t/paint`'s
+   `:image-filter`, …).
+
+   Possible values:
+    - instance of `ImageFilter` (a `ColorFilter` is one too)
+    - a number — gaussian blur sigma on both axes
+    - `[sigma-x sigma-y]` — gaussian blur per axis
+    - `{:blur sigma-or-[x y] :tile-mode …}` — gaussian blur; without
+      `:tile-mode` the engine picks the edge mode (decal for backdrops)
+    - `{:dilate radius-or-[x y]}` / `{:erode radius-or-[x y]}`
+    - `{:color-filter …}` — anything `color-filter` accepts
+    - `{:compose [outer inner]}` — `inner` applied first
+
+   [Flutter docs](https://api.flutter.dev/flutter/dart-ui/ImageFilter-class.html)"
+  [filter]
+  (let [xy (fn [v] (if (sequential? v)
+                     [(double (first v)) (double (second v))]
+                     [(double v) (double v)]))]
+    (cond
+      (instance? ui/ImageFilter filter) filter
+      (or (number? filter) (vector? filter))
+      (let [[x y] (xy filter)] (ui/ImageFilter.blur .sigmaX x .sigmaY y))
+
+      (map? filter)
+      (cond
+        (contains? filter :blur)
+        (let [[x y] (xy (:blur filter))]
+          (ui/ImageFilter.blur .sigmaX x .sigmaY y
+                               .tileMode (some-> (:tile-mode filter) tile-mode)))
+        (contains? filter :dilate)
+        (let [[x y] (xy (:dilate filter))] (ui/ImageFilter.dilate .radiusX x .radiusY y))
+        (contains? filter :erode)
+        (let [[x y] (xy (:erode filter))] (ui/ImageFilter.erode .radiusX x .radiusY y))
+        (contains? filter :color-filter)
+        (color-filter (:color-filter filter))
+        (contains? filter :compose)
+        (let [[outer inner] (:compose filter)]
+          (ui/ImageFilter.compose .outer (image-filter outer) .inner (image-filter inner)))
+        :else (throw (Exception. (str "Invalid image filter map: " filter))))
+
+      :else (throw (Exception. (str "Invalid image filter: " filter))))))
+
+(defn ^ui/StrokeCap stroke-cap
+  "Converts a keyword to a `StrokeCap`: `:butt`, `:round`, `:square`."
+  [cap]
+  (if (instance? ui/StrokeCap cap)
+    cap
+    (case cap
+      :butt ui/StrokeCap.butt
+      :round ui/StrokeCap.round
+      :square ui/StrokeCap.square
+      (throw (Exception. (str "Invalid stroke cap: " cap " (expected :butt, :round or :square)"))))))
+
+(defn ^ui/StrokeJoin stroke-join
+  "Converts a keyword to a `StrokeJoin`: `:miter`, `:round`, `:bevel`."
+  [join]
+  (if (instance? ui/StrokeJoin join)
+    join
+    (case join
+      :miter ui/StrokeJoin.miter
+      :round ui/StrokeJoin.round
+      :bevel ui/StrokeJoin.bevel
+      (throw (Exception. (str "Invalid stroke join: " join " (expected :miter, :round or :bevel)"))))))
+
+;; @ai-generated(solo)
+(defn ^ui/Paint paint
+  "Builds a `Paint` — the style used to draw on a `Canvas` (see `custom-paint`).
+
+   Options (all optional):
+    - `:color` — any `color` value
+    - `:style` — `:fill` (default) or `:stroke`
+    - `:stroke-width` — number
+    - `:cap` / `:stroke-cap` — `:butt`, `:round`, `:square`
+    - `:join` / `:stroke-join` — `:miter`, `:round`, `:bevel`
+    - `:miter-limit` — number
+    - `:anti-alias` — boolean, default true
+    - `:blend-mode` — any `blend-mode` value
+    - `:shader` — a `Shader` (e.g. `(.createShader (gradient …) rect)`)
+    - `:color-filter` — any `color-filter` value
+    - `:image-filter` — any `image-filter` value
+    - `:mask-filter` — a `MaskFilter`, a number (normal blur sigma) or
+      `{:blur sigma :style :normal}` (`blur-style` keywords)
+    - `:filter-quality` — `:none`, `:low`, `:medium`, `:high`
+    - `:invert-colors` — boolean
+
+   A `Paint` passes through unchanged.
+
+   ```clojure
+   (paint {:color :red :style :stroke :stroke-width 2 :cap :round})
+   ```
+
+   [Flutter docs](https://api.flutter.dev/flutter/dart-ui/Paint-class.html)"
+  [opts]
+  (if (instance? ui/Paint opts)
+    opts
+    (let [p (ui/Paint)
+          {:keys [style stroke-width miter-limit anti-alias shader
+                  mask-filter invert-colors]} opts
+          cap (or (:cap opts) (:stroke-cap opts))
+          join (or (:join opts) (:stroke-join opts))]
+      (when-some [c (:color opts)] (.-color! p (color c)))
+      (when (some? style)
+        (.-style! p (case style
+                      :fill ui/PaintingStyle.fill
+                      :stroke ui/PaintingStyle.stroke
+                      (if (instance? ui/PaintingStyle style)
+                        style
+                        (throw (Exception. (str "Invalid paint style: " style " (expected :fill or :stroke)")))))))
+      (when (some? stroke-width) (.-strokeWidth! p (double stroke-width)))
+      (when (some? cap) (.-strokeCap! p (stroke-cap cap)))
+      (when (some? join) (.-strokeJoin! p (stroke-join join)))
+      (when (some? miter-limit) (.-strokeMiterLimit! p (double miter-limit)))
+      (when (some? anti-alias) (.-isAntiAlias! p (boolean anti-alias)))
+      (when-some [b (:blend-mode opts)] (.-blendMode! p (blend-mode b)))
+      (when (some? shader) (.-shader! p shader))
+      (when-some [cf (:color-filter opts)] (.-colorFilter! p (color-filter cf)))
+      (when-some [f (:image-filter opts)] (.-imageFilter! p (image-filter f)))
+      (when (some? mask-filter)
+        (.-maskFilter! p (cond
+                           (instance? ui/MaskFilter mask-filter) mask-filter
+                           (number? mask-filter) (ui/MaskFilter.blur ui/BlurStyle.normal (double mask-filter))
+                           :else (ui/MaskFilter.blur (blur-style (:style mask-filter :normal))
+                                                     (double (:blur mask-filter))))))
+      (when-some [q (:filter-quality opts)] (.-filterQuality! p (filter-quality q)))
+      (when (some? invert-colors) (.-invertColors! p (boolean invert-colors)))
+      p)))
 
 (defn ^g/DragStartBehavior drag-start-behavior [b]
   (if (instance? g/DragStartBehavior b)
