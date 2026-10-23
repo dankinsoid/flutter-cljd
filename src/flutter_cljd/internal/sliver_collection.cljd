@@ -168,10 +168,12 @@
         (apply-diff* this old-data new-data key-fn))
       ;; one segment covers move + morph + enter + exit; the engine builds it on
       ;; the gen bump and captures the target from the new tree
-      (when (and (not (.-reorderable widget))
-                 (an/opens-segment? anim-config (.-active ^an/SegmentClock (.-clock this))
-                                    (boolean data-changed) (boolean layout-changed)))
-        (start-segment! this anim-config))
+      (when-not (.-reorderable widget)
+        (case (an/segment-action anim-config (.-active ^an/SegmentClock (.-clock this))
+                                 (boolean data-changed) (boolean layout-changed))
+          :start (start-segment! this anim-config)
+          :rebase (an/rebase-clock! (.-clock this))
+          nil))
       (.-reorderInProgress! this false)
       (.-previousUserData! this new-data)
       (rebuild-shadow! this))

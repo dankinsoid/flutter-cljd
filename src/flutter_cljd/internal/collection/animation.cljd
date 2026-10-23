@@ -91,16 +91,19 @@
          :remove (parse-sub (:remove animate) on)
          :move (parse-sub (:move animate) on)}))))
 
-(defn opens-segment?
-  "True when a change of the given kinds should (re)start the segment clock:
-   a kind listed in `:on`, or any change while a segment already plays (a
-   retarget — leaving it to finish would settle onto a stale target)."
+(defn segment-action
+  "What a change does to the segment clock: `:start` — a kind listed in `:on`
+   (re)starts it; `:rebase` — any other change while a segment plays re-captures
+   the target on the RUNNING clock (its timing unchanged, so companions driven by
+   the same clock stay in lockstep, and settling onto a stale target is avoided);
+   nil — nothing animates."
   [anim-config ^bool active ^bool data-changed ^bool layout-changed]
-  (boolean
-   (and anim-config
-        (or (and data-changed (contains? (:on anim-config) :data))
-            (and layout-changed (contains? (:on anim-config) :layout))
-            (and active (or data-changed layout-changed))))))
+  (cond
+    (nil? anim-config) nil
+    (or (and data-changed (contains? (:on anim-config) :data))
+        (and layout-changed (contains? (:on anim-config) :layout))) :start
+    (and active (or data-changed layout-changed)) :rebase
+    :else nil))
 
 (defn animates-data?
   "True when the config animates data changes — the gate for the enter/exit key
@@ -132,7 +135,7 @@
   (SegmentClock false nil nil 0))
 
 ;; @ai-generated(guided)
-(defn- ^p/SpringDescription seg-spring
+(defn ^p/SpringDescription seg-spring
   "A critically-damped (no overshoot) spring whose ~99% settle time matches
    `dur`. Critical damping keeps the driven value monotone in [0,1], so the
    collapse/fade fractions the builders read off it never overshoot."
@@ -176,6 +179,14 @@
     (.-active! clock true)
     (.animateWith ctrl (p/SpringSimulation (seg-spring dur) 0.0 1.0 v0))
     nil))
+
+(defn rebase-clock!
+  "Bumps the generation without touching the controller: the engine re-captures
+   its target and finishes over the clock's REMAINING progress (see
+   tween/rebased-progress)."
+  [^SegmentClock clock]
+  (.-gen! clock (inc (.-gen clock)))
+  nil)
 
 (defn settle-clock!
   "Stops the clock without animating (snap) — the host drops its enter/exit

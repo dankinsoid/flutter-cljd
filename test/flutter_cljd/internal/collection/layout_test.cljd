@@ -370,19 +370,20 @@
     (is (thrown? Exception (an/parse-anim-config #{:size})))))
 
 ;; @ai-generated(solo)
-(deftest opens-segment-gate
+(deftest segment-action-gate
   (let [layout-only (an/parse-anim-config #{:layout})
         all (an/parse-anim-config true)]
-    (testing "a kind in :on opens a segment at rest"
-      (is (an/opens-segment? layout-only false false true))
-      (is (an/opens-segment? all false true false)))
+    (testing "a kind in :on (re)starts the clock"
+      (is (= :start (an/segment-action layout-only false false true)))
+      (is (= :start (an/segment-action all false true false)))
+      (is (= :start (an/segment-action all true true false))))
     (testing "a kind not in :on snaps at rest (page append under #{:layout})"
-      (is (not (an/opens-segment? layout-only false true false))))
-    (testing "any change while a segment plays retargets it"
-      (is (an/opens-segment? layout-only true true false)))
-    (testing "no change or no config never opens"
-      (is (not (an/opens-segment? all true false false)))
-      (is (not (an/opens-segment? nil false true true)))))
+      (is (nil? (an/segment-action layout-only false true false))))
+    (testing "and rebases a playing segment on its running clock"
+      (is (= :rebase (an/segment-action layout-only true true false))))
+    (testing "no change or no config does nothing"
+      (is (nil? (an/segment-action all true false false)))
+      (is (nil? (an/segment-action nil false true true)))))
   (testing "enter/exit diff only when :data is animated"
     (is (an/animates-data? (an/parse-anim-config true)))
     (is (not (an/animates-data? (an/parse-anim-config #{:layout}))))))

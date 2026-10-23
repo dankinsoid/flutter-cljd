@@ -213,6 +213,8 @@
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
    ^:mutable committedAxis ;; :vertical | :horizontal the committed rects are expressed in; nil before
                           ;; the first pass. A change = the enclosing viewport flipped axis (axis-flip!).
+   ^:mutable ^double segT0 ;; clock value this segment's `from` was displayed at (tw/rebased-progress)
+   ^:mutable ^double segLastT ;; clock value the last laid pass displayed (0 at rest / at capture: t0)
    ^:mutable ^bool originLock] ;; set by axis-flip! until the next resting pass: a retarget of the flip
                           ;; morph must not re-anchor (the old-axis anchor's set-point would scroll the
                           ;; new axis away from its origin)
@@ -332,6 +334,11 @@
     ;; the window there, so the regime gate must not fight it (scenario 6).
     (when (identical? :resting (.-passMode this))
       (.-originLock! this false))
+    ;; a capture pass reads it (segment-start!) before restamping it
+    (.-segLastT! this (case (.-passMode this)
+                        :segment (.-value ^a/Animation (.-tweenAnim this))
+                        :resting 0.0
+                        (.-segLastT this)))
     (let [prev-regime (.-curRegime this)]
       (update-velocity! this c)
       (let [[^double behind ^double ahead]
@@ -2863,7 +2870,8 @@
   (when (and (pass-allows? (.-passMode rs) :set-point?) (.-segAnchor rs))
     (let [[corr ^double new-prev]
           (tw/point-correction-delta (.-segAnchor rs)
-                                     (.-value ^a/Animation (.-tweenAnim rs))
+                                     (tw/rebased-progress (.-value ^a/Animation (.-tweenAnim rs))
+                                                          (.-segT0 rs))
                                      (.-segPrevDesired rs))]
       (.-segPrevDesired! rs new-prev)
       corr)))
@@ -3227,6 +3235,12 @@
         the new target window) for an indexed target; a manager-free relay for a
         flow target (its capture walk already drove the lifecycle once)."
   [^CollectionRenderSliver rs ^r/SliverConstraints c]
+  ;; `from` is what the LAST pass displayed, at clock value segLastT: a rebased
+  ;; clock (an/rebase-clock!) maps its remainder from there; a restarted one is at 0
+  (.-segT0! rs (double (math/min (.-segLastT rs)
+                         (if-let [^a/Animation anim (.-tweenAnim rs)] (.-value anim) 0.0))))
+  ;; this pass displays `from`
+  (.-segLastT! rs (.-segT0 rs))
   (let [layout (.-layoutModel rs)
         indexed (some? (:geometry layout))
         ;; the layout's own enter/exit collapse axis (docs §8a/3c) — read
@@ -3403,7 +3417,8 @@
                   {})
         seg-tween (assoc (tw/keyed-tween-layout                          ; (d)
                           [:seg (.-curGen rs)] to-src from-rects from-extent (.-keyOf rs)
-                          (fn [] (.-value ^a/Animation (.-tweenAnim rs)))
+                          (let [^double t0 (.-segT0 rs)]
+                            (fn [] (tw/rebased-progress (.-value ^a/Animation (.-tweenAnim rs)) t0)))
                           {:entering (.-entering rs) :exiting (.-exiting rs)
                            :leaving leaving :collapse-axis collapse-axis})
                          ;; the span this frozen segment can answer for (§3.2)
@@ -3457,7 +3472,7 @@
                                      segGen -1 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     :resting 0.0 nil 0 (or dyingSlots []) nil false)]
+                                     :resting 0.0 nil 0 (or dyingSlots []) nil 0.0 0.0 false)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

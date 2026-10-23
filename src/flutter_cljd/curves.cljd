@@ -5,7 +5,8 @@
    ["package:flutter/animation.dart" :as a]
    [flutter-cljd.types :as t :refer [offset]]
    ["package:flutter/physics.dart" :as p]
-   [flutter-cljd.curves :as curves]))
+   [flutter-cljd.curves :as curves]
+   [flutter-cljd.internal.collection.animation :as can]))
 
 (defn catmull-rom-curve
   "An animation easing curve that passes smoothly through the given control points using a centripetal Catmull-Rom spline.
@@ -500,3 +501,16 @@
 (def fast-linear-to-slow-ease-in a/Curves.fastLinearToSlowEaseIn)
 (def fast-out-slow-in a/Curves.fastOutSlowIn)
 (def slow-middle a/Curves.slowMiddle)
+
+;; @ai-generated(solo)
+(defn ^p/SpringDescription collection-spring
+  "The spring a `sliver-collection`/`collection-box` segment runs on for an
+   `:animate` `:duration` (ms or Duration; default 300). Drive a companion
+   animation — e.g. the height of the scroll view holding a rail↔grid section —
+   with `(.animateWith controller (SpringSimulation spring 0.0 1.0 velocity))`,
+   started on the same rebuild as the collection change, and it moves in lockstep
+   with the cells (a duration-based Curve can't: the spring settles past its
+   nominal duration). On a retarget seed `velocity` with the controller's own, as
+   the engine does."
+  ([] (collection-spring 300))
+  ([duration] (can/seg-spring (t/duration duration))))

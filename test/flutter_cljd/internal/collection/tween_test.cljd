@@ -978,3 +978,11 @@
                                               true)]
       (is (true? unclipped?))
       (is (< (.abs (- op 0.25)) 1e-9)))))
+
+;; @ai-generated(solo)
+(deftest rebased-progress-maps-the-remaining-clock
+  (is (= 0.5 (tw/rebased-progress 0.5 0.0)))
+  (is (= 0.0 (tw/rebased-progress 0.6 0.6)))
+  (is (< (.abs (- 0.5 (tw/rebased-progress 0.8 0.6))) 1e-9))
+  (is (= 1.0 (tw/rebased-progress 1.0 0.6)))
+  (is (= 1.0 (tw/rebased-progress 0.9995 0.9995))))

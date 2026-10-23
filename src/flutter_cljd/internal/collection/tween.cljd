@@ -450,6 +450,16 @@
 
 ;; @ai-generated(solo)
 ;; @ai-generated(solo)
+(defn ^double rebased-progress
+  "Segment progress for a target captured at clock value `t0`: the clock's
+   remaining span [t0, 1] mapped onto [0, 1], so a mid-flight re-capture starts at
+   its `from` and ends with the clock. t0 = 0 (a fresh clock) is the identity."
+  [^double t ^double t0]
+  (if (> t0 0.999)
+    1.0
+    (let [^double p (/ (- t t0) (- 1.0 t0))] (if (< p 0.0) 0.0 p))))
+
+;; @ai-generated(solo)
 (defn transpose-rect
   "A committed content-space rect re-expressed after an axis swap: the old
    cross becomes the main offset and the old main offset, minus `shift` (the

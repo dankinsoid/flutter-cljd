@@ -84,7 +84,9 @@
    ^:mutable segTween     ;; the built keyed-tween-layout for the current segment, or nil
    ^:mutable clips        ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at
                           ;; full but painted clipped to their lerped visible window (§8a)
-   ^:mutable committedAxis]  ;; the axis `committed` is expressed in
+   ^:mutable committedAxis  ;; the axis `committed` is expressed in
+   ^:mutable ^double segT0   ;; clock value the segment's `from` was displayed at (rebased-progress)
+   ^:mutable ^double segLastT]  ;; clock value the last animating pass displayed; 0 at rest
   :extends r/RenderBox
 
   (setupParentData [_this ^r/RenderObject child]
@@ -328,7 +330,8 @@
           seg-tween (tw/keyed-tween-layout
                      [:box (.-curGen rb)] to-src (.-committed rb) 0.0
                      (fn [^int i] (key-for rb i))
-                     (fn [] (.-value ^a/Animation (.-tweenAnim rb)))
+                     (let [^double t0 (double (math/min (.-segLastT rb) (.-value ^a/Animation (.-tweenAnim rb))))]
+                       (fn [] (tw/rebased-progress (.-value ^a/Animation (.-tweenAnim rb)) t0)))
                      {:entering (.-entering rb) :exiting exiting
                       :collapse-axis collapse-axis})
           ^ui/Size target-size (.constrain c (if vertical?
@@ -338,8 +341,12 @@
       (.-fromSize! rb (when (.-hasSize rb) (.-size rb)))
       (.-segTween! rb seg-tween)
       (.-targetSize! rb target-size)
+      ;; `from` (committed) was displayed at segLastT: a rebased clock maps its
+      ;; remainder from there, a restarted one is at 0
+      (.-segT0! rb (double (math/min (.-segLastT rb) (.-value ^a/Animation (.-tweenAnim rb)))))
       (.-segGen! rb (.-curGen rb))))
-  (let [^double t (.-value ^a/Animation (.-tweenAnim rb))
+  (.-segLastT! rb (.-value ^a/Animation (.-tweenAnim rb)))
+  (let [^double t (tw/rebased-progress (.-value ^a/Animation (.-tweenAnim rb)) (.-segT0 rb))
         seg-tween (.-segTween rb)
         env' (assoc env :ctx ((:prepare seg-tween) env))
         geo (:geometry seg-tween)
@@ -406,7 +413,7 @@
         ;; DRY mid-segment with a captured target: report the lerped size only.
         (and dry? anim (= (.-curGen rb) (.-segGen rb)) (some? (.-targetSize rb)))
         (lerp-size (.-fromSize rb) (.-targetSize rb)
-                   (double (.-value ^a/Animation anim)))
+                   (tw/rebased-progress (.-value ^a/Animation anim) (.-segT0 rb)))
 
         ;; RESTING (or a dry pass with no live target): natural placement.
         :else
@@ -418,6 +425,7 @@
           ;; resting: no cell is engine-clipped — drop any stale clip map.
           (when-not dry? (.-clips! rb {}))
           (when (and (not dry?) (nil? anim))
+            (.-segLastT! rb 0.0)
             (record-committed! rb env vertical?))
           (.constrain c (if vertical?
                           (ui/Size cross-end main-end)
@@ -428,7 +436,7 @@
 (defn ^RenderCollectionBox render-box
   "A resting RenderCollectionBox for `layout` on `axis`."
   [layout axis]
-  (RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {} axis))
+  (RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {} axis 0.0 0.0))
 
 (defn- set-box-tween-anim!
   "Moves the per-tick relayout listener onto `anim` (see an/swap-tick-listener!)."
@@ -597,9 +605,11 @@
                  (an/animates-data? (.-animConfig wgt))
                  (all-keyed? old-kids) (all-keyed? new-kids))
         (apply-box-diff! this old-kids new-kids))
-      (when (an/opens-segment? (.-animConfig wgt) (.-active ^an/SegmentClock (.-clock this))
+      (case (an/segment-action (.-animConfig wgt) (.-active ^an/SegmentClock (.-clock this))
                                order-changed (or layout-changed axis-changed))
-        (start-segment! this)))
+        :start (start-segment! this)
+        :rebase (an/rebase-clock! (.-clock this))
+        nil))
     nil)
 
   (dispose [^CollectionBoxState this]
