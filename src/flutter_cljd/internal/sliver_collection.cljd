@@ -16,7 +16,8 @@
    [flutter-cljd.internal.collection.render :as render]
    [flutter-cljd.internal.collection.diff :as diff]
    [flutter-cljd.internal.collection.animation :as an]
-   [flutter-cljd.internal.collection.reorder :as reord]))
+   [flutter-cljd.internal.collection.reorder :as reord]
+   [flutter-cljd.internal.visible-range :as vr]))
 
 ;; --- Argument Parsing ---
 
@@ -373,11 +374,27 @@
 
 ;; --- Public API ---
 
+(declare ^:private sliver-collection-widget)
+
 (defn ^w/Widget sliver-collection*
   "Creates a sliver-collection widget from raw variadic args."
   [raw-args]
-  (let [args (parse-collection-args raw-args)
-        key-fn (:key-fn args)
+  (let [args (parse-collection-args raw-args)]
+    (if (:on-visible-range args)
+      ;; data-index space: a dying (shadow) cell is built through :user-builder,
+      ;; not :item-builder, so it never counts as materialized
+      (vr/tracking args (:item-count args)
+                   (fn [wrap]
+                     (let [ib (:item-builder args)]
+                       (sliver-collection-widget
+                        (assoc args
+                               :auto-keep-alive false
+                               :item-builder (fn [ctx ^int i] (wrap i (ib ctx i))))))))
+      (sliver-collection-widget args))))
+
+(defn- ^w/Widget sliver-collection-widget
+  [args]
+  (let [key-fn (:key-fn args)
         animate (:animate args)
         ;; parse whenever :animate is present — the segment covers move/morph
         ;; index-based (no :key-fn); enter/exit gate on :key-fn via the diff

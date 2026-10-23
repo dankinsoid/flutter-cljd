@@ -85,3 +85,29 @@
     (let [settled (.-pixels (scroll-position tester))]
       (await (.pump tester (dc/Duration .milliseconds 200)))
       (is (= settled (.-pixels (scroll-position tester))) "stops after the drag ends"))))
+
+;; @ai-generated(solo)
+(deftest sliver-collection-visible-range
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [reports (atom [])]
+    (await (.pumpWidget tester (host (f/custom-scroll
+                                      :cache-extent 0
+                                      (f/sliver-collection
+                                       (mapv (fn [i] {:id i}) (range 100))
+                                       :key-fn :id
+                                       :overscan false
+                                       :on-visible-range (fn [r] (swap! reports conj r))
+                                       (fn [_ _] (w/SizedBox .height 50.0)))))))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (let [r (last @reports)]
+      (is (= 0 (:first r)) (str r))
+      (is (<= 11 (:last r) 13) (str r))
+      (is (false? (:near-end? r))))
+    (.jumpTo (scroll-position tester) 4400.0)
+    (await (.pump tester))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (let [r (last @reports)]
+      (is (<= 86 (:first r) 88) (str r))
+      (is (= 99 (:last r)) (str r))
+      (is (true? (:near-end? r))))))

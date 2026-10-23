@@ -1,6 +1,7 @@
 ;; @ai-generated(guided)
 (ns flutter-cljd.internal.visible-range
-  "`list`'s `:on-visible-range`: reports the materialized item range.
+  "`:on-visible-range` for `list` and `sliver-collection`: reports the
+  materialized item range.
 
   Each item is wrapped in a tiny stateful shell that registers its index on
   mount and drops it on dispose. A lazy list builds only the items within the
@@ -86,21 +87,32 @@
     (number? v) [v v]
     :else (let [[mn mx] v] [mn (or mx mn)])))
 
-(defn tracking-list
-  "Builds the list through `build` (`(fn [args children] widget)`) with every
-  item wrapped to report into `(:on-visible-range args)`."
-  [args children build]
+(defn tracking
+  "Reports the materialized index range into `(:on-visible-range args)`.
+  `build` is `(fn [wrap])` returning the scroll widget, where `(wrap i child)`
+  registers item `i` — call it on every item the lazy host builds. The host must
+  not keep scrolled-away items alive (that would inflate the range)."
+  [args n build]
   (f/widget
    :managed [st (atom {:mounted #{} :timer nil :burst-start nil :last nil})
              :dispose dispose-state]
-   (let [item-builder (:item-builder args)
-         [mn mx] (debounce-window (:visible-range-debounce args))]
+   (let [[mn mx] (debounce-window (:visible-range-debounce args))]
      (swap! st assoc
-            :n (if item-builder (:item-count args) (count children))
+            :n n
             :threshold (:near-end-threshold args 3)
             :on-visible (:on-visible-range args)
             :min mn
             :max mx)
-     (build (cond-> (assoc args :add-automatic-keep-alives false)
-              item-builder (assoc :item-builder (fn [ctx i] (cell-shell st i (item-builder ctx i)))))
-            (vec (map-indexed (fn [i c] (cell-shell st i c)) children))))))
+     (build (fn [i child] (cell-shell st i child))))))
+
+(defn tracking-list
+  "Builds the list through `build` (`(fn [args children] widget)`) with every
+  item wrapped to report into `(:on-visible-range args)`."
+  [args children build]
+  (let [item-builder (:item-builder args)]
+    (tracking args
+              (if item-builder (:item-count args) (count children))
+              (fn [wrap]
+                (build (cond-> (assoc args :add-automatic-keep-alives false)
+                         item-builder (assoc :item-builder (fn [ctx i] (wrap i (item-builder ctx i)))))
+                       (vec (map-indexed (fn [i c] (wrap i c)) children)))))))

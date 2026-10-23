@@ -3197,6 +3197,15 @@ Overscan (velocity-scaled directional read-ahead, on by default):
   engine's average-cell estimate before any cell is measured (improves cold-start
   and fast-fling placement)
 
+Visible range (pager feedback, same contract as `list`'s):
+
+- `:on-visible-range` — `(fn [{:keys [first last near-end?]}])` with the
+  MATERIALIZED data-index range (viewport + cache extent + overscan, so `:last`
+  runs ahead), trailing-debounced, only on change; turns `:auto-keep-alive` off.
+  Dying (exit-animating) cells don't count.
+- `:near-end-threshold` (default 3), `:visible-range-debounce` (default
+  `[150 250]` ms)
+
 Keep-alive: `:auto-keep-alive` (default `true`)"
   [& args]
   (scol/sliver-collection* args))
