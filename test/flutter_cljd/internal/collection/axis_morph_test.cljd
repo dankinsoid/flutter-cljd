@@ -114,6 +114,24 @@
       (is (< (.abs (:offset r)) 0.5) (explain r))
       (is (near? [110.0 0.0] (get (:after r) 1)) (explain r)))))
 
+(deftest sliver-axis-flip-deep-grid-to-row
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; the on-screen cells sit far past the row's origin window: they are dropped
+  ;; rather than bridged, and the row still lands at its start
+  (let [r (await (flip-run! t grid row 3000.0))]
+    (is (< (.abs (:offset r)) 0.5) (explain r))
+    (is (near? [110.0 0.0] (get (:after r) 1)) (explain r))))
+
+(deftest sliver-axis-flip-mid-grid-to-row
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; on-screen cells a few windows past the origin: bridged from index 0
+  (let [r (await (flip-run! t grid row 1055.0))]
+    (is (kept-on-screen? (:before r) (:t0 r)) (explain r))
+    (is (< (.abs (:offset r)) 0.5) (explain r))
+    (is (near? [110.0 0.0] (get (:after r) 1)) (explain r))))
+
 (deftest sliver-axis-flip-with-trailing-zero-extent-cell
   :tags [:widget]
   :runner (ft/testWidgets [t])

@@ -3154,7 +3154,9 @@ Animations (off by default):
   `:columns` change, …) and insert/remove are all the same segment — animating
   position AND size in any layout. Flipping the enclosing scroll view's axis
   (a rail section becoming a grid) is a `:layout` change: cells morph from their
-  on-screen rects and the new axis starts scrolled to 0 `:move` sets that segment's
+  on-screen rects and the new axis starts scrolled to 0. Give that scroll view a
+  `:controller` or `:primary false` — Flutter makes a controller-less vertical
+  one primary, which remounts it (and the collection) on the flip `:move` sets that segment's
   duration/curve; inserts grow in and removals collapse out along the main axis
 - `:key-fn` — `(fn [item] identity-key)`, optional (falls back to the item's
   index). It only names cells for the diff; no `:id` detection is needed

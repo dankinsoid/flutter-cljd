@@ -41,7 +41,7 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare axis-flip! layout-pass! key-for flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
+(declare axis-flip! layout-pass! key-for count-attached flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
          segment-start! update-velocity! overscan-extent sample-view-anchor!
          segment-domain-exited? settle-segment! state-before)
 
@@ -202,7 +202,7 @@
                           ;; (pass-mode) and read through pass-allows!; the ONE owner of segment-ness gating
    ^:mutable ^double passRebase ;; per-pass sum of every coordinate-frame delta produced (via rebase+!);
                           ;; reset each performLayout, consumed by exactly one arm at pass end
-   ^:mutable reseedCause  ;; nil | :count-change | :cross-layout — why the next flow pass must re-derive its
+   ^:mutable reseedCause  ;; nil | :count-change | :cross-layout | :axis-flip — why the next flow pass must re-derive its
                           ;; frame from the anchor; consumed (and cleared) by the next seed-cache!
    ^:mutable ^int passMaterialized ;; children laid out by the CURRENT flow pass (walk / backfill / leading
                           ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
@@ -211,8 +211,11 @@
    ^:mutable dyingSlots ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
                           ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
-   ^:mutable committedAxis] ;; :vertical | :horizontal the committed rects are expressed in; nil before
+   ^:mutable committedAxis ;; :vertical | :horizontal the committed rects are expressed in; nil before
                           ;; the first pass. A change = the enclosing viewport flipped axis (axis-flip!).
+   ^:mutable ^bool originLock] ;; set by axis-flip! until the next resting pass: a retarget of the flip
+                          ;; morph must not re-anchor (the old-axis anchor's set-point would scroll the
+                          ;; new axis away from its origin)
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -327,6 +330,8 @@
     ;; frame's directional overscan window BEFORE dispatching. A playing segment
     ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
     ;; the window there, so the regime gate must not fight it (scenario 6).
+    (when (identical? :resting (.-passMode this))
+      (.-originLock! this false))
     (let [prev-regime (.-curRegime this)]
       (update-velocity! this c)
       (let [[^double behind ^double ahead]
@@ -431,6 +436,7 @@
                                                     (double (:main-extent rect)))))
                                    0.0 (vals flipped))]
         (.-committed! rs flipped)
+        (.-originLock! rs true)
         ;; last-frame child offsets feed pre-gc!'s windowing: re-express them too,
         ;; or every cell past the new window's old-axis edge is collected before
         ;; it can leave-slide
@@ -451,8 +457,18 @@
         (.-cacheFirst! rs 0)
         (.-baseState! rs nil)
         (.-checkpoints! rs {})
+        ;; this drop already covers layout-pass!'s cross-change one, which would
+        ;; also clear the :axis-flip reseed
+        (.-crossCached! rs (.-crossAxisExtent c))
         (.-anchoredTo0! rs false)
-        (.-reseedCause! rs nil)
+        (.-reseedCause! rs :axis-flip)
+        ;; the origin window is seeded from index 0 and bridged up to the first
+        ;; attached child; past O(window) that bridge is a far jump — drop the
+        ;; deep cells (they vanish instead of sliding) rather than build the gap
+        (when-let [^r/RenderBox fc (.-firstChild rs)]
+          (let [^int n (count-attached rs)]
+            (when (> (.indexOf rs fc) n)
+              (.collectGarbage rs n 0))))
         (.-refineLastOffset! rs dc/double.nan)
         (.-velocityEMA! rs 0.0)
         (.-scrollSign! rs 0)
@@ -1649,9 +1665,11 @@
      :at-0         nothing attached / first child at 0: exact from-0 seed.
      :anchor       dead-reckon at the resolved anchor slot.
      :restart-0    no :anchor hook — drop children, re-flow from 0.
+   `origin?` (an axis flip) forces :at-0: the new axis starts at its origin.
    Pure."
-  [{:keys [cache? far? at-top? invertible? deep? attached? first0? anchor-fn?]}]
+  [{:keys [cache? far? at-top? invertible? deep? attached? first0? anchor-fn? origin?]}]
   (cond
+    origin? :at-0
     (and cache? far? (or at-top? invertible?)) (if at-top? :far-top :far-inverse)
     cache? :keep
     deep? :cold-deep
@@ -1709,7 +1727,8 @@
                :deep? (boolean (and (nil? fc) approx-fn (> ws 0.5)))
                :attached? (some? fc)
                :first0? (boolean (and fc (zero? (.indexOf rs ^r/RenderBox fc))))
-               :anchor-fn? (some? anchor-fn)})]
+               :anchor-fn? (some? anchor-fn)
+               :origin? (identical? :axis-flip cause)})]
     (.-reseedCause! rs nil)
     (case plan
       ;; far jump over a live band: geometry decides, never attachment —
@@ -2734,7 +2753,11 @@
       (pre-gc! rs ws-o we-o)
       (let [cause (.-reseedCause rs)
             plan0 (seed-cache! rs layout env)
-            plan (or (normalize-cache! rs layout env) plan0)
+            ;; :at-0 with a later first child (an axis flip's kept cells) is
+            ;; bridged down to 0 by align-start!, not re-anchored
+            plan (if (identical? :at-0 plan0)
+                   plan0
+                   (or (normalize-cache! rs layout env) plan0))
             ;; a re-anchor rebased the walked frame — materialize against the shifted
             ;; band, or backfill walks the whole (approx − stale) gap in one frame
             [^double ws-eff ^double we-eff] (reanchor-band ws-o we-o (.-passRebase rs))
@@ -3278,7 +3301,7 @@
                      committed-from)                                     ; (a')
         ;; fraction-preserving set-point (docs §9); nil when nothing was resting or
         ;; the slot's target frame is unknown ⇒ no correction this segment
-        va (.-viewAnchor rs)
+        va (when-not (.-originLock rs) (.-viewAnchor rs))
         resting (when va
                   (if (contains? (.-exiting rs) (:key va))
                     (repick-view-anchor rs committed-from (.-exiting rs)
@@ -3414,7 +3437,7 @@
                                      segGen -1 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     :resting 0.0 nil 0 (or dyingSlots []) nil)]
+                                     :resting 0.0 nil 0 (or dyingSlots []) nil false)]
       (set-tween-anim! rs tweenAnim)
       rs))
 
