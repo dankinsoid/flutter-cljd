@@ -125,13 +125,14 @@
       ;; reorder-driven change is skipped once — SliverReorderableList animates it.
       ;; The gate short-circuits before any O(n) diff/shadow work for a non-keyed or
       ;; non-animated collection (WS3.2).
-      (when (an/diff-enabled? key-fn anim-config new-data old-data (.-reorderInProgress this))
+      (when (and (an/animates-data? anim-config)
+                 (an/diff-enabled? key-fn anim-config new-data old-data (.-reorderInProgress this)))
         (apply-diff* this old-data new-data key-fn))
       ;; one segment covers move + morph + enter + exit; the engine builds it on
       ;; the gen bump and captures the target from the new tree
-      (when (and anim-config
-                 (not (.-reorderable widget))
-                 (or data-changed layout-changed))
+      (when (and (not (.-reorderable widget))
+                 (an/opens-segment? anim-config (.-active ^an/SegmentClock (.-clock this))
+                                    (boolean data-changed) (boolean layout-changed)))
         (start-segment! this anim-config))
       (.-reorderInProgress! this false)
       (.-previousUserData! this new-data)
@@ -380,8 +381,7 @@
         animate (:animate args)
         ;; parse whenever :animate is present — the segment covers move/morph
         ;; index-based (no :key-fn); enter/exit gate on :key-fn via the diff
-        anim-config (when animate
-                      (an/parse-anim-config animate))
+        anim-config (an/parse-anim-config animate)
         reorderable (boolean (:reorderable args))
         layout-key (or (:layout args) :list)
         ;; a fixed item-extent measures children tightly; size-collapse

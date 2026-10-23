@@ -2895,7 +2895,11 @@ Options:
 
 - `:axis` — the layout's main axis, `:vertical` (default) or `:horizontal`
 - `:key` — widget key
-- `:animate` — `true` | `{:duration :curve :insert :remove :move}`; ONE
+- `:animate` — `true` | a set of change kinds | `{:on :duration :curve :insert
+  :remove :move}`. Kinds: `:data` (keyed children inserted/removed/shuffled),
+  `:layout` (layout `:id` or `:axis` changed); `true` or a map without `:on`
+  means both, `#{:layout}` animates a morph but snaps page appends. A kind not
+  in `:on` still retargets a segment already playing. ONE
   engine-owned keyed rect animator glides every child from its old rect to its
   new one when the layout changes (`:wrap`↔`:list`, a grid `:columns` change, …)
   or keyed children are inserted/removed/shuffled, animating position AND size.
@@ -3138,12 +3142,19 @@ the full contract and the built-ins as examples (wrap is ~25 lines).
 
 Animations (off by default):
 
-- `:animate` — `true` | `{:duration :curve :insert :remove :move}`; each
-  section may be `false` to disable or `{:duration :curve :builder}`
+- `:animate` — `true` | a set of change kinds | `{:on :duration :curve :insert
+  :remove :move}`; each section may be `false` to disable or
+  `{:duration :curve :builder}`
+- `:on` — the change kinds that OPEN a segment: `:data` (data/count change)
+  and `:layout` (layout `:id` change); `true`/a map without `:on` = both, a
+  bare set `#{:layout}` = `{:on #{:layout}}`. A change of any kind retargets a
+  segment already playing; enter/exit wipes need `:data` in `:on`
 - ONE engine-owned keyed rect animator glides every cell from its old rect
-  to its new one, so move, layout/grid/axis morph (`:list`↔`:grid`, a grid
+  to its new one, so move, layout/grid morph (`:list`↔`:grid`, a grid
   `:columns` change, …) and insert/remove are all the same segment — animating
-  position AND size in any layout and scroll axis. `:move` sets that segment's
+  position AND size in any layout. Flipping the enclosing scroll view's axis is
+  NOT supported mid-life (committed rects keep the old axis; use a fresh key);
+  `collection-box` handles an `:axis` change. `:move` sets that segment's
   duration/curve; inserts grow in and removals collapse out along the main axis
 - `:key-fn` — `(fn [item] identity-key)`, optional (falls back to the item's
   index). It only names cells for the diff; no `:id` detection is needed

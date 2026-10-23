@@ -350,6 +350,43 @@
   (testing "mid-reorder short-circuits (the reorderable list animates it itself)"
     (is (not (an/diff-enabled? :id {:duration 1} [{:id 1}] [{:id 2}] true)))))
 
+;; @ai-generated(solo)
+(deftest animate-change-kinds
+  (testing "true and a map without :on animate every kind"
+    (is (= #{:data :layout} (:on (an/parse-anim-config true))))
+    (is (= #{:data :layout} (:on (an/parse-anim-config {:duration 200})))))
+  (testing "a set is shorthand for {:on set}"
+    (is (= #{:layout} (:on (an/parse-anim-config #{:layout}))))
+    (is (some? (:move (an/parse-anim-config #{:layout})))))
+  (testing "map form with :on keeps its timing"
+    (let [cfg (an/parse-anim-config {:on #{:data} :duration 120})]
+      (is (= #{:data} (:on cfg)))
+      (is (= 120 (.-inMilliseconds (:duration cfg))))))
+  (testing "false / nil / empty set animate nothing"
+    (is (nil? (an/parse-anim-config false)))
+    (is (nil? (an/parse-anim-config nil)))
+    (is (nil? (an/parse-anim-config #{}))))
+  (testing "an unknown kind fails loudly"
+    (is (thrown? Exception (an/parse-anim-config #{:size})))))
+
+;; @ai-generated(solo)
+(deftest opens-segment-gate
+  (let [layout-only (an/parse-anim-config #{:layout})
+        all (an/parse-anim-config true)]
+    (testing "a kind in :on opens a segment at rest"
+      (is (an/opens-segment? layout-only false false true))
+      (is (an/opens-segment? all false true false)))
+    (testing "a kind not in :on snaps at rest (page append under #{:layout})"
+      (is (not (an/opens-segment? layout-only false true false))))
+    (testing "any change while a segment plays retargets it"
+      (is (an/opens-segment? layout-only true true false)))
+    (testing "no change or no config never opens"
+      (is (not (an/opens-segment? all true false false)))
+      (is (not (an/opens-segment? nil false true true)))))
+  (testing "enter/exit diff only when :data is animated"
+    (is (an/animates-data? (an/parse-anim-config true)))
+    (is (not (an/animates-data? (an/parse-anim-config #{:layout}))))))
+
 (deftest memoized-key->index-reuses-on-identity
   (let [src [{:id :a} {:id :b}]
         calls (atom 0)

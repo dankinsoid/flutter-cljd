@@ -575,9 +575,12 @@
           order-changed (not= (child-key-seq old-kids) (child-key-seq new-kids))]
       ;; enter/exit collapse needs stable keys; an insert/remove on a keyed box
       ;; feeds the diff, a shuffle/morph yields an empty diff (no regression).
-      (when (and order-changed (all-keyed? old-kids) (all-keyed? new-kids))
+      (when (and order-changed
+                 (an/animates-data? (.-animConfig wgt))
+                 (all-keyed? old-kids) (all-keyed? new-kids))
         (apply-box-diff! this old-kids new-kids))
-      (when (or layout-changed axis-changed order-changed)
+      (when (an/opens-segment? (.-animConfig wgt) (.-active ^an/SegmentClock (.-clock this))
+                               order-changed (or layout-changed axis-changed))
         (start-segment! this)))
     nil)
 
@@ -678,7 +681,7 @@
     (when-not (contains? #{:vertical :horizontal} axis)
       (throw (Exception. (str "collection: :axis must be :vertical or :horizontal, got " axis))))
     (let [animate (:animate opts)
-          anim-config (when animate (an/parse-anim-config animate))
+          anim-config (an/parse-anim-config animate)
           ;; MultiChildRenderObjectWidget.children needs a real List<Widget>; a
           ;; cljd PersistentVector reaches it through the deftype :extends super-call
           ;; uncoerced (unlike a normal Flutter constructor call) and fails the cast.

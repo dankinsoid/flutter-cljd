@@ -25,12 +25,33 @@
 (def default-duration (dc/Duration .milliseconds 300))
 (def default-curve a/Curves.easeInOut)
 
+(def change-kinds
+  "Change kinds an `:animate` config can open a segment on: `:data` = the keyed
+   item order changed (insert/remove/shuffle), `:layout` = the layout `:id` or
+   `:axis` changed."
+  #{:data :layout})
+
+(defn- parse-kinds [on]
+  (let [kinds (cond
+                (nil? on) change-kinds
+                (keyword? on) #{on}
+                :else (set on))]
+    (when-let [bad (seq (remove change-kinds kinds))]
+      (throw (Exception. (str ":animate: unknown change kind(s) " (vec bad)
+                              ", expected a subset of " change-kinds))))
+    kinds))
+
 (defn parse-anim-config
-  "Parses the :animate option into a normalized config map.
-   Input: true | {:duration :curve :insert :remove :move}
-   Output: {:duration Duration :curve Curve
+  "Parses the :animate option into a normalized config map, or nil when it
+   animates nothing.
+   Input: true | #{:data :layout} | {:on #{..} :duration :curve :insert :remove :move}
+   Output: {:on #{kind ..} :duration Duration :curve Curve
             :insert {...}? :remove {...}? :move {...}?}
    Each section may be disabled with false.
+
+   `:on` lists the change kinds that OPEN a segment (default: all of
+   `change-kinds`); a set is shorthand for `{:on set}`. While a segment plays,
+   any change retargets it regardless of `:on`.
 
    `:insert`/`:remove` carry `{:duration :curve :builder}`; the host uses their
    `:builder` for the custom enter/exit wrap. `:move` carries `{:duration :curve}`
@@ -38,11 +59,20 @@
    (move, layout/grid/axis morph, and insert/remove). Its `:curve` is parsed but
    no longer applies to move — the segment is spring-driven (see `start-clock!`)."
   [animate]
-  (if (true? animate)
+  (cond
+    (or (nil? animate) (false? animate)) nil
+
+    (true? animate)
     (let [sub {:duration default-duration :curve default-curve}]
-      {:duration default-duration :curve default-curve
+      {:on change-kinds
+       :duration default-duration :curve default-curve
        :insert sub :remove sub :move sub})
-    (let [dur (t/duration (or (:duration animate) (:dur animate) 300))
+
+    (set? animate) (parse-anim-config {:on animate})
+
+    :else
+    (let [kinds (parse-kinds (:on animate))
+          dur (t/duration (or (:duration animate) (:dur animate) 300))
           crv (t/curve (or (:curve animate) :ease-in-out))
           parse-sub (fn [sub default]
                       (cond
@@ -53,11 +83,31 @@
                                     :builder (:builder sub)}
                         :else {:duration dur :curve crv}))
           on {:duration dur :curve crv}]
-      {:duration dur
-       :curve crv
-       :insert (parse-sub (:insert animate) on)
-       :remove (parse-sub (:remove animate) on)
-       :move (parse-sub (:move animate) on)})))
+      (when (seq kinds)
+        {:on kinds
+         :duration dur
+         :curve crv
+         :insert (parse-sub (:insert animate) on)
+         :remove (parse-sub (:remove animate) on)
+         :move (parse-sub (:move animate) on)}))))
+
+(defn opens-segment?
+  "True when a change of the given kinds should (re)start the segment clock:
+   a kind listed in `:on`, or any change while a segment already plays (a
+   retarget — leaving it to finish would settle onto a stale target)."
+  [anim-config ^bool active ^bool data-changed ^bool layout-changed]
+  (boolean
+   (and anim-config
+        (or (and data-changed (contains? (:on anim-config) :data))
+            (and layout-changed (contains? (:on anim-config) :layout))
+            (and active (or data-changed layout-changed))))))
+
+(defn animates-data?
+  "True when the config animates data changes — the gate for the enter/exit key
+   diff. Without it inserted cells appear at their target and removed ones
+   vanish, even inside a segment opened by a layout change."
+  [anim-config]
+  (contains? (:on anim-config) :data))
 
 ;; --- Segment clock (shared host shell, see docs §10) ---
 ;;
