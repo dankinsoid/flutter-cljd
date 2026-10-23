@@ -449,6 +449,21 @@
         (range n)))
 
 ;; @ai-generated(solo)
+;; @ai-generated(solo)
+(defn transpose-rect
+  "A committed content-space rect re-expressed after an axis swap: the old
+   cross becomes the main offset and the old main offset, minus `shift` (the
+   scroll offset the old axis was displayed at), becomes the cross — so the rect
+   is where the cell was on screen, at a new scroll offset of 0. Extents swap
+   with their axes."
+  [rect ^double shift]
+  {:offset (double (:cross rect))
+   :cross (- (double (:offset rect)) shift)
+   :main-extent (double (:cross-extent rect))
+   :cross-extent (double (:main-extent rect))
+   :full-main (double (:full-cross rect (:cross-extent rect)))
+   :full-cross (double (:full-main rect (:main-extent rect)))})
+
 (defn clip-window
   "§8a per-cell clip+fade decision, host-agnostic. From a cell's geometry `gm`
    (full vs visible extent on both axes) and whether it should `fade?`, returns

@@ -182,6 +182,11 @@ Discipline that has paid for itself repeatedly:
 4. Fixing an oracle counts as a fix only when the new failure set is a strict
    SUBSET of the old one. Anything else is masking.
 
+The rig also takes `[:axis :horizontal|:vertical]` (`set-axis!`): it flips the
+scroll view's axis; `children` reports main/cross along the current axis. The
+fuzz generator does not draw it — the oracles' layout specs are vertical-first;
+`axis_morph_test.cljd` replays it explicitly over all four layouts.
+
 ## 6. What is not covered here
 
 - Pure kernels (`render_test.cljd`, `tween_test.cljd`, `layout_test.cljd`) test

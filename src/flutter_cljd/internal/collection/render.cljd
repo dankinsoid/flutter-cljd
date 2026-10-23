@@ -41,7 +41,7 @@
   (let [^r/SliverGridParentData pd (.-parentData child)]
     (.-crossAxisOffset! pd offset)))
 
-(declare flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
+(declare axis-flip! layout-pass! key-for flow-layout! indexed-layout! flying-flow! commit-pass! commit-prune? env-agg
          segment-start! update-velocity! overscan-extent sample-view-anchor!
          segment-domain-exited? settle-segment! state-before)
 
@@ -208,9 +208,11 @@
                           ;; inserts); reset per pass. Feeds the kDebugMode O(window+overscan) materialization
                           ;; tripwire (assert-materialization-bounded!) — a pass that lays O(gap) children
                           ;; means some path walked a gap instead of seeding geometrically.
-   ^:mutable dyingSlots] ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
+   ^:mutable dyingSlots ;; WS3.2: host-supplied SPARSE dying representation — ascending-by-shadow-index
                           ;; [{:index i :key k} ...], #dying entries. segment-start! reads it to build the
                           ;; window-scoped shadow frame source without an O(n) live/dying mask. [] when nothing dies.
+   ^:mutable committedAxis] ;; :vertical | :horizontal the committed rects are expressed in; nil before
+                          ;; the first pass. A change = the enclosing viewport flipped axis (axis-flip!).
   :extends (r/RenderSliverMultiBoxAdaptor .childManager childMgr)
 
   ;; SliverGridParentData for every layout: flow layouts use crossAxisOffset too
@@ -282,103 +284,11 @@
     nil)
 
   (performLayout [this]
-    (let [^r/SliverConstraints c (.-constraints this)]
-      (when (not= (.-crossAxisExtent c) (.-crossCached this))
-        (.-crossCached! this (.-crossAxisExtent c))
-        (.-cache! this [])
-        (.-baseState! this nil)
-        ;; cross-extent change re-packs every wrap/masonry run — all checkpoints
-        ;; are stale (list's are cross-independent, but dropping all is cheap).
-        (.-checkpoints! this {})
-        (.-anchoredTo0! this false)
-        (.-reseedCause! this nil))
-      (.-passRebase! this 0.0)
-      ;; the pass's mode is decided here, once, and every gate below (and in both
-      ;; drivers) reads a capability off it — never tweenAnim/segTween again
-      (let [seg (.-segTween this)]
-        (.-passMode! this
-          (pass-mode (some? (.-tweenAnim this)) (.-curGen this) (.-segGen this)
-                     (some? seg)
-                     (boolean (and (some? seg) (segment-domain-exited? this seg c))))))
-      ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
-      ;; frame's directional overscan window BEFORE dispatching. A playing segment
-      ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
-      ;; the window there, so the regime gate must not fight it (scenario 6).
-      (let [prev-regime (.-curRegime this)]
-        (update-velocity! this c)
-        (let [[^double behind ^double ahead]
-              (if (pass-allows? (.-passMode this) :overscan?)
-                (overscan-extent this c (.-curRegime this))
-                [0.0 0.0])]
-          (.-overscanBehind! this behind)
-          (.-overscanAhead! this ahead))
-        (case (.-passMode this)
-          ;; RESTING: no animation — run the plain target through its natural driver.
-          ;; The approximate-placement (flying) path engages ONLY when the caller
-          ;; opted in via :overscan {:flying true} (:fly? on the spec) AND the regime
-          ;; sustained a fast run. Zero-config keeps real placement always
-          ;; (pixel-perfect; desktop pointer-scroll would otherwise misread as a
-          ;; fling). `entry?` = first pass of a flying run, so flying-flow! drops the
-          ;; real cache once instead of every pass.
-          :resting
-          (let [layout (.-layoutModel this)
-                regime (.-curRegime this)
-                fly? (and (= :flying regime) (:fly? (.-overscanConfig this)) (:approx-offset layout))]
-            (cond
-              (:geometry layout) (indexed-layout! this layout c)
-              fly? (flying-flow! this layout c (not= :flying prev-regime))
-              :else (flow-layout! this layout c)))
-
-          ;; SEGMENT START: host bumped gen — capture the target from the new tree.
-          :capture
-          (segment-start! this c)
-
-          ;; the host clock plays on with no segment model left (§3.2)
-          :settled
-          (do (settle-segment! this)
-              (let [layout (.-layoutModel this)]
-                (if (:geometry layout)
-                  (indexed-layout! this layout c)
-                  (flow-layout! this layout c))))
-
-          ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
-          (indexed-layout! this (.-segTween this) c)))
-      ;; mid-segment drags move the viewport; a pre-segment sample starves the
-      ;; next capture's absorption channel (NEW-9)
-      (sample-view-anchor! this c)
-      (when (pass-allows? (.-passMode this) :epilogue-asserts?)
-        (when fd/kDebugMode
-          (let [sized? (loop [ch (.-firstChild this)]
-                         (cond (nil? ch) false
-                               (.-hasSize ^r/RenderBox ch) true
-                               :else (recur (.childAfter this ^r/RenderBox ch))))]
-            (assert (or (not sized?) (some? (.-viewAnchor this)))
-                    "collection: viewAnchor nil after a resting pass that left sized attached children"))
-          ;; exactly-once: a produced rebase must be fully consumed by the emit arm
-          (let [^double pr (.-passRebase this)
-                ^r/SliverGeometry g (.-geometry this)
-                ^double corr (double (or (.-scrollOffsetCorrection g) 0.0))]
-            (assert (<= (.abs (- pr corr)) 1e-3)
-                    (str "collection: pass produced rebase " pr " but emitted correction "
-                         corr " — a rebase must be consumed exactly once")))))
-      ;; Refinement motion sensor: remember this pass's offset compensated by any
-      ;; correction it emitted, so the correction's same-frame re-run (and the
-      ;; corrected next frame) read as no user motion — only real drag/ballistic
-      ;; deltas reach the velocity sensor + suppression gate.
-      (let [^r/SliverGeometry g (.-geometry this)]
-        (.-refineLastOffset! this (+ (.-scrollOffset c)
-                                     (double (or (.-scrollOffsetCorrection g) 0.0)))))
-      ;; Phase D geometric committed scoping, phase-E-widened to the overscan band:
-      ;; prune to [ws − behind, we + ahead], but only between segments and never on
-      ;; a correction pass (commit-prune?).
-      (let [^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
-            ^double we (+ ws (.-remainingCacheExtent c))
-            ^r/SliverGeometry g (.-geometry this)
-            corrected? (some? (.-scrollOffsetCorrection g))]
-        (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this))
-                      (- ws (.-overscanBehind this)) (+ we (.-overscanAhead this))
-                      (commit-prune? (pass-allows? (.-passMode this) :prune-commit?)
-                                     corrected?)))))
+    ;; a flip with a nonzero scroll offset ends the pass on a correction; the
+    ;; viewport re-runs layout at once with the offset reset
+    (when-not (axis-flip! this)
+      (layout-pass! this))
+    nil)
 
   (dispose [^CollectionRenderSliver this]
     (when-let [l (.-tweenListener this)]
@@ -391,6 +301,174 @@
    seed plus the engine's measured EMA (nil until a consuming phase populates it)."
   [^CollectionRenderSliver rs]
   {:approx-size (.-approxSize rs) :measured (.-measuredAgg rs)})
+
+(defn- layout-pass!
+  "performLayout proper (axis-flip! runs first)."
+  [^CollectionRenderSliver this]
+  (let [^r/SliverConstraints c (.-constraints this)]
+    (when (not= (.-crossAxisExtent c) (.-crossCached this))
+      (.-crossCached! this (.-crossAxisExtent c))
+      (.-cache! this [])
+      (.-baseState! this nil)
+      ;; cross-extent change re-packs every wrap/masonry run — all checkpoints
+      ;; are stale (list's are cross-independent, but dropping all is cheap).
+      (.-checkpoints! this {})
+      (.-anchoredTo0! this false)
+      (.-reseedCause! this nil))
+    (.-passRebase! this 0.0)
+    ;; the pass's mode is decided here, once, and every gate below (and in both
+    ;; drivers) reads a capability off it — never tweenAnim/segTween again
+    (let [seg (.-segTween this)]
+      (.-passMode! this
+        (pass-mode (some? (.-tweenAnim this)) (.-curGen this) (.-segGen this)
+                   (some? seg)
+                   (boolean (and (some? seg) (segment-domain-exited? this seg c))))))
+    ;; WS2 phase E: update the velocity sensor (once per frame) and resolve this
+    ;; frame's directional overscan window BEFORE dispatching. A playing segment
+    ;; never flies and never overscans — the WS1.3 set-point + widen-window! own
+    ;; the window there, so the regime gate must not fight it (scenario 6).
+    (let [prev-regime (.-curRegime this)]
+      (update-velocity! this c)
+      (let [[^double behind ^double ahead]
+            (if (pass-allows? (.-passMode this) :overscan?)
+              (overscan-extent this c (.-curRegime this))
+              [0.0 0.0])]
+        (.-overscanBehind! this behind)
+        (.-overscanAhead! this ahead))
+      (case (.-passMode this)
+        ;; RESTING: no animation — run the plain target through its natural driver.
+        ;; The approximate-placement (flying) path engages ONLY when the caller
+        ;; opted in via :overscan {:flying true} (:fly? on the spec) AND the regime
+        ;; sustained a fast run. Zero-config keeps real placement always
+        ;; (pixel-perfect; desktop pointer-scroll would otherwise misread as a
+        ;; fling). `entry?` = first pass of a flying run, so flying-flow! drops the
+        ;; real cache once instead of every pass.
+        :resting
+        (let [layout (.-layoutModel this)
+              regime (.-curRegime this)
+              fly? (and (= :flying regime) (:fly? (.-overscanConfig this)) (:approx-offset layout))]
+          (cond
+            (:geometry layout) (indexed-layout! this layout c)
+            fly? (flying-flow! this layout c (not= :flying prev-regime))
+            :else (flow-layout! this layout c)))
+
+        ;; SEGMENT START: host bumped gen — capture the target from the new tree.
+        :capture
+        (segment-start! this c)
+
+        ;; the host clock plays on with no segment model left (§3.2)
+        :settled
+        (do (settle-segment! this)
+            (let [layout (.-layoutModel this)]
+              (if (:geometry layout)
+                (indexed-layout! this layout c)
+                (flow-layout! this layout c))))
+
+        ;; SEGMENT CONTINUE: advance the built tween (progress reads the Animation).
+        (indexed-layout! this (.-segTween this) c)))
+    ;; mid-segment drags move the viewport; a pre-segment sample starves the
+    ;; next capture's absorption channel (NEW-9)
+    (sample-view-anchor! this c)
+    (when (pass-allows? (.-passMode this) :epilogue-asserts?)
+      (when fd/kDebugMode
+        (let [sized? (loop [ch (.-firstChild this)]
+                       (cond (nil? ch) false
+                             (.-hasSize ^r/RenderBox ch) true
+                             :else (recur (.childAfter this ^r/RenderBox ch))))]
+          (assert (or (not sized?) (some? (.-viewAnchor this)))
+                  "collection: viewAnchor nil after a resting pass that left sized attached children"))
+        ;; exactly-once: a produced rebase must be fully consumed by the emit arm
+        (let [^double pr (.-passRebase this)
+              ^r/SliverGeometry g (.-geometry this)
+              ^double corr (double (or (.-scrollOffsetCorrection g) 0.0))]
+          (assert (<= (.abs (- pr corr)) 1e-3)
+                  (str "collection: pass produced rebase " pr " but emitted correction "
+                       corr " — a rebase must be consumed exactly once")))))
+    ;; Refinement motion sensor: remember this pass's offset compensated by any
+    ;; correction it emitted, so the correction's same-frame re-run (and the
+    ;; corrected next frame) read as no user motion — only real drag/ballistic
+    ;; deltas reach the velocity sensor + suppression gate.
+    (let [^r/SliverGeometry g (.-geometry this)]
+      (.-refineLastOffset! this (+ (.-scrollOffset c)
+                                   (double (or (.-scrollOffsetCorrection g) 0.0)))))
+    ;; Phase D geometric committed scoping, phase-E-widened to the overscan band:
+    ;; prune to [ws − behind, we + ahead], but only between segments and never on
+    ;; a correction pass (commit-prune?).
+    (let [^double ws (+ (.-scrollOffset c) (.-cacheOrigin c))
+          ^double we (+ ws (.-remainingCacheExtent c))
+          ^r/SliverGeometry g (.-geometry this)
+          corrected? (some? (.-scrollOffsetCorrection g))]
+      (commit-pass! this (lay/make-env c (.-itemCount this) (env-agg this))
+                    (- ws (.-overscanBehind this)) (+ we (.-overscanAhead this))
+                    (commit-prune? (pass-allows? (.-passMode this) :prune-commit?)
+                                   corrected?)))))
+
+;; @ai-generated(solo)
+(defn- axis-flip!
+  "The enclosing viewport flipped its axis (a rail becoming a grid). Committed
+   rects are axis-relative and every cache/estimate/anchor is expressed along the
+   OLD main axis, and Flutter carries the ScrollPosition's pixels over to the new
+   axis. Re-expresses committed on the new axis at the cells' ON-SCREEN rects
+   (old main offset minus the old scroll offset), swaps the size aggregates, drops
+   everything axis-bound, forces a re-capture of a running segment, and resets
+   this sliver's scroll offset to 0 — so the morph starts where the cells are and
+   the new axis starts at its origin. Returns true when it emitted a correction
+   (the pass ends; the viewport re-runs layout immediately).
+
+   Only this sliver's OWN offset resets: slivers before it stay as scrolled."
+  [^CollectionRenderSliver rs]
+  (let [^r/SliverConstraints c (.-constraints rs)
+        axis (if (= r/Axis.vertical (.-axis c)) :vertical :horizontal)
+        prev (.-committedAxis rs)]
+    (.-committedAxis! rs axis)
+    (if (or (nil? prev) (= prev axis))
+      false
+      (let [^double s (.-scrollOffset c)
+            flipped (into {} (map (fn [[k rect]] [k (tw/transpose-rect rect s)])) (.-committed rs))
+            ;; the from-extent segment-start! reads off the last geometry
+            ^double extent (reduce (fn [^double m rect]
+                                     (math/max m (+ (double (:offset rect))
+                                                    (double (:main-extent rect)))))
+                                   0.0 (vals flipped))]
+        (.-committed! rs flipped)
+        ;; last-frame child offsets feed pre-gc!'s windowing: re-express them too,
+        ;; or every cell past the new window's old-axis edge is collected before
+        ;; it can leave-slide
+        (loop [child (.-firstChild rs)]
+          (when child
+            (let [^r/RenderBox ch child]
+              (when-let [rect (get flipped (key-for rs (.indexOf rs ch)))]
+                (set-layout-offset! ch (double (:offset rect)))
+                (set-cross-axis-offset! ch (double (:cross rect))))
+              (recur (.childAfter rs ch)))))
+        (.-measuredAgg! rs (when-let [m (.-measuredAgg rs)]
+                             {:avg-main (:avg-cross m) :avg-cross (:avg-main m)}))
+        (.-viewAnchor! rs nil)
+        (.-segAnchor! rs nil)
+        (.-leaving! rs {})
+        (.-prevLayout! rs nil)
+        (.-cache! rs [])
+        (.-cacheFirst! rs 0)
+        (.-baseState! rs nil)
+        (.-checkpoints! rs {})
+        (.-anchoredTo0! rs false)
+        (.-reseedCause! rs nil)
+        (.-refineLastOffset! rs dc/double.nan)
+        (.-velocityEMA! rs 0.0)
+        (.-scrollSign! rs 0)
+        (.-lastVelStamp! rs dc/double.nan)
+        (.-flyingRun! rs 0)
+        (.-curRegime! rs :resting)
+        ;; a playing segment's tween is old-axis geometry: re-capture on the same
+        ;; clock from the transposed committed (the displayed rects)
+        (when (.-segTween rs)
+          (.-segTween! rs nil)
+          (.-segGen! rs -1))
+        (if (> (.abs s) 1e-9)
+          (do (.-geometry! rs (r/SliverGeometry .scrollExtent extent .scrollOffsetCorrection (- s)))
+              true)
+          (do (.-geometry! rs (r/SliverGeometry .scrollExtent extent))
+              false))))))
 
 ;; --- checkpoint store (WS2.2 §2.1) — pure kernels over a {idx -> {:offset :state}} map ---
 
@@ -3336,7 +3414,7 @@
                                      segGen -1 (or entering #{}) (or exiting #{}) {} nil nil 0.0 nil {}
                                      fadeEnter fadeExit nil approxSize nil {} false dc/double.nan
                                      overscanConfig 0.0 0 dc/double.nan :resting 0.0 0.0 0
-                                     :resting 0.0 nil 0 (or dyingSlots []))]
+                                     :resting 0.0 nil 0 (or dyingSlots []) nil)]
       (set-tween-anim! rs tweenAnim)
       rs))
 

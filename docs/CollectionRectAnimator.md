@@ -714,13 +714,28 @@ segment starts every cell off-screen of where it was.
 - **Box** — `sync-committed-axis!` transposes `committed` once per swap (offset ↔
   cross, main ↔ cross extent, full-main ↔ full-cross) before the segment freezes
   `from`. Held by `box-axis-swap-starts-on-screen` / `box-axis-flip-starts-on-screen`.
-- **Sliver** — NOT handled (`axis_morph_test.cljd`, `:known-red`). Flipping the
-  enclosing viewport's axis also keeps the old `pixels` (Flutter carries the
-  ScrollPosition across an axisDirection change), and the §9d set-point then
-  preserves the anchor's fraction on the NEW axis. Closing it needs, at the
-  capture pass: the transpose above shifted by the old scroll offset, a target
-  window captured at the new origin rather than at the old pixels, and a
-  set-point that lands on 0 instead of preserving the anchor.
+- **Sliver** — `axis-flip!` runs before pass-mode dispatch when the
+  constraints' axis differs from `committedAxis` (the enclosing viewport flipped:
+  a rail section becoming a grid). Flutter carries the ScrollPosition's pixels
+  across an axisDirection change, so it also resets the sliver's own offset:
+  - committed rects AND the attached children's last-frame parent-data offsets
+    are transposed, shifted by the old `scrollOffset` — the cells' ON-SCREEN
+    rects at a new offset of 0 (pre-gc! windows on the parent-data offsets; left
+    old-axis, it collects every cell past the new window before it can
+    leave-slide);
+  - `:avg-main`/`:avg-cross` swap; cache, checkpoints, `viewAnchor`, `segAnchor`,
+    `leaving`, `prevLayout` and the velocity sensor drop (all old-axis);
+  - a playing segment is forced to re-capture on the same clock (`segGen` −1);
+  - a nonzero offset ends the pass on `scrollOffsetCorrection = −scrollOffset`
+    (the capture pass can't emit, §9b), so the re-run captures the target at the
+    origin with no anchor to preserve: no set-point, the new axis starts at 0.
+  Only this sliver's own offset resets; slivers before it stay as scrolled. The
+  host treats a Scrollable axis change as a `:layout` change and, after the
+  frame, idles a running BallisticScrollActivity (a fling sets ABSOLUTE pixels
+  from its simulation and would throw the new axis back). Held by
+  `axis_morph_test.cljd` (row↔grid both ways, scrolled, mid-segment, mid-fling,
+  trailing zero-extent cell, harness oracles over all four layouts with the
+  `:axis` op).
 
 ## 13. Non-goals
 

@@ -289,17 +289,6 @@
                          :full-main mm :full-cross cc})))))))
 
 ;; @ai-generated(solo)
-(defn- transpose-rect
-  "A committed rect re-expressed on the swapped axis."
-  [rect]
-  {:offset (double (:cross rect))
-   :cross (double (:offset rect))
-   :main-extent (double (:cross-extent rect))
-   :cross-extent (double (:main-extent rect))
-   :full-main (double (:full-cross rect (:cross-extent rect)))
-   :full-cross (double (:full-main rect (:main-extent rect)))})
-
-;; @ai-generated(solo)
 (defn- sync-committed-axis!
   "Committed rects are axis-relative ({:offset main :cross ..}); after an :axis
    swap they would be read on the new axis as-is (a horizontal row's x turning
@@ -308,7 +297,7 @@
   [^RenderCollectionBox rb]
   (let [axis (.-axis rb)]
     (when (not= axis (.-committedAxis rb))
-      (.-committed! rb (into {} (map (fn [[k r]] [k (transpose-rect r)])) (.-committed rb)))
+      (.-committed! rb (into {} (map (fn [[k r]] [k (tw/transpose-rect r 0.0)])) (.-committed rb)))
       (.-committedAxis! rb axis))))
 
 ;; @ai-generated(guided)

@@ -147,6 +147,7 @@
          .child
          (f/custom-scroll
           :controller (:ctl st)
+          :axis (:axis st :vertical)
           :physics physics
           (probe-sliver
            (:probe st)
@@ -366,6 +367,14 @@
   (await (rebuild! rig))
   nil)
 
+(defn set-axis!
+  "Flips the scroll view's axis (a rail ↔ grid section); the sliver resets its
+   own offset to 0 and morphs from the on-screen rects (render/axis-flip!)."
+  [rig axis]
+  (swap! rig assoc :axis axis)
+  (await (rebuild! rig))
+  nil)
+
 (defn set-approx! [rig v]
   (swap! rig assoc :approx v)
   (await (rebuild! rig))
@@ -412,7 +421,8 @@
   "Attached children in sibling order — {:index :offset :cross :main-size
    :cross-size :end}. Vertical axis ⇒ main = height, cross = width."
   [rig]
-  (let [^render/CollectionRenderSliver rs (sliver rig)]
+  (let [^render/CollectionRenderSliver rs (sliver rig)
+        vertical? (not= :horizontal (:axis @rig))]
     (loop [child (.-firstChild rs) acc []]
       (if (nil? child)
         acc
@@ -420,13 +430,13 @@
               ^r/SliverGridParentData pd (.-parentData ch)
               ^ui/Size sz (.-size ch)
               ^double off (or (.-layoutOffset pd) 0.0)
-              ^double m (.-height sz)]
+              ^double m (if vertical? (.-height sz) (.-width sz))]
           (recur (.childAfter rs ch)
                  (conj acc {:index (.indexOf rs ch)
                             :offset off
                             :cross (or (.-crossAxisOffset pd) 0.0)
                             :main-size m
-                            :cross-size (.-width sz)
+                            :cross-size (if vertical? (.-width sz) (.-height sz))
                             :end (+ off m)})))))))
 
 (defn engine
@@ -1098,6 +1108,7 @@
       :layout      (await (set-layout! rig a))
       :cross       (await (set-cross! rig (double a)))
       :approx      (await (set-approx! rig a))
+      :axis        (await (set-axis! rig a))
       :jump        (await (jump-to! rig (double a)))
       :to-top      (await (jump-to! rig 0.0))
       :animate-top (await (animate-to! rig 0.0 (int a) nil))
