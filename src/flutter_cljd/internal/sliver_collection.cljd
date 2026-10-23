@@ -148,12 +148,10 @@
           old-data (.-previousUserData this)
           key-fn (.-keyFn widget)
           anim-config (.-animConfig widget)
-          ;; :data animated ⇒ by identity (every rebuild re-aims, the shipped
-          ;; behaviour the fuzz campaign holds); otherwise by value, so a parent
-          ;; rebuilding mid-morph (e.g. a visible-range readout) doesn't re-aim it
+          ;; by value: a parent rebuilding for an unrelated reason (a readout,
+          ;; a resize) must not open or re-aim a segment
           data-changed (or (and new-data old-data (not (identical? new-data old-data))
-                                (or (an/animates-data? anim-config)
-                                    (not= new-data old-data)))
+                                (not= new-data old-data))
                            (not= (.-itemCount widget) (.-itemCount oldWidget)))
           axis (scroll-axis (.-context this))
           axis-changed (and (some? (.-scrollAxis this)) (some? axis)
