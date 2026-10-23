@@ -11,6 +11,7 @@
    ["package:flutter/cupertino.dart" :as c]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]
    [previews.library-morph :as lm]))
 
 (defn- found? [^ft/WidgetTester t txt]
@@ -165,3 +166,54 @@
   ;; the filtered grid's paging fetch lands mid-way through the morph back: the
   ;; append re-captures the cells on the RUNNING clock, so the window stays in step
   (await (lockstep-run! t false)))
+
+;; --- page append during the flip, on the example's own layouts ---
+
+(defn- ^w/Widget flip-tree [^w/ScrollController ctl ^int n grid?]
+  (let [items (-> [{:id :start}] (into (map (fn [i] {:id i})) (range n)) (conj {:id :end}))]
+    (w/Directionality
+     .textDirection ui/TextDirection.ltr
+     .child (w/Align
+             .alignment w/Alignment.topLeft
+             .child (w/SizedBox
+                     .width 400.0 .height 600.0
+                     .child (f/custom-scroll
+                             :controller ctl :axis (if grid? :vertical :horizontal)
+                             (f/sliver-collection
+                              items
+                              :key-fn :id
+                              :layout (if grid? (lm/grid-layout n) (lm/row-layout n))
+                              :animate {:on #{:layout} :duration 350}
+                              (fn [_ item]
+                                (case (:id item)
+                                  :start (w/SizedBox.shrink)
+                                  :end (if grid? (w/SizedBox .height 0.0) (w/SizedBox .width 0.0))
+                                  (w/SizedBox .key (w/ValueKey (str "c" (:id item)))
+                                              .height 150.0))))))))))
+
+(defn- cell-top [^ft/WidgetTester t ^int id]
+  (.-dy (.getTopLeft t (ft/find.byKey (w/ValueKey (str "c" id))))))
+
+(deftest page-append-during-row-to-grid-flip
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (doseq [^int delay [0 50 150 300]]
+    (let [ctl (w/ScrollController)]
+      (await (.pumpWidget t (flip-tree ctl 15 false)))
+      (await (.pumpWidget t (flip-tree ctl 15 true)))
+      (await (.pump t (dc/Duration .milliseconds delay)))
+      (await (.pumpWidget t (flip-tree ctl 21 true)))
+      (let [ys (loop [k 0 acc []]
+                 (if (< k 50)
+                   (do (await (.pump t (dc/Duration .milliseconds 16)))
+                       (recur (inc k) (conj acc (cell-top t 0))))
+                   acc))
+            tail (take-last 15 ys)]
+        (testing (str "append " delay "ms into the flip: the glide ends where it rests (no settle snap)")
+          (is (every? (fn [[a b]] (< (.abs (- (double b) (double a))) 1.0)) (partition 2 1 tail))
+              (str (vec ys)))))
+      (await (.pumpAndSettle t))
+      (testing (str "append " delay "ms into the flip: the first row rests one padding below the start cell")
+        (is (< (.abs (- (cell-top t 0) 8.0)) 0.5) (str (cell-top t 0) " offset " (.-pixels (.-position ctl)))))
+      (.dispose ctl)
+      (await (.pumpWidget t (w/SizedBox.shrink))))))

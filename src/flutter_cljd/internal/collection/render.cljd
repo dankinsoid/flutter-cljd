@@ -1195,7 +1195,10 @@
     (when count-changed
       (.-cache! rs [])
       (.-baseState! rs nil)
-      (.-reseedCause! rs :count-change))
+      ;; mid axis-flip the displayed frames are lerps toward a target anchored at
+      ;; the origin: re-anchoring the new count on them lands the layout off its
+      ;; own origin, so it re-derives from 0 like the flip did
+      (.-reseedCause! rs (if (.-originLock rs) :axis-flip :count-change)))
     ;; an :id change leaves survivor offsets in the OLD layout's space; a count
     ;; change keeps the space, so its re-anchor keeps the offsets (§3.3/§3.4)
     (when layout-changed

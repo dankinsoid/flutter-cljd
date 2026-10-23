@@ -64,7 +64,7 @@
 
 (def ^:private zero-constraints (r/BoxConstraints.tight dart-ui/Size.zero))
 
-(defn- row-layout
+(defn row-layout
   "Horizontal rail of fixed-width, natural-height cells, top-aligned."
   [^int n]
   {:id [:library-row]
@@ -92,7 +92,7 @@
    :approx-offset (fn [_env ^int i]
                     (if (zero? i) 0.0 (+ h-pad (* (dec i) (+ cell-w row-spacing)))))})
 
-(defn- grid-layout
+(defn grid-layout
   "Rows of `cols` cells; a row is as tall as its tallest cell, cells keep their
    natural height, top-anchored (iOS gridPlacement)."
   [^int n]
