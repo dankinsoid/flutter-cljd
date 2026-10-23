@@ -1,0 +1,120 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.axis-morph-test
+  "Axis morphs (row ↔ grid) on both hosts: cells must start the morph at their
+   ON-SCREEN rects. The sliver cases are :known-red — under a scroll view whose
+   axis flips the sliver reads its committed rects on the new axis as-is and keeps
+   the old pixels (task T-020 log); the box case is the fixed counterpart."
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget cell [^int id]
+  (w/Align .alignment w/Alignment.topLeft
+           .child (w/SizedBox .key (w/ValueKey (str "c" id)) .width 100.0 .height 120.0)))
+
+(defn- ^w/Widget tree [^w/ScrollController ctl axis layout]
+  (w/Directionality
+   .textDirection ui/TextDirection.ltr
+   .child (w/Align
+           .alignment w/Alignment.topLeft
+           .child (w/SizedBox
+                   .width 400.0 .height 600.0
+                   .child (apply f/custom-scroll
+                                 :controller ctl :axis axis
+                                 [(apply f/sliver-collection
+                                         (mapv (fn [i] {:id i}) (range 40))
+                                         :key-fn :id
+                                         :animate {:duration 300}
+                                         (concat layout [(fn [_ item] (cell (:id item)))]))])))))
+
+(defn- top-left [^ft/WidgetTester t ^int id]
+  (let [fnd (ft/find.byKey (w/ValueKey (str "c" id)))]
+    (when (pos? (.-length (.evaluate fnd)))
+      (let [^ui/Offset o (.getTopLeft t fnd)] [(.-dx o) (.-dy o)]))))
+
+(defn- positions [t ids] (into {} (keep (fn [i] (when-let [p (top-left t i)] [i p]))) ids))
+
+(defn- ^bool near? [a b]
+  (and a b (< (.abs (- (double (first a)) (double (first b)))) 0.5)
+       (< (.abs (- (double (second a)) (double (second b)))) 0.5)))
+
+(defn- flip-run! [^ft/WidgetTester t ^double sideways]
+  (let [ctl (w/ScrollController)
+        ids (range 8)]
+    (await (.pumpWidget t (tree ctl :horizontal [:spacing 10])))
+    (when (pos? sideways)
+      (.jumpTo ctl sideways)
+      (await (.pump t)))
+    (let [before (positions t ids)]
+      (await (.pumpWidget t (tree ctl :vertical [:layout :wrap :spacing 10 :run-spacing 10])))
+      (let [t0 (positions t ids)]
+        (await (.pumpAndSettle t))
+        (let [after (positions t ids)
+              off (.-pixels (.-position ctl))]
+          (.dispose ctl)
+          {:before before :t0 t0 :after after :offset off})))))
+
+(deftest sliver-axis-flip-unscrolled
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [t])
+  (let [{:keys [before t0 after offset]} (await (flip-run! t 0.0))]
+    (testing "the first morph frame keeps every visible cell where it was on screen"
+      (is (every? (fn [[i p]] (near? p (get t0 i))) before)
+          (str "before " before "\nt0 " t0 "\nafter " after " offset " offset)))))
+
+(deftest sliver-axis-flip-scrolled-sideways
+  :tags [:widget :known-red]
+  :runner (ft/testWidgets [t])
+  (let [{:keys [before t0 after offset]} (await (flip-run! t 250.0))]
+    (testing "a row scrolled sideways: cells start the morph at their on-screen rects"
+      (is (every? (fn [[i p]] (near? p (get t0 i))) before)
+          (str "before " before "\nt0 " t0 "\nafter " after " offset " offset)))
+    (testing "the grid lands at the top"
+      (is (< (.abs offset) 0.5) (str "offset " offset " after " after)))))
+
+;; --- box host (collection-box) ---
+
+(defn- ^w/Widget box-tree [axis ^int n animate]
+  (w/Directionality
+   .textDirection ui/TextDirection.ltr
+   .child (w/Align
+           .alignment w/Alignment.topLeft
+           .child (w/SizedBox
+                   .width 400.0 .height 600.0
+                   .child (f/collection-box :list :spacing 10 :axis axis :animate animate
+                                            (for [i (range n)]
+                                              (w/KeyedSubtree .key (w/ValueKey i) .child (cell i))))))))
+
+(deftest box-axis-flip-starts-on-screen
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (let [ids (range 4)]
+    (await (.pumpWidget t (box-tree :horizontal 4 #{:layout})))
+    (let [before (positions t ids)]
+      (await (.pumpWidget t (box-tree :vertical 4 #{:layout})))
+      (let [t0 (positions t ids)]
+        (await (.pumpAndSettle t))
+        (let [after (positions t ids)]
+          (testing "the first morph frame keeps every cell where it was on screen"
+            (is (every? (fn [[i p]] (near? p (get t0 i))) before)
+                (str "before " before "\nt0 " t0)))
+          (testing "the morph settles on the vertical list"
+            (is (near? [0.0 130.0] (get after 1)) (str "after " after))))))))
+
+(deftest box-layout-only-animate-snaps-data
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (.pumpWidget t (box-tree :horizontal 3 #{:layout})))
+  (await (.pumpWidget t (box-tree :horizontal 4 #{:layout})))
+  (testing "an append under #{:layout} opens no segment (nothing ticking)"
+    (is (not (.-hasScheduledFrame (.-binding t)))))
+  (testing "the appended cell is at its final rect immediately"
+    (is (near? [330.0 0.0] (top-left t 3)) (str (top-left t 3))))
+  (await (.pumpWidget t (box-tree :vertical 4 #{:layout})))
+  (testing "an axis change under #{:layout} animates"
+    (is (.-hasScheduledFrame (.-binding t))))
+  (await (.pumpAndSettle t)))

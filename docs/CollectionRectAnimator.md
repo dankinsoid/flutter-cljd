@@ -699,13 +699,23 @@ enforced by `assert-materialization-bounded!` in debug.
 - `:layout` as an `:animate` sub-key and all `:id`-change detection
   (`maybe-layout-tween!`, the `layout-changed` branches).
 
-## 12. Axis change is just another rect change
+## 12. Axis change
 
-An `:axis` swap (`:vertical` ↔ `:horizontal`) is **not** a special case in v2 — it
-falls out of the unified model. A cell's content-space rect (offset, cross,
-main-extent, cross-extent) simply lands at a different target under the new axis,
-and `lerp-frame` interpolates it component-wise like any other move. (This was a
-v1 non-goal; it now works for free.)
+A cell's TARGET rect lands correctly under a new axis, but `committed` is
+axis-relative (`:offset` is the old main axis), so an `:axis` swap is not free:
+read on the new axis as-is, a horizontal row's x becomes a vertical y and the
+segment starts every cell off-screen of where it was.
+
+- **Box** — `sync-committed-axis!` transposes `committed` once per swap (offset ↔
+  cross, main ↔ cross extent, full-main ↔ full-cross) before the segment freezes
+  `from`. Held by `box-axis-swap-starts-on-screen` / `box-axis-flip-starts-on-screen`.
+- **Sliver** — NOT handled (`axis_morph_test.cljd`, `:known-red`). Flipping the
+  enclosing viewport's axis also keeps the old `pixels` (Flutter carries the
+  ScrollPosition across an axisDirection change), and the §9d set-point then
+  preserves the anchor's fraction on the NEW axis. Closing it needs, at the
+  capture pass: the transpose above shifted by the old scroll offset, a target
+  window captured at the new origin rather than at the old pixels, and a
+  set-point that lands on 0 instead of preserving the anchor.
 
 ## 13. Non-goals
 

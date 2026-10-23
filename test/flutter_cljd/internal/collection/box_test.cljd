@@ -20,7 +20,7 @@
   "Builds a RenderCollectionBox over fixed-size children and lays it out
    detached. Returns the render box."
   [layout axis children ^double max-w ^double max-h]
-  (let [rb (box/RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {})]
+  (let [rb (box/render-box layout axis)]
     (doseq [c children] (.add rb c))
     (.layout rb (r/BoxConstraints .maxWidth max-w .maxHeight max-h))
     rb))
@@ -101,7 +101,7 @@
 ;; via getDryLayout — RenderObject.layout swallows performLayout exceptions
 ;; into FlutterError.reportError, the dry path propagates them
 (deftest unbounded-cross-throws
-  (let [rb (box/RenderCollectionBox (l/list) :vertical nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {})]
+  (let [rb (box/render-box (l/list) :vertical)]
     (.add rb (fixed-child 10 10))
     (is (thrown? Exception
                  (.getDryLayout rb (r/BoxConstraints .maxWidth ##Inf .maxHeight 100.0))))))
@@ -286,3 +286,21 @@
     (is (instance? w/Widget
                    (box/collection-box (l/list) {:overscan {:viewport 0.5}}
                                        [(fixed-child 40 20)])))))
+
+;; --- axis swap ---
+
+(deftest box-axis-swap-starts-on-screen
+  ;; three 40×20 cells in a horizontal list (x 0/40/80), then the axis flips to
+  ;; vertical: at t=0 every cell must still sit where it was on screen.
+  (let [kids [(fixed-child 40 20) (fixed-child 40 20) (fixed-child 40 20)]
+        rb (laid-out (l/list :spacing 0) :horizontal kids 200.0 500.0)]
+    (is (offsets≈ [[0.0 0.0] [40.0 0.0] [80.0 0.0]] (child-offsets rb)))
+    (.-axis! rb :vertical)
+    (start-anim! rb (l/list :spacing 0) 0.0 200.0 500.0)
+    (testing "t=0 = the horizontal resting rects"
+      (is (offsets≈ [[0.0 0.0] [40.0 0.0] [80.0 0.0]] (child-offsets rb))
+          (str (child-offsets rb))))
+    (relayout-at! rb 1.0 200.0 500.0)
+    (testing "t=1 = the vertical resting rects"
+      (is (offsets≈ [[0.0 0.0] [0.0 20.0] [0.0 40.0]] (child-offsets rb))
+          (str (child-offsets rb))))))

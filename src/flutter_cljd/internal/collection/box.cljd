@@ -61,7 +61,7 @@
      .remainingCacheExtent main-max
      .cacheOrigin 0.0)))
 
-(declare content-size)
+(declare content-size sync-committed-axis!)
 
 (deftype RenderCollectionBox
   [^:mutable layoutModel  ;; PLAIN layout map (see collection.layout) — never a tween
@@ -82,8 +82,9 @@
    ^:mutable ^bool fadeEnter  ;; fade entering cells 0→1 with the collapse
    ^:mutable ^bool fadeExit   ;; fade exiting cells 1→0 with the collapse
    ^:mutable segTween     ;; the built keyed-tween-layout for the current segment, or nil
-   ^:mutable clips]       ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at
+   ^:mutable clips        ;; {child-index -> [vis-main vis-cross opacity]} for cells laid at
                           ;; full but painted clipped to their lerped visible window (§8a)
+   ^:mutable committedAxis]  ;; the axis `committed` is expressed in
   :extends r/RenderBox
 
   (setupParentData [_this ^r/RenderObject child]
@@ -92,6 +93,7 @@
     nil)
 
   (performLayout [this]
+    (sync-committed-axis! this)
     (.-size! this (content-size this ^r/BoxConstraints (.-constraints this) false))
     nil)
 
@@ -285,6 +287,29 @@
                          :main-extent mm :cross-extent cc
                          :full-main mm :full-cross cc})))))))
 
+;; @ai-generated(solo)
+(defn- transpose-rect
+  "A committed rect re-expressed on the swapped axis."
+  [rect]
+  {:offset (double (:cross rect))
+   :cross (double (:offset rect))
+   :main-extent (double (:cross-extent rect))
+   :cross-extent (double (:main-extent rect))
+   :full-main (double (:full-cross rect (:cross-extent rect)))
+   :full-cross (double (:full-main rect (:main-extent rect)))})
+
+;; @ai-generated(solo)
+(defn- sync-committed-axis!
+  "Committed rects are axis-relative ({:offset main :cross ..}); after an :axis
+   swap they would be read on the new axis as-is (a horizontal row's x turning
+   into a vertical y), so the segment would start every cell off its on-screen
+   rect. Transposes them once per swap."
+  [^RenderCollectionBox rb]
+  (let [axis (.-axis rb)]
+    (when (not= axis (.-committedAxis rb))
+      (.-committed! rb (into {} (map (fn [[k r]] [k (transpose-rect r)])) (.-committed rb)))
+      (.-committedAxis! rb axis))))
+
 ;; @ai-generated(guided)
 (defn- ^ui/Size animate-pass!
   "The animating layout pass, sharing the sliver's keyed rect animator core. On a
@@ -410,6 +435,11 @@
 
 ;; --- render-object update ---
 
+(defn ^RenderCollectionBox render-box
+  "A resting RenderCollectionBox for `layout` on `axis`."
+  [layout axis]
+  (RenderCollectionBox layout axis nil nil nil {} {} nil nil 0 -1 #{} #{} false false nil {} axis))
+
 (defn- set-box-tween-anim!
   "Moves the per-tick relayout listener onto `anim` (see an/swap-tick-listener!)."
   [^RenderCollectionBox rb ^a/Animation? anim]
@@ -461,10 +491,8 @@
   :extends (w/MultiChildRenderObjectWidget .key k .children childWidgets)
 
   (createRenderObject [_this ^w/BuildContext _context]
-    (let [rb (RenderCollectionBox layoutImpl axisKw nil nil keyOf {} {} nil nil gen -1
-                                  (or entering #{}) (or exiting #{})
-                                  (boolean fadeEnter) (boolean fadeExit) nil {})]
-      (set-box-tween-anim! rb tweenAnim)
+    (let [rb (render-box layoutImpl axisKw)]
+      (update-box! rb layoutImpl axisKw tweenAnim gen keyOf entering exiting fadeEnter fadeExit)
       rb))
 
   (updateRenderObject [_this ^w/BuildContext _context render-object]
