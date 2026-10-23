@@ -671,7 +671,10 @@ pixels. The host clock keeps playing to its end; that pass is `:settled` (§9a) 
 the engine settles silently, with no callback and no coupling back to the host.
 
 Cache is an accelerator, never the algorithm. The far-window seed is decided by
-GEOMETRY alone — leftovers that happen to be attached must not veto an inverse
+GEOMETRY alone — with the cache dropped (a cross-extent change mid-segment) it is
+the attached children's last-frame offsets that say how far the window jumped
+(`attached-far-from-window?`); judged by the missing band, the `:anchor` arm
+dead-reckoned at the old cells and walked the whole gap — leftovers that happen to be attached must not veto an inverse
 seed — and the per-pass work bound is O(window + overscan) unconditionally,
 enforced by `assert-materialization-bounded!` in debug.
 

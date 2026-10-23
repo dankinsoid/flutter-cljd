@@ -156,7 +156,8 @@
                   :key-fn :id
                   (concat
                    (when animate?
-                     [:animate {:duration segment-ms :move {:duration segment-ms}}])
+                     [:animate (cond-> {:duration segment-ms :move {:duration segment-ms}}
+                                 (:animate-on st) (assoc :on (:animate-on st)))])
                    (when (some? approx) [:approximate-item-size approx])
                    (:args spec)
                    [(fn [_ctx item] (tile item))])))))))))))
@@ -175,8 +176,9 @@
 (defn make-rig
   "Creates and mounts a rig; returns the rig atom. MUST be awaited.
 
-   Opts: :items :layout :cross :main :animate? :approx :probe? :offset :physics"
-  [^ft/WidgetTester t & {:keys [items layout cross main animate? approx probe? offset physics]
+   Opts: :items :layout :cross :main :animate? :animate-on (change kinds, default
+   all) :approx :probe? :offset :physics"
+  [^ft/WidgetTester t & {:keys [items layout cross main animate? animate-on approx probe? offset physics]
                          :or {layout :list cross 400.0 main 600.0
                               animate? true probe? true offset 0.0 physics :clamping}}]
   (let [^w/ScrollController ctl (w/ScrollController .initialScrollOffset (double offset))
@@ -188,6 +190,7 @@
                    :cross (double cross)
                    :main (double main)
                    :animate? animate?
+                   :animate-on animate-on
                    :approx approx
                    :physics physics
                    :cold-gen (swap! rig-gen inc)

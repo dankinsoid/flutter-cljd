@@ -1599,6 +1599,19 @@
                             (double (:max-end (peek cache)))
                             ws we))))
 
+;; @ai-generated(solo)
+(defn- attached-far-from-window?
+  "window-far-from-band? over the attached children's last-frame offsets, for a
+   pass whose cache was dropped while they stayed attached. Offsets only: sizes
+   may not be read before this frame lays the children out."
+  [^CollectionRenderSliver rs ^double ws ^double we]
+  (boolean
+   (when-let [^r/RenderBox fc (.-firstChild rs)]
+     (let [lo (.childScrollOffset rs fc)
+           hi (.childScrollOffset rs ^r/RenderBox (.-lastChild rs))]
+       (when (and lo hi)
+         (window-far-from-span? (double lo) (double hi) ws we))))))
+
 (defn- inverse-seed!
   "O(1) deep-window seed: inverts the monotone :approx-offset at `ws` to pick the
    start index and re-anchors the (emptied) cache there; align-start! attaches and
@@ -1666,11 +1679,13 @@
      :anchor       dead-reckon at the resolved anchor slot.
      :restart-0    no :anchor hook — drop children, re-flow from 0.
    `origin?` (an axis flip) forces :at-0: the new axis starts at its origin.
+   `far?` is judged by the cache band, or by the attached cells when the cache
+   was dropped under them.
    Pure."
   [{:keys [cache? far? at-top? invertible? deep? attached? first0? anchor-fn? origin?]}]
   (cond
     origin? :at-0
-    (and cache? far? (or at-top? invertible?)) (if at-top? :far-top :far-inverse)
+    (and (or cache? attached?) far? (or at-top? invertible?)) (if at-top? :far-top :far-inverse)
     cache? :keep
     deep? :cold-deep
     (or (not attached?) first0?) :at-0
@@ -1720,7 +1735,12 @@
         cross-layout? (= :cross-layout cause)
         plan (seed-plan
               {:cache? (boolean (seq (.-cache rs)))
-               :far? (window-far-from-band? (.-cache rs) ws we)
+               ;; a dropped cache (cross-extent change, count change) with cells
+               ;; still attached: judge the jump by their last-frame offsets, or
+               ;; the :anchor arm dead-reckons at the old band and walks the gap
+               :far? (if (seq (.-cache rs))
+                       (window-far-from-band? (.-cache rs) ws we)
+                       (attached-far-from-window? rs ws we))
                :at-top? (<= ws 0.5)
                :invertible? (some? approx-fn)
                ;; deep cold window with an invertible estimate — the O(1) inverse seed

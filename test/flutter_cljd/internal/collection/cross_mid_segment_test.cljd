@@ -1,0 +1,32 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.cross-mid-segment-test
+  "A cross-extent change (rotation / window resize) while a segment plays,
+   followed by a far scroll. Data is compared by value, so the resize's rebuild
+   does not re-aim the segment; the cache it drops left the far jump judged by a
+   band that no longer existed."
+  (:require
+   [clojure.test :refer [deftest is]]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.internal.collection.harness :as h]))
+
+(defn- run! [^ft/WidgetTester t layout0 kinds ops]
+  (let [rig (await (h/make-rig t :items (h/items-range 600) :layout layout0
+                               :animate? true :animate-on kinds :approx 80.0))]
+    (await (h/replay! rig ops))))
+
+(deftest cross-change-mid-morph-then-far-jump
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (doseq [kinds [#{:layout} nil]
+          [layout0 layout1] [[:list :wrap] [:wrap :list] [:list :grid] [:grid :masonry]]]
+    (let [f (await (run! t layout0 kinds [[:layout layout1] [:pump 3] [:cross 640.0]
+                                           [:jump 23124.5] [:settle]]))]
+      (is (nil? f) (str kinds " " layout0 "→" layout1 " " (dissoc f :report))))))
+
+(deftest cross-change-mid-shuffle-then-far-jump
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; fuzz seed 20, shrunk: a data segment, a resize that no longer re-aims it, a far jump
+  (let [f (await (run! t :list nil [[:rotate 260 90] [:cross 640.0]
+                                    [:jump 23124.513030052185] [:settle]]))]
+    (is (nil? f) (str (dissoc f :report)))))
