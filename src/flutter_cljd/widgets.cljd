@@ -3197,6 +3197,13 @@ Overscan (velocity-scaled directional read-ahead, on by default):
   engine's average-cell estimate before any cell is measured (improves cold-start
   and fast-fling placement)
 
+Trailing overflow (e.g. loading skeletons that must not grow the scroll
+extent): make the last item a ZERO main-extent cell (`sized :width 0` in a
+horizontal scroll, `:height 0` vertically) whose child overflows forward
+through an `OverflowBox`/`UnconstrainedBox`. It adds nothing to the extent,
+paints when the end is over-scrolled, and the enter/exit wipe fades it without
+clipping it to its zero-area rect.
+
 Visible range (pager feedback, same contract as `list`'s):
 
 - `:on-visible-range` — `(fn [{:keys [first last near-end?]}])` with the

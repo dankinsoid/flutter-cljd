@@ -1,0 +1,151 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.collection.trailing-overflow-test
+  "A trailing ZERO-main-extent cell whose content overflows forward (the Library's
+   loader skeletons): it must not grow the scroll extent, must paint when the end
+   is over-scrolled, and must not be clipped to its zero-area rect by the §8a
+   enter/exit paint-clip."
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/rendering.dart" :as r]
+   ["dart:typed_data" :as td]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(def ^:private root-key (w/GlobalKey))
+
+(defn- ^w/Widget loader [^int i]
+  (w/SizedBox .key (w/ValueKey (str "loader" i)) .width 100.0 .height 120.0
+              .child (w/ColoredBox .color (ui/Color 0xFFFF0000))))
+
+(defn- ^w/Widget loaders-cell
+  "Zero main extent; the loaders overflow forward along the main axis."
+  [axis]
+  (let [row (w/Row .mainAxisSize w/MainAxisSize.min
+                   .crossAxisAlignment w/CrossAxisAlignment.start
+                   .children [(loader 0) (loader 1) (loader 2)])]
+    (if (= :horizontal axis)
+      (w/SizedBox .width 0.0
+                  .child (w/OverflowBox .alignment w/Alignment.topLeft
+                                        .minWidth 0.0 .maxWidth dc/double.infinity
+                                        .child row))
+      (w/SizedBox .height 0.0
+                  .child (w/OverflowBox .alignment w/Alignment.topLeft
+                                        .minHeight 0.0 .maxHeight dc/double.infinity
+                                        .child row)))))
+
+(defn- ^w/Widget cell []
+  (w/SizedBox .width 100.0 .height 120.0 .child (w/ColoredBox .color (ui/Color 0xFF0000FF))))
+
+(defn- ^w/Widget tree
+  [axis ^int n loaders? & {:keys [animate]}]
+  (let [items (cond-> (mapv (fn [i] {:id i}) (range n)) loaders? (conj {:id :loaders}))
+        layout (if (= :horizontal axis) [] [:layout :wrap])]
+    (w/Directionality
+     .textDirection ui/TextDirection.ltr
+     .child (w/Align
+             .alignment w/Alignment.topLeft
+             .child (w/RepaintBoundary
+                     .key root-key
+                     .child (w/SizedBox
+                     .width 400.0 .height (if (= :horizontal axis) 120.0 600.0)
+                     .child (f/custom-scroll
+                             :axis axis :physics :bouncing
+                             (apply f/sliver-collection items
+                                    :key-fn :id
+                                    (concat
+                                     (when animate [:animate animate])
+                                     layout
+                                     [(fn [_ item]
+                                        (if (= :loaders (:id item)) (loaders-cell axis) (cell)))])))))))))
+
+(defn- ^w/ScrollPosition pos [^ft/WidgetTester t]
+  (.-position ^w/ScrollableState (.state t (ft/find.byType w/Scrollable))))
+
+(defn- loader-pixel!
+  "RGBA of the rendered frame at loader `i`'s on-screen center, or nil when that
+   center is off the captured area."
+  [^ft/WidgetTester t ^int i]
+  (let [^ui/Offset c (.getCenter t (ft/find.byKey (w/ValueKey (str "loader" i))))
+        ^r/RenderRepaintBoundary rb (.renderObject t (ft/find.byKey root-key))
+        ^ui/Size sz (.-size rb)
+        ^int x (.floor (.-dx c))
+        ^int y (.floor (.-dy c))]
+    (when (and (>= x 0) (>= y 0) (< x (.-width sz)) (< y (.-height sz)))
+      (let [^ui/Image img (await (.runAsync t (fn [] (.toImage rb .pixelRatio 1.0))))
+            ^td/ByteData bd (await (.runAsync t (fn [] (.toByteData img .format ui/ImageByteFormat.rawRgba))))
+            ^int base (* 4 (+ x (* y (.-width img))))]
+        (mapv (fn [^int k] (.getUint8 bd (+ base k))) (range 4))))))
+
+(defn- red?
+  "Painted (possibly mid-fade) loader red, not cell blue or empty."
+  [px]
+  (and px (> (nth px 3) 0) (> (nth px 0) 20) (< (nth px 2) 10)))
+
+(defn- overscroll-run! [^ft/WidgetTester t axis ^int n ^double expected-max]
+  (do
+    (await (.pumpWidget t (tree axis n true)))
+    (let [p (pos t)]
+      (testing "the scroll extent ignores the overflowing loaders"
+        (is (< (.abs (- (.-maxScrollExtent p) expected-max)) 0.5) (str (.-maxScrollExtent p))))
+      (.jumpTo p (.-maxScrollExtent p))
+      (await (.pump t))
+      (let [g (await (.startGesture t (.getCenter t (ft/find.byType w/Scrollable))))]
+        (await (.moveBy g (if (= :horizontal axis) (ui/Offset -150.0 0.0) (ui/Offset 0.0 -150.0))))
+        (await (.pump t))
+        (testing "over-scrolled past the end"
+          (is (> (.-pixels p) (+ expected-max 1.0)) (str (.-pixels p))))
+        (testing "the first loader is painted on screen"
+          (let [px (await (loader-pixel! t 0))]
+            (is (red? px) (str px))))
+        (await (.up g))
+        (await (.pumpAndSettle t))))))
+
+(deftest row-loaders-outside-extent
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; 5 × 100 in a 400 viewport; the loader cell adds 0
+  (await (overscroll-run! t :horizontal 5 100.0)))
+
+(deftest grid-loaders-outside-extent
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; 24 cells, 4 per 400-wide run, 6 runs × 120 = 720 in a 600 viewport
+  (await (overscroll-run! t :vertical 24 120.0)))
+
+(defn- wipe-run! [^ft/WidgetTester t axis ^int n]
+  (do
+    (await (.pumpWidget t (tree axis n false :animate {:duration 300})))
+    (await (.pumpWidget t (tree axis n true :animate {:duration 300})))
+    (await (.pump t (dc/Duration .milliseconds 120)))
+    (testing "an entering loader cell is not clipped to its zero-area rect mid-segment"
+      (let [px (await (loader-pixel! t 0))]
+        (is (red? px) (str px))))
+    (await (.pumpAndSettle t))
+    (testing "at rest the loaders show"
+      (let [px (await (loader-pixel! t 0))]
+        (is (red? px) (str px))))
+    (await (.pumpWidget t (tree axis (inc n) true :animate {:duration 300})))
+    (await (.pump t (dc/Duration .milliseconds 120)))
+    (testing "a gliding loader cell (an item inserted before it) is not clipped"
+      (let [px (await (loader-pixel! t 0))]
+        (is (red? px) (str px))))
+    (await (.pumpAndSettle t))
+    (await (.pumpWidget t (tree axis (inc n) false :animate {:duration 300})))
+    (await (.pump t (dc/Duration .milliseconds 100)))
+    (testing "an exiting loader cell fades out unclipped"
+      (let [px (await (loader-pixel! t 0))]
+        (is (red? px) (str px))))
+    (await (.pumpAndSettle t))))
+
+(deftest row-loaders-enter-unclipped
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (wipe-run! t :horizontal 2)))
+
+(deftest grid-loaders-enter-unclipped
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (wipe-run! t :vertical 8)))

@@ -128,11 +128,12 @@
                   (let [^double vm (double (nth vis 0))
                         ^double vc (double (nth vis 1))
                         ^double op (double (nth vis 2 1.0))
+                        unclipped? (boolean (nth vis 3 false))
                         ^double w (if vertical? vc vm)
                         ^double h (if vertical? vm vc)
                         clip-rect (ui/Rect.fromLTWH bx by w h)]
                     (cpaint/paint-clipped-cell! ctx (.-needsCompositing this)
-                                                clip-rect op ch child-off))
+                                                clip-rect op unclipped? ch child-off))
                   (.paintChild ctx ch child-off))
                 (recur (.-nextSibling pd) (inc i)))))))))
 

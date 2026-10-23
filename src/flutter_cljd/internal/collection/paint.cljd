@@ -7,13 +7,30 @@
    ["dart:ui" :as ui]
    ["package:flutter/rendering.dart" :as r]))
 
+(defn- paint-faded!
+  [^r/PaintingContext ctx ^bool needs-compositing ^double opacity
+   ^r/RenderBox child ^ui/Offset child-off]
+  (cond
+    (>= opacity 0.999) (.paintChild ctx child child-off)
+    needs-compositing (.pushOpacity ctx ui/Offset.zero (int (.round (* opacity 255.0)))
+                                    (fn [^r/PaintingContext c _o] (.paintChild c child child-off)))
+    :else (let [^ui/Canvas canvas (.-canvas ctx)]
+            (.saveLayer canvas nil (doto (ui/Paint)
+                                     (.-color! (ui/Color.fromARGB (int (.round (* opacity 255.0))) 0 0 0))))
+            (.paintChild ctx child child-off)
+            (.restore canvas)))
+  nil)
+
 (defn paint-clipped-cell!
   "Paints `child` clipped to `clip-rect` and, when `opacity` < 1, faded with it.
    With compositing the fade is a pushOpacity INSIDE the clip layer; without it a
    separate OpacityLayer would escape the in-recording clip, so the fade stays
-   in-recording via saveLayer over the clip rect."
+   in-recording via saveLayer over the clip rect. `unclipped?` (a zero-area
+   overflow cell, see tween/clip-window) skips the clip and keeps only the fade."
   [^r/PaintingContext ctx ^bool needs-compositing ^ui/Rect clip-rect
-   ^double opacity ^r/RenderBox child ^ui/Offset child-off]
+   ^double opacity ^bool unclipped? ^r/RenderBox child ^ui/Offset child-off]
+  (if unclipped?
+    (paint-faded! ctx needs-compositing opacity child child-off)
   (.pushClipRect ctx needs-compositing ui/Offset.zero clip-rect
                  (fn [^r/PaintingContext c2 _o]
                    (if (< opacity 0.999)
@@ -30,5 +47,5 @@
                          (.paintChild c2 child child-off)
                          (.restore canvas)))
                      (.paintChild c2 child child-off))
-                   nil))
+                   nil)))
   nil)

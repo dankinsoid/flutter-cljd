@@ -270,12 +270,13 @@
                   (let [^double vm (double (nth visible 0))
                         ^double vc (double (nth visible 1))
                         ^double op (double (nth visible 2 1.0))
+                        unclipped? (boolean (nth visible 3 false))
                         clip-rect (ui/Rect.fromPoints
                                    (ui/Offset bx by)
                                    (ui/Offset (+ bx (* mux vm) (* cux vc))
                                               (+ by (* muy vm) (* cuy vc))))]
                     (cpaint/paint-clipped-cell! context (.-needsCompositing this)
-                                                clip-rect op ch child-off))
+                                                clip-rect op unclipped? ch child-off))
                   (.paintChild context ch child-off)))
               (recur (.childAfter this ch)))))))
     nil)

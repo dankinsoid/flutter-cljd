@@ -486,6 +486,11 @@ child clipped to it (translated so the reveal anchors at the correct side).
   `:remove` `:builder` (opacity/transform) still wraps the content, size owned by the
   engine.
 
+A **zero-area** cell (full main or cross extent 0) is exempt: its content is
+all deliberate overflow (trailing skeletons kept out of the scroll extent), so a
+clip to its window could only hide it. `tw/clip-window` flags it `unclipped?`
+and the hosts paint it with the fade only.
+
 Leave-slides (§7b) don't need this clip — a slide never resizes, so their
 `full-main-extent == main-extent` and they paint unclipped; the viewport itself
 clips past the edge.

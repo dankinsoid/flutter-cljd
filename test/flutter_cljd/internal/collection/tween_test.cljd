@@ -965,3 +965,16 @@
     (testing "keyed morph between two grids is exact at both endpoints"
       (is (frame= (g2-geo 4) (geo-at 0.0 4)))
       (is (frame= (g3-geo 4) (geo-at 1.0 4))))))
+
+;; @ai-generated(solo)
+(deftest clip-window-zero-area-cell-is-unclipped
+  (testing "a cell mid-wipe on a positive-area rect is clipped"
+    (is (= false (nth (tw/clip-window {:main-extent 10.0 :full-main-extent 20.0 :cross-extent 50.0}
+                                      true)
+                      3))))
+  (testing "a zero-main-extent cell wiping on cross keeps its fade but drops the clip"
+    (let [[_ _ op unclipped?] (tw/clip-window {:main-extent 0.0 :cross-extent 100.0
+                                               :full-cross-extent 400.0}
+                                              true)]
+      (is (true? unclipped?))
+      (is (< (.abs (- op 0.25)) 1e-9)))))
