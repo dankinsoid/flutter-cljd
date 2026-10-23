@@ -19,11 +19,14 @@
    ["dart:async" :as da]
    ["dart:core" :as dc]
    ["dart:ui" :as dart-ui]
+   ["package:flutter/animation.dart" :as a]
    ["package:flutter/cupertino.dart" :as c]
+   ["package:flutter/physics.dart" :as p]
    ["package:flutter/rendering.dart" :as r]
    ["package:flutter/widgets.dart" :as w]
    [cljd.flutter :as f]
    [flutter-cljd.widgets :as ui]
+   [flutter-cljd.curves :as curves]
    [flutter-cljd.internal.collection.layout :as clay]))
 
 ;; --- metrics (iOS LibraryLayout) ---
@@ -70,7 +73,9 @@
    :measure (fn [_env ^int i]
               (cond
                 (zero? i) zero-constraints
-                (> i n) (r/BoxConstraints .maxWidth 0.0)
+                ;; zero-AREA: its OverflowBox child sizes to the constraints, and
+                ;; an unbounded height makes it infinite
+                (> i n) zero-constraints
                 :else (r/BoxConstraints .minWidth cell-w .maxWidth cell-w)))
    :place (fn [_env ^int i _size ^double x]
             (cond
@@ -78,9 +83,12 @@
               (> i n) [{:offset (if (= 1 i) h-pad (+ (- x row-spacing) h-pad)) :cross 0.0} x]
               :else [{:offset x :cross row-top} (+ x cell-w row-spacing)]))
    :flow-end (fn [_env ^double x] x)
-   :anchor (fn [_env _i ^double offset] offset)
-   :renewal-point? (fn [_env _i _frame] true)
-   :renewal-index (fn ^int [_env ^int i] i)
+   ;; the END cell sits one h-pad (not one spacing) past the last cell: anchoring
+   ;; on it inverts that, and it is no renewal point — a seed there is dead-reckoned
+   :anchor (fn [_env ^int i ^double offset]
+             (if (> i n) (+ offset (- row-spacing h-pad)) offset))
+   :renewal-point? (fn [_env ^int i _frame] (<= i n))
+   :renewal-index (fn ^int [_env ^int i] (min i n))
    :approx-offset (fn [_env ^int i]
                     (if (zero? i) 0.0 (+ h-pad (* (dec i) (+ cell-w row-spacing)))))})
 
@@ -115,15 +123,19 @@
      :run-start (fn [_env {:keys [col y h]}]
                   (if (zero? col) y (+ y h (* 2.0 grid-v-pad))))
      :anchor (fn [env ^int i ^double offset]
-               (if (zero? i)
-                 {:col 0 :y 0.0 :h 0.0}
+               (cond
+                 (zero? i) {:col 0 :y 0.0 :h 0.0}
+                 ;; the END cell sits one row padding below a closed row
+                 (> i n) {:col 0 :y (+ offset grid-v-pad) :h 0.0}
+                 :else
                  {:col (mod (dec i) (cols-of env)) :y offset :h 0.0}))
      :renewal-point? (fn [env ^int i _frame]
-                       (or (zero? i) (zero? (mod (dec i) (cols-of env)))))
+                       (or (zero? i) (and (<= i n) (zero? (mod (dec i) (cols-of env))))))
      :renewal-index (fn ^int [env ^int i]
-                      (if (zero? i)
-                        0
-                        (let [^int cols (cols-of env)] (inc (* cols (quot (dec i) cols))))))
+                      (let [^int i (min i n)]
+                        (if (zero? i)
+                          0
+                          (let [^int cols (cols-of env)] (inc (* cols (quot (dec i) cols)))))))
      :approx-offset (fn [env ^int i]
                       (if (zero? i)
                         0.0
@@ -156,7 +168,7 @@
 (defn- ^w/Widget end-cell
   "Zero main extent; while loading, its child overflows forward with skeletons
    (painted unclipped, outside the scroll extent)."
-  [grid? loading? ^double width]
+  [grid? loading? empty? ^double width]
   (if grid?
     (w/SizedBox
      .height 0.0
@@ -172,11 +184,12 @@
      .width 0.0
      .child (when loading?
               (w/OverflowBox
-               .alignment w/Alignment.topLeft .maxWidth dc/double.infinity
-               ;; the end cell sits one h-pad past the last cell; skeletons
-               ;; continue at the rail's own spacing
+               .alignment w/Alignment.topLeft
+               .maxWidth dc/double.infinity .maxHeight dc/double.infinity
+               ;; the end cell sits one h-pad past the last cell (at h-pad when
+               ;; there is none); skeletons continue at the rail's own spacing
                .child (w/Transform.translate
-                       .offset (dart-ui/Offset (- row-spacing h-pad) row-top)
+                       .offset (dart-ui/Offset (if empty? 0.0 (- row-spacing h-pad)) row-top)
                        .child (w/Row .mainAxisSize w/MainAxisSize.min
                                      .crossAxisAlignment w/CrossAxisAlignment.start
                                      .children (vec (interpose (w/SizedBox .width row-spacing)
@@ -217,6 +230,35 @@
                                  (assoc :loading? false)))))
                   nil)))))
 
+;; --- lockstep companions ---
+
+(def ^:private ^p/SpringDescription morph-spring (curves/collection-spring morph-ms))
+
+;; @ai-generated(solo)
+(defn- ^w/Widget spring-follow
+  "Animates a double toward `target` on the collection's own segment spring, so a
+   companion (a section's height, its collapse) moves in lockstep with the cells.
+   A Curve/AnimatedSize can't: the spring settles past its nominal duration, and an
+   AnimatedSize shrinking lays its child out at the small size at once — the
+   viewport inside clips the cells flying back. `(builder value)`; build expensive
+   children outside it and close over them, so ticks only rebuild the wrapper."
+  [^double target builder]
+  (f/widget
+   :vsync vsync
+   :managed [ctrl (a/AnimationController .vsync vsync .value 1.0)
+             seg (atom {:from target :to target}) :dispose nil]
+   (let [{:keys [from to]} @seg]
+     (when (not= target to)
+       (let [^double cur (+ (double from) (* (- (double to) (double from)) (.-value ctrl)))]
+         (reset! seg {:from cur :to target})
+         ;; seeded with the live velocity, exactly as the engine re-aims its clock
+         (.animateWith ctrl (p/SpringSimulation morph-spring 0.0 1.0 (.-velocity ctrl)))))
+     (w/AnimatedBuilder
+      .animation ctrl
+      .builder (fn [_ _]
+                 (let [{:keys [from to]} @seg]
+                   (builder (+ (double from) (* (- (double to) (double from)) (.-value ctrl))))))))))
+
 ;; --- section ---
 
 (defn- ^double row-height [items]
@@ -240,7 +282,7 @@
       (fn [_ item]
         (case (:id item)
           ::start (w/SizedBox.shrink)
-          ::end (end-cell grid? loading? width)
+          ::end (end-cell grid? loading? (zero? n) width)
           (playlist-cell item)))))))
 
 (defn- ^w/Widget chip [label selected? on-tap]
@@ -290,25 +332,47 @@
                                header-h 34.0
                                on-range (fn [{:keys [first last near-end?]}]
                                           (swap! $ranges assoc id [first last])
-                                          (when near-end? (load-more! $sections id)))]]
-                     (w/KeyedSubtree
-                      .key (w/ValueKey id)
-                      .child
-                      (w/AnimatedSize
-                       .duration (dc/Duration .milliseconds morph-ms)
-                       .curve c/Curves.easeInOut
-                       .alignment w/Alignment.topLeft
-                       .child
-                       (if-not kept?
-                         (w/SizedBox .width width .height 0.0)
-                         (ui/column
-                          :cross-axis-alignment :stretch
-                          (->> (ui/text (str (:title s) "  ·  " (count (:items s)) "/" (:total s)
-                                             "  ·  built " (get ranges id))
-                                        {:size 13 :color :white})
-                               (ui/padding {:h 16 :v 8})
-                               (ui/sized {:h header-h}))
-                          (w/SizedBox
-                           .height (if grid? (- viewport-h header-h) (row-height (:items s)))
-                           .child (section-scroll s grid? width on-range))))))))))))))
+                                          (when (and near-end? kept?) (load-more! $sections id)))]]
+                     ;; ONE widget chain for every mode — only its parameters change —
+                     ;; so a section keeps its element (scroll position, rect history)
+                     ;; across filters, and a filtered-out section collapses with its
+                     ;; content still painted instead of being swapped for an empty box
+                     (let [content (section-scroll s grid? width on-range)
+                           header (->> (ui/text (str (:title s) "  ·  " (count (:items s)) "/" (:total s)
+                                                     "  ·  built " (get ranges id))
+                                                {:size 13 :color :white})
+                                       (ui/padding {:h 16 :v 8})
+                                       (ui/sized {:h header-h}))
+                           full-h (- viewport-h header-h)
+                           ;; the scroll view is ALWAYS laid out viewport-tall and only
+                           ;; its visible window animates: resizing it would change a
+                           ;; rail's cross extent every frame of the morph
+                           body (spring-follow
+                                 (if grid? full-h (row-height (:items s)))
+                                 (fn [^double h]
+                                   (w/SizedBox
+                                    .height h
+                                    .child (w/ClipRect
+                                            .child (w/OverflowBox
+                                                    .alignment w/Alignment.topLeft
+                                                    .minHeight full-h .maxHeight full-h
+                                                    .child content)))))]
+                       (w/KeyedSubtree
+                        .key (w/ValueKey id)
+                        .child
+                        (w/IgnorePointer
+                         .ignoring (not kept?)
+                         .child
+                         (spring-follow
+                          (if kept? 1.0 0.0)
+                          (fn [^double f]
+                            (w/ClipRect
+                             .child
+                             (w/Align
+                              .alignment w/Alignment.topLeft
+                              .heightFactor (max 0.0 f)
+                              .child (w/Opacity
+                                      .opacity (.clamp f 0.0 1.0)
+                                      .child (ui/column :cross-axis-alignment :stretch
+                                                        header body)))))))))))))))))
           (ui/colored (dart-ui/Color 0xFF1C1C1E))))))

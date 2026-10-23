@@ -1,0 +1,167 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.library-preview-test
+  "The example's Library preview (test/previews is a symlink to example/src):
+   a filtered-out section collapses WITH its content painted, a section entering
+   a filter morphs from its row, and the section's height moves in lockstep with
+   its cells — none clipped mid-morph in either direction."
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/cupertino.dart" :as c]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [previews.library-morph :as lm]))
+
+(defn- found? [^ft/WidgetTester t txt]
+  (pos? (.-length (.evaluate (ft/find.text txt)))))
+
+(defn- top-left [^ft/WidgetTester t txt]
+  (let [f (ft/find.text txt)]
+    (when (pos? (.-length (.evaluate f)))
+      (let [^ui/Offset o (.getTopLeft t (.-first f))] [(.-dx o) (.-dy o)]))))
+
+(defn- section-height
+  "Laid height of section `title`'s clip (its collapse window)."
+  [^ft/WidgetTester t title]
+  (let [f (ft/find.ancestor .of (ft/find.textContaining (str title "  ·"))
+                            .matching (ft/find.byType w/ClipRect))]
+    (.-height (.getSize t (.-first f)))))
+
+(defn- tap-chip! [^ft/WidgetTester t label]
+  (await (.tap t (.-first (ft/find.text label)))))
+
+(deftest filter-collapses-sections-with-content
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (.setSurfaceSize (.-binding t) (ui/Size 400.0 800.0)))
+  (await (.pumpWidget t (c/CupertinoApp .home (lm/library-morph-preview))))
+  (await (.pumpAndSettle t))
+  (let [full (section-height t "Albums")]
+    (await (tap-chip! t "Playlists"))
+    (await (.pump t))
+    (await (.pump t (dc/Duration .milliseconds 120)))
+    (testing "All → Playlists: Albums is still painted, mid-collapse"
+      (is (found? t "Playlist 1001"))
+      (let [h (section-height t "Albums")]
+        (is (< 1.0 h (- full 1.0)) (str h " of " full))))
+    (await (.pumpAndSettle t))
+    (testing "and ends collapsed"
+      (is (< (section-height t "Albums") 0.5)))
+    (await (tap-chip! t "All"))
+    (await (.pump t))
+    (await (.pump t (dc/Duration .milliseconds 120)))
+    (testing "Playlists → All: Albums re-expands with content (the symmetric path)"
+      (is (found? t "Playlist 1001"))
+      (is (< 1.0 (section-height t "Albums") (- full 1.0))))
+    (await (.pumpAndSettle t))
+    (is (< (.abs (- (section-height t "Albums") full)) 0.5)))
+  ;; let the preview's simulated page fetch finish
+  (await (.pump t (dc/Duration .seconds 1))))
+
+(deftest filter-switch-morphs-the-incoming-section
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (.setSurfaceSize (.-binding t) (ui/Size 400.0 800.0)))
+  (await (.pumpWidget t (c/CupertinoApp .home (lm/library-morph-preview))))
+  (await (.pumpAndSettle t))
+  (await (tap-chip! t "Albums"))
+  (await (.pumpAndSettle t))
+  (await (tap-chip! t "Playlists"))
+  (await (.pump t))
+  (let [p1-t0 (top-left t "Playlist 1")]
+    (await (.pump t (dc/Duration .milliseconds 120)))
+    (let [p1-mid (top-left t "Playlist 1")]
+      (testing "Albums → Playlists: Playlists' cells glide from their row slots"
+        (is (some? p1-t0))
+        (is (and p1-mid (not= p1-t0 p1-mid)) (str p1-t0 " → " p1-mid)))))
+  (await (.pumpAndSettle t))
+  (testing "and settle on the grid (cell 1 second in the first row)"
+    (let [[x _] (top-left t "Playlist 1")]
+      (is (< (.abs (- x 144.0)) 0.5) (str (top-left t "Playlist 1")))))
+  (is (nil? (.takeException t)))
+  (await (.pump t (dc/Duration .seconds 1))))
+
+(defn- section-rect
+  "Global rect the Playlists section is visible through: its own scroll viewport
+   cut by the clipping wrappers around it (collapse clip, size animation)."
+  [^ft/WidgetTester t]
+  (let [cell (ft/find.text "Playlist 0" .skipOffstage false)
+        anc (fn [type] (ft/find.ancestor .of cell .matching (ft/find.byType type)))
+        rects (concat [(.getRect t (.-first (anc w/Scrollable)))]
+                      (for [type [w/ClipRect w/AnimatedSize]
+                            :let [f (anc type)]
+                            :when (pos? (.-length (.evaluate f)))]
+                        (.getRect t (.-first f))))]
+    (reduce (fn [^ui/Rect a ^ui/Rect b] (.intersect a b)) rects)))
+
+(defn- cell-rects
+  "{id → global rect} of Playlists cells 0..14 (offstage included), spanning
+   title top to subtitle bottom."
+  [^ft/WidgetTester t]
+  (into {}
+        (keep (fn [i]
+                (let [title (ft/find.text (str "Playlist " i) .skipOffstage false)
+                      sub (ft/find.text (str i " tracks") .skipOffstage false)]
+                  (when (and (pos? (.-length (.evaluate title))) (pos? (.-length (.evaluate sub))))
+                    [i (.expandToInclude (.getRect t (.-first title)) (.getRect t (.-first sub)))]))))
+        (range 15)))
+
+(defn- lockstep-lag!
+  "Taps `chip` and samples the morph. Returns per frame [cell-progress
+   section-progress]: how far the most-moving Playlists cell has travelled toward
+   its settled top, and how far the section's visible height toward its settled
+   height. In lockstep they coincide; a lagging height cuts the cells."
+  [^ft/WidgetTester t chip quiet?]
+  (when quiet?
+    ;; let a pending page fetch land first, so nothing re-aims the morph
+    (await (.pump t (dc/Duration .seconds 1)))
+    (await (.pumpAndSettle t)))
+  (let [h0 (.-height (section-rect t))
+        c0 (cell-rects t)
+        _ (await (tap-chip! t chip))
+        frames (loop [k 0 acc []]
+                 (if (< k 12)
+                   (do (await (.pump t (dc/Duration .milliseconds 30)))
+                       (recur (inc k) (conj acc [(.-height (section-rect t)) (cell-rects t)])))
+                   acc))
+        _ (await (.pumpAndSettle t))
+        h1 (.-height (section-rect t))
+        c1 (cell-rects t)
+        ;; the cell travelling furthest vertically, present at both ends
+        id (apply max-key (fn [i] (.abs (- (.-top (get c1 i)) (.-top (get c0 i)))))
+                  (filter #(and (get c0 %) (get c1 %)) (range 15)))
+        progress (fn [a b x] (/ (- x a) (- b a)))]
+    (vec (for [[h cells] frames
+               :let [r (get cells id)]
+               :when r]
+           [(progress (.-top (get c0 id)) (.-top (get c1 id)) (.-top r))
+            (progress h0 h1 h)]))))
+
+(defn- out-of-step [samples]
+  (filterv (fn [[pc ps]] (> (.abs (- pc ps)) 0.06)) samples))
+
+(defn- lockstep-run! [^ft/WidgetTester t quiet?]
+  (await (.setSurfaceSize (.-binding t) (ui/Size 400.0 800.0)))
+  (await (.pumpWidget t (c/CupertinoApp .home (lm/library-morph-preview))))
+  (await (.pumpAndSettle t))
+  (let [grow (await (lockstep-lag! t "Playlists" quiet?))]
+    (testing "All → Playlists (row → grid): the section grows with its cells"
+      (is (empty? (out-of-step grow)) (str grow))))
+  (let [shrink (await (lockstep-lag! t "All" quiet?))]
+    (testing "Playlists → All (grid → row): the section shrinks with its cells"
+      (is (empty? (out-of-step shrink)) (str shrink))))
+  (is (nil? (.takeException t)))
+  (await (.pump t (dc/Duration .seconds 1))))
+
+(deftest section-height-in-lockstep-with-cells
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  (await (lockstep-run! t true)))
+
+(deftest section-height-in-lockstep-through-a-page-append
+  :tags [:widget]
+  :runner (ft/testWidgets [t])
+  ;; the filtered grid's paging fetch lands mid-way through the morph back: the
+  ;; append re-captures the cells on the RUNNING clock, so the window stays in step
+  (await (lockstep-run! t false)))
