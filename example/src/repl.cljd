@@ -1,6 +1,7 @@
 (ns repl
   (:require
    [data.examples :as ex]
+   [previews.library-morph :as library-morph]
    [flutter-cljd.widgets :as ui]
    [flutter-cljd.utils :as ut]
    [flutter-cljd.shader :as shader]
@@ -1262,6 +1263,7 @@
    ["Wrap"       wrap-layout-preview]
    ["Masonry"    masonry-layout-preview]
    ["Custom"     custom-layout-preview]
+   ["Library"    library-morph/library-morph-preview]
    ["Soak"       soak-preview]
    ["Gradients"  gradient-color-page]
    ["Chroma"     gradient-comparison]

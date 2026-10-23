@@ -1,0 +1,314 @@
+;; @ai-generated(solo)
+(ns previews.library-morph
+  "Library morph (TransferMusic `LibraryLayout` reference): sections of playlist
+   cells, each its own lazy `custom-scroll` + `sliver-collection`. All = every
+   section a horizontal rail; tapping a section's chip filters to it and flips
+   that section's scroll axis, morphing the rail into a grid (and back).
+
+   - each section's axis flip morphs cells from their ON-SCREEN rects (a rail
+     scrolled sideways included) and the grid starts at its top
+   - `:animate #{:layout}`: the filter morph glides, page appends snap
+   - `:on-visible-range` drives paging (near-end ⇒ load the next page)
+   - loaders + end padding live in ONE trailing zero-main-extent cell whose child
+     overflows: the scroll extent ignores the skeletons, over-scroll shows them
+   - the outer vertical scroll stays mounted: in filtered mode it goes `:never`
+     and animates to 0 while the other sections collapse, and the kept section is
+     bounded to the viewport so its grid scrolls itself — the kept section's
+     element (and its rect history) survives because the tree shape never changes"
+  (:require
+   ["dart:async" :as da]
+   ["dart:core" :as dc]
+   ["dart:ui" :as dart-ui]
+   ["package:flutter/cupertino.dart" :as c]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]
+   [cljd.flutter :as f]
+   [flutter-cljd.widgets :as ui]
+   [flutter-cljd.internal.collection.layout :as clay]))
+
+;; --- metrics (iOS LibraryLayout) ---
+
+(def ^:private ^double cell-w 110.0)
+(def ^:private ^double row-spacing 8.0)
+(def ^:private ^double h-pad 16.0)
+(def ^:private ^double row-top 12.0)
+(def ^:private ^double row-bottom 8.0)
+(def ^:private ^double grid-gap 16.0)
+(def ^:private ^double grid-v-pad 8.0)
+(def ^:private ^double text-line 16.0)
+(def ^:private ^double subtitle-h 18.0)
+(def ^:private ^int page-size 15)
+(def ^:private morph-ms 350)
+
+(defn- ^double cell-height
+  "Square artwork + gap + title (one or two 16px lines) + subtitle."
+  [^double w two-lines?]
+  (+ w 6.0 (if two-lines? (* 2.0 text-line) text-line) subtitle-h))
+
+(defn- grid-metrics
+  "[cols cell-width] — the column count whose cell width lands closest to
+   `cell-w` (iOS rounds rather than floors)."
+  [^double cross]
+  (let [^double avail (max 1.0 (- cross (* 2.0 h-pad)))
+        ^int cols (max 1 (.round (/ (+ avail grid-gap) (+ cell-w grid-gap))))]
+    [cols (/ (- avail (* grid-gap (dec cols))) cols)]))
+
+;; --- layouts: plain layout maps (collection.layout flow contract) ---
+
+;; Item 0 is a zero-size START cell (the engine requires index 0 at offset 0, so the
+;; leading padding comes after it), items 1..n are cells, n+1 is the zero-extent END
+;; cell. `n` stays out of :id: an append is not a layout change.
+
+(def ^:private zero-constraints (r/BoxConstraints.tight dart-ui/Size.zero))
+
+(defn- row-layout
+  "Horizontal rail of fixed-width, natural-height cells, top-aligned."
+  [^int n]
+  {:id [:library-row]
+   :collapse-axis :main
+   :init (fn [_env] 0.0)                   ;; state: x of the next cell
+   :measure (fn [_env ^int i]
+              (cond
+                (zero? i) zero-constraints
+                (> i n) (r/BoxConstraints .maxWidth 0.0)
+                :else (r/BoxConstraints .minWidth cell-w .maxWidth cell-w)))
+   :place (fn [_env ^int i _size ^double x]
+            (cond
+              (zero? i) [{:offset 0.0 :cross 0.0} h-pad]
+              (> i n) [{:offset (if (= 1 i) h-pad (+ (- x row-spacing) h-pad)) :cross 0.0} x]
+              :else [{:offset x :cross row-top} (+ x cell-w row-spacing)]))
+   :flow-end (fn [_env ^double x] x)
+   :anchor (fn [_env _i ^double offset] offset)
+   :renewal-point? (fn [_env _i _frame] true)
+   :renewal-index (fn ^int [_env ^int i] i)
+   :approx-offset (fn [_env ^int i]
+                    (if (zero? i) 0.0 (+ h-pad (* (dec i) (+ cell-w row-spacing)))))})
+
+(defn- grid-layout
+  "Rows of `cols` cells; a row is as tall as its tallest cell, cells keep their
+   natural height, top-anchored (iOS gridPlacement)."
+  [^int n]
+  (let [cols-of (fn ^int [env] (first (grid-metrics (double (:cross-extent env)))))]
+    {:id [:library-grid]
+     :collapse-axis :cross
+     ;; state: column of the next cell, its row's top, the row's height so far
+     :init (fn [_env] {:col 0 :y 0.0 :h 0.0})
+     :measure (fn [env ^int i]
+                (cond
+                  (zero? i) zero-constraints
+                  (> i n) (r/BoxConstraints .maxWidth (double (:cross-extent env)) .maxHeight 0.0)
+                  :else (let [^double cw (second (grid-metrics (double (:cross-extent env))))]
+                          (r/BoxConstraints .minWidth cw .maxWidth cw))))
+     :place (fn [env ^int i size {:keys [col y h] :as st}]
+              (let [[^int cols ^double cw] (grid-metrics (double (:cross-extent env)))]
+                (cond
+                  (zero? i) [{:offset 0.0 :cross 0.0} {:col 0 :y grid-v-pad :h 0.0}]
+                  ;; one row padding below the last row
+                  (> i n) [{:offset (if (zero? col) (- y grid-v-pad) (+ y h grid-v-pad)) :cross 0.0} st]
+                  :else
+                  (let [^double h' (max h (clay/size-main env size))
+                        frame {:offset y :cross (+ h-pad (* col (+ cw grid-gap)))}]
+                    (if (= (inc col) cols)
+                      [frame {:col 0 :y (+ y h' (* 2.0 grid-v-pad)) :h 0.0}]
+                      [frame {:col (inc col) :y y :h h'}])))))
+     :flow-end (fn [_env st] (:y st))
+     :run-start (fn [_env {:keys [col y h]}]
+                  (if (zero? col) y (+ y h (* 2.0 grid-v-pad))))
+     :anchor (fn [env ^int i ^double offset]
+               (if (zero? i)
+                 {:col 0 :y 0.0 :h 0.0}
+                 {:col (mod (dec i) (cols-of env)) :y offset :h 0.0}))
+     :renewal-point? (fn [env ^int i _frame]
+                       (or (zero? i) (zero? (mod (dec i) (cols-of env)))))
+     :renewal-index (fn ^int [env ^int i]
+                      (if (zero? i)
+                        0
+                        (let [^int cols (cols-of env)] (inc (* cols (quot (dec i) cols))))))
+     :approx-offset (fn [env ^int i]
+                      (if (zero? i)
+                        0.0
+                        (+ grid-v-pad (* (quot (dec i) (cols-of env))
+                                         (+ (double (or (:avg-main env) 0.0)) (* 2.0 grid-v-pad))))))}))
+
+;; --- cells ---
+
+(def ^:private palette
+  [(dart-ui/Color 0xFF5E81AC) (dart-ui/Color 0xFFBF616A) (dart-ui/Color 0xFFA3BE8C)
+   (dart-ui/Color 0xFFEBCB8B) (dart-ui/Color 0xFFB48EAD) (dart-ui/Color 0xFF88C0D0)])
+
+(defn- ^w/Widget playlist-cell [{:keys [id title two-lines?]}]
+  (w/Column
+   .crossAxisAlignment w/CrossAxisAlignment.start
+   .mainAxisSize w/MainAxisSize.min
+   .children
+   [(w/AspectRatio .aspectRatio 1.0
+                   .child (ui/clip-corners :all 8 (ui/colored (nth palette (mod id (count palette))))))
+    (w/SizedBox .height 6.0)
+    (w/SizedBox .height (if two-lines? (* 2.0 text-line) text-line)
+                .child (ui/text title {:size 12 :color :white :max-lines 2}))
+    (w/SizedBox .height subtitle-h
+                .child (ui/text (str id " tracks") {:size 11 :color :grey}))]))
+
+(defn- ^w/Widget skeleton [^double w]
+  (w/SizedBox .width w .height (cell-height w false)
+              .child (ui/clip-corners :all 8 (ui/colored (dart-ui/Color 0x33FFFFFF)))))
+
+(defn- ^w/Widget end-cell
+  "Zero main extent; while loading, its child overflows forward with skeletons
+   (painted unclipped, outside the scroll extent)."
+  [grid? loading? ^double width]
+  (if grid?
+    (w/SizedBox
+     .height 0.0
+     .child (when loading?
+              (w/OverflowBox
+               .alignment w/Alignment.topLeft .maxHeight dc/double.infinity
+               .child (let [[^int cols ^double cw] (grid-metrics width)]
+                        (w/Padding
+                         .padding (w/EdgeInsets.fromLTRB h-pad grid-v-pad h-pad 0.0)
+                         .child (w/Wrap .spacing grid-gap .runSpacing (* 2.0 grid-v-pad)
+                                        .children (vec (repeat (* 2 cols) (skeleton cw)))))))))
+    (w/SizedBox
+     .width 0.0
+     .child (when loading?
+              (w/OverflowBox
+               .alignment w/Alignment.topLeft .maxWidth dc/double.infinity
+               ;; the end cell sits one h-pad past the last cell; skeletons
+               ;; continue at the rail's own spacing
+               .child (w/Transform.translate
+                       .offset (dart-ui/Offset (- row-spacing h-pad) row-top)
+                       .child (w/Row .mainAxisSize w/MainAxisSize.min
+                                     .crossAxisAlignment w/CrossAxisAlignment.start
+                                     .children (vec (interpose (w/SizedBox .width row-spacing)
+                                                               (repeat 5 (skeleton cell-w)))))))))))
+
+;; --- data / paging ---
+
+(defn- make-items [^int from ^int n]
+  (mapv (fn [^int i] {:id i
+                      :title (if (= 2 (mod i 5)) (str "A longer playlist name " i) (str "Playlist " i))
+                      :two-lines? (= 2 (mod i 5))})
+        (range from (+ from n))))
+
+(def ^:private initial-sections
+  [{:id :playlists :title "Playlists" :items (make-items 0 page-size) :total 120 :loading? false}
+   {:id :albums :title "Albums" :items (make-items 1000 page-size) :total 45 :loading? false}
+   {:id :artists :title "Artists" :items (make-items 2000 4) :total 4 :loading? false}])
+
+(defn- update-section [sections id f]
+  (mapv #(if (= id (:id %)) (f %) %) sections))
+
+(defn- load-more!
+  "Simulated page fetch: skeletons show while it runs; the append snaps (data
+   changes are outside `:animate #{:layout}`)."
+  [$sections id]
+  (let [sec (first (filter #(= id (:id %)) @$sections))]
+    (when (and sec (not (:loading? sec)) (< (count (:items sec)) (:total sec)))
+      (swap! $sections update-section id #(assoc % :loading? true))
+      (da/Timer (dc/Duration .milliseconds 800)
+                (fn []
+                  (swap! $sections update-section id
+                         (fn [s]
+                           (let [n (count (:items s))
+                                 base (+ (:id (first (:items s))) n)
+                                 k (min page-size (- (:total s) n))]
+                             (-> s
+                                 (update :items into (make-items base k))
+                                 (assoc :loading? false)))))
+                  nil)))))
+
+;; --- section ---
+
+(defn- ^double row-height [items]
+  (+ row-top (cell-height cell-w (boolean (some :two-lines? items))) row-bottom))
+
+(defn- ^w/Widget section-scroll
+  [{:keys [items loading?] :as _sec} grid? ^double width on-range]
+  (let [n (count items)]
+    (ui/custom-scroll
+     :axis (if grid? :vertical :horizontal)
+     ;; Flutter defaults a controller-less VERTICAL scroll view to primary, which
+     ;; wraps it differently and swaps its controller — the flip would remount it
+     :primary false
+     :physics :always-bouncing
+     (ui/sliver-collection
+      (-> [{:id ::start}] (into items) (conj {:id ::end}))
+      :key-fn :id
+      :layout (if grid? (grid-layout n) (row-layout n))
+      :animate {:on #{:layout} :duration morph-ms}
+      :on-visible-range on-range
+      (fn [_ item]
+        (case (:id item)
+          ::start (w/SizedBox.shrink)
+          ::end (end-cell grid? loading? width)
+          (playlist-cell item)))))))
+
+(defn- ^w/Widget chip [label selected? on-tap]
+  (ui/button on-tap
+    (->> (ui/text label {:size 13 :color (if selected? :black :white)})
+         (ui/padding {:h 12 :v 6})
+         (ui/clip-corners :all 14)
+         (ui/colored (if selected? (dart-ui/Color 0xFFFFFFFF) (dart-ui/Color 0x33FFFFFF))))))
+
+(defn library-morph-preview []
+  (f/widget
+   :managed [outer (w/ScrollController)]
+   :watch [sections (atom initial-sections) :as $sections
+           filter-id (atom nil) :as $filter
+           ranges (atom {}) :as $ranges]
+   (let [set-filter! (fn [id]
+                       (reset! $filter id)
+                       ;; the kept section rises to the top as the others collapse
+                       (when (.-hasClients outer)
+                         (.animateTo outer 0.0
+                                     .duration (dc/Duration .milliseconds morph-ms)
+                                     .curve c/Curves.easeInOut)))]
+     (->> (ui/column
+           :cross-axis-alignment :stretch
+           (->> (apply ui/row
+                       (interpose (ui/sized {:w 8})
+                                  (cons (chip "All" (nil? filter-id) #(set-filter! nil))
+                                        (for [s sections]
+                                          (chip (:title s) (= filter-id (:id s))
+                                                #(set-filter! (:id s)))))))
+                (ui/padding {:h 16 :v 10})
+                (ui/scroll {:axis :horizontal}))
+           (ui/expanded
+            (ui/layout-builder
+             (fn [_ctx ^w/BoxConstraints cs]
+               (let [^double viewport-h (.-maxHeight cs)
+                     ^double width (.-maxWidth cs)]
+                 (ui/scroll
+                  {:controller outer
+                   :physics (if filter-id :never :always-bouncing)}
+                  (ui/column
+                   :cross-axis-alignment :stretch
+                   (for [s sections
+                         :let [id (:id s)
+                               kept? (or (nil? filter-id) (= id filter-id))
+                               grid? (= id filter-id)
+                               header-h 34.0
+                               on-range (fn [{:keys [first last near-end?]}]
+                                          (swap! $ranges assoc id [first last])
+                                          (when near-end? (load-more! $sections id)))]]
+                     (w/KeyedSubtree
+                      .key (w/ValueKey id)
+                      .child
+                      (w/AnimatedSize
+                       .duration (dc/Duration .milliseconds morph-ms)
+                       .curve c/Curves.easeInOut
+                       .alignment w/Alignment.topLeft
+                       .child
+                       (if-not kept?
+                         (w/SizedBox .width width .height 0.0)
+                         (ui/column
+                          :cross-axis-alignment :stretch
+                          (->> (ui/text (str (:title s) "  ·  " (count (:items s)) "/" (:total s)
+                                             "  ·  built " (get ranges id))
+                                        {:size 13 :color :white})
+                               (ui/padding {:h 16 :v 8})
+                               (ui/sized {:h header-h}))
+                          (w/SizedBox
+                           .height (if grid? (- viewport-h header-h) (row-height (:items s)))
+                           .child (section-scroll s grid? width on-range))))))))))))))
+          (ui/colored (dart-ui/Color 0xFF1C1C1E))))))
