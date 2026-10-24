@@ -3020,7 +3020,22 @@ Examples:
 (sliver-list (text \"A\") (text \"B\"))
 (sliver-list items (fn [ctx item] (text (:name item))))
 (sliver-list 100 (fn [ctx i] (text (str i))))
-```"
+(sliver-list 10000 :item-extent 60 (fn [ctx i] (row i)))
+```
+
+Options: `:item-extent`, `:add-automatic-keep-alives`, `:add-repaint-boundaries`,
+`:add-semantic-indexes`, plus the visible-range options of `list`
+(`:on-visible-range`, `:near-end-threshold`, `:visible-range-debounce`).
+
+- `:item-extent` — every child gets exactly this main-axis extent
+  (`SliverFixedExtentList`): children are laid out with tight constraints and
+  never measured, so scroll offsets and the visible range are O(1) index math.
+- `:on-visible-range` — the materialized index range, same contract as
+  `list`'s; turns automatic keep-alives off.
+
+No insert/remove animation and no keyed diff: a rebuild re-runs the builder
+for the built children only. Return the identical widget instance for an
+unchanged item to skip its rebuild."
   [& args]
   (scrl/sliver-list* args))
 

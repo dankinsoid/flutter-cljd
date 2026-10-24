@@ -342,28 +342,56 @@
 
 ;; --- Slivers ---
 
-(defn ^w/Widget sliver-list* [raw-args]
-  (let [[args children] (parse-scroll-args raw-args)
-        key (t/widget-key (:key args))
+(defn- ^w/Widget sliver-list-view* [args children]
+  (let [key (t/widget-key (:key args))
+        item-extent (some-> (:item-extent args) double)
         item-builder (:item-builder args)
-        item-count (:item-count args)
+        item-count (some-> (:item-count args) int)
         add-automatic-keep-alives (boolean (:add-automatic-keep-alives args true))
         add-repaint-boundaries (boolean (:add-repaint-boundaries args true))
         add-semantic-indexes (boolean (:add-semantic-indexes args true))]
-    (if item-builder
-      (w/SliverList.builder
+    (cond
+      (and item-builder item-extent)
+      (w/SliverFixedExtentList.builder
        .key key
-       .itemCount (some-> item-count int)
+       .itemExtent item-extent
+       .itemCount item-count
        .itemBuilder item-builder
        .addAutomaticKeepAlives add-automatic-keep-alives
        .addRepaintBoundaries add-repaint-boundaries
        .addSemanticIndexes add-semantic-indexes)
+
+      item-builder
+      (w/SliverList.builder
+       .key key
+       .itemCount item-count
+       .itemBuilder item-builder
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes)
+
+      item-extent
+      (w/SliverFixedExtentList.list
+       .key key
+       .itemExtent item-extent
+       .addAutomaticKeepAlives add-automatic-keep-alives
+       .addRepaintBoundaries add-repaint-boundaries
+       .addSemanticIndexes add-semantic-indexes
+       .children children)
+
+      :else
       (w/SliverList.list
        .key key
        .addAutomaticKeepAlives add-automatic-keep-alives
        .addRepaintBoundaries add-repaint-boundaries
        .addSemanticIndexes add-semantic-indexes
        .children children))))
+
+(defn ^w/Widget sliver-list* [raw-args]
+  (let [[args children] (parse-scroll-args raw-args)]
+    (if (:on-visible-range args)
+      (vr/tracking-list args children sliver-list-view*)
+      (sliver-list-view* args children))))
 
 (defn ^w/Widget sliver-grid* [raw-args]
   (let [[args source builder children] (parse-grid-args raw-args)

@@ -111,3 +111,25 @@
       (is (<= 86 (:first r) 88) (str r))
       (is (= 99 (:last r)) (str r))
       (is (true? (:near-end? r))))))
+
+;; @ai-generated(solo)
+(deftest sliver-list-fixed-extent-visible-range
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [reports (atom [])]
+    (await (.pumpWidget tester (host (f/custom-scroll
+                                      :cache-extent 0
+                                      (f/sliver-list 100
+                                                     :item-extent 50
+                                                     :on-visible-range (fn [r] (swap! reports conj r))
+                                                     ;; the child asks for 10px; the extent wins
+                                                     (fn [_ i] (w/SizedBox .height 10.0 .child (w/Text (str i)))))))))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (is (= 50.0 (.-height (.getSize tester (ft/find.text "3")))))
+    (is (= {:first 0 :last 11 :near-end? false} (last @reports)))
+    (.jumpTo (scroll-position tester) 4400.0)
+    (await (.pump tester))
+    (await (.pump tester (dc/Duration .milliseconds 300)))
+    (let [r (last @reports)]
+      (is (= {:first 88 :last 99} (select-keys r [:first :last])))
+      (is (true? (:near-end? r))))))
