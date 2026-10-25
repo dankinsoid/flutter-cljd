@@ -1,0 +1,299 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.scroll-viewport
+  "`SingleChildScrollView` (Flutter 3.38) with one change: its viewport's
+   out-of-range clamp in `performLayout` runs only while the position is idle.
+   Since Flutter 3.16 (PR #136871) that clamp `correctBy`s pixels back into
+   range on EVERY layout, so any relayout reaching the viewport mid over-scroll
+   (drag, hold, ballistic spring-back) snaps a bouncing over-scroll to the
+   edge. Outside an interaction the clamp still snaps a position left beyond
+   shrunk content."
+  (:require
+   ["dart:core" :as dc]
+   ["dart:math" :as math]
+   ["dart:ui" :as ui]
+   ["package:flutter/animation.dart" :as a]
+   ["package:flutter/rendering.dart" :as r]
+   ["package:flutter/widgets.dart" :as w]))
+
+(declare ^:private idle? ^:private axis-of ^:private inner-constraints ^:private viewport-extent
+         ^:private max-scroll-extent ^:private paint-offset-for
+         ^:private clips-at?)
+
+(deftype ^:private RenderScrollViewport
+         [^:mutable ^r/AxisDirection axisDir
+          ^:mutable ^r/ViewportOffset viewOffset
+          ^:mutable ^ui/Clip clip
+          ^#/(r/LayerHandle r/ClipRectLayer) clipLayer
+          ;; one fixed-arity fn = one Dart closure: removeListener matches by identity
+          ^:mutable scrolledCb]
+  :extends (r/RenderBox)
+
+  (attach [this ^r/PipelineOwner owner]
+    (.attach ^super this owner)
+    (let [cb (.-scrolledCb this)] (.addListener (.-viewOffset this) cb))
+    nil)
+
+  (detach [this]
+    (let [cb (.-scrolledCb this)] (.removeListener (.-viewOffset this) cb))
+    (.detach ^super this)
+    nil)
+
+  (dispose [this]
+    (.-layer! (.-clipLayer this) nil)
+    (.dispose ^super this)
+    nil)
+
+  (^bool isRepaintBoundary [_] true)
+
+  (^double computeMinIntrinsicWidth [this ^double height]
+    (if-let [^r/RenderBox c (.-child this)] (.getMinIntrinsicWidth c height) 0.0))
+  (^double computeMaxIntrinsicWidth [this ^double height]
+    (if-let [^r/RenderBox c (.-child this)] (.getMaxIntrinsicWidth c height) 0.0))
+  (^double computeMinIntrinsicHeight [this ^double width]
+    (if-let [^r/RenderBox c (.-child this)] (.getMinIntrinsicHeight c width) 0.0))
+  (^double computeMaxIntrinsicHeight [this ^double width]
+    (if-let [^r/RenderBox c (.-child this)] (.getMaxIntrinsicHeight c width) 0.0))
+
+  ;; no baseline: one that moves with the scroll would shift the viewport
+  ;; inside a baseline-aligned parent
+
+  (^ui/Size computeDryLayout [this ^r/BoxConstraints constraints]
+    (if-let [^r/RenderBox c (.-child this)]
+      (.constrain constraints (.getDryLayout c (inner-constraints this constraints)))
+      (.-smallest constraints)))
+
+  (performLayout [this]
+    (let [^r/BoxConstraints constraints (.-constraints this)
+          ^r/ViewportOffset offset (.-viewOffset this)]
+      (if-let [^r/RenderBox c (.-child this)]
+        (do (.layout c (inner-constraints this constraints) .parentUsesSize true)
+            (.-size! this (.constrain constraints (.-size c))))
+        (.-size! this (.-smallest constraints)))
+      (when (and (.-hasPixels offset) (idle? offset))
+        (let [^double px (.-pixels offset)
+              ^double max-extent (max-scroll-extent this)]
+          (cond
+            (> px max-extent) (.correctBy offset (- max-extent px))
+            (< px 0.0) (.correctBy offset (- px)))))
+      (.applyViewportDimension offset (viewport-extent this))
+      (.applyContentDimensions offset 0.0 (max-scroll-extent this))
+      nil))
+
+  (paint [this ^r/PaintingContext context ^ui/Offset offset]
+    (when-let [^r/RenderBox c (.-child this)]
+      (let [^ui/Offset po (paint-offset-for this (.-pixels (.-viewOffset this)))
+            ^#/(r/LayerHandle r/ClipRectLayer) handle (.-clipLayer this)
+            paint-contents (fn [^r/PaintingContext ctx ^ui/Offset o]
+                             (.paintChild ctx c (.translate o (.-dx po) (.-dy po)))
+                             nil)]
+        (if (clips-at? this po)
+          (.-layer! handle
+                    (.pushClipRect context (.-needsCompositing this) offset
+                                   (ui/Rect.fromLTWH 0.0 0.0 (.-width (.-size this)) (.-height (.-size this)))
+                                   paint-contents
+                                   .clipBehavior (.-clip this)
+                                   .oldLayer (.-layer handle)))
+          (do (.-layer! handle nil)
+              (paint-contents context offset)))))
+    nil)
+
+  (applyPaintTransform [this ^r/RenderObject child ^r/Matrix4 transform]
+    (let [^ui/Offset po (paint-offset-for this (.-pixels (.-viewOffset this)))]
+      (.translateByDouble transform (.-dx po) (.-dy po) 0.0 1.0))
+    nil)
+
+  (^ui/Rect? describeApproximatePaintClip [this ^r/RenderObject? child]
+    (when (and (some? child) (clips-at? this (paint-offset-for this (.-pixels (.-viewOffset this)))))
+      (ui/Rect.fromLTWH 0.0 0.0 (.-width (.-size this)) (.-height (.-size this)))))
+
+  (^bool hitTestChildren [this ^r/BoxHitTestResult result ^ui/Offset .position]
+    (if-let [^r/RenderBox c (.-child this)]
+      (.addWithPaintOffset result
+                           .offset (paint-offset-for this (.-pixels (.-viewOffset this)))
+                           .position position
+                           .hitTest (fn ^bool [^r/BoxHitTestResult res ^ui/Offset transformed]
+                                      (.hitTest c res .position transformed)))
+      false))
+
+  (showOnScreen [this ^r/RenderObject? .descendant ^ui/Rect? .rect ^dc/Duration? .duration ^a/Curve? .curve]
+    (let [^r/ViewportOffset offset (.-viewOffset this)
+          ^dc/Duration duration (or duration dc/Duration.zero)
+          ^a/Curve curve (or curve a/Curves.ease)]
+      (if-not (.-allowImplicitScrolling offset)
+        (.showOnScreen ^super this .descendant descendant .rect rect .duration duration .curve curve)
+        (let [new-rect (r/RenderViewportBase.showInViewport
+                        .descendant descendant .viewport this .offset offset
+                        .rect rect .duration duration .curve curve)]
+          (.showOnScreen ^super this .rect new-rect .duration duration .curve curve))))
+    nil)
+
+  (^ui/Rect describeSemanticsClip [this ^r/RenderObject? child]
+    (let [^ui/Rect b (.-semanticBounds this)
+          ^double px (.-pixels (.-viewOffset this))
+          ^double remaining (- (max-scroll-extent this) px)]
+      (condp = (.-axisDir this)
+        r/AxisDirection.up (ui/Rect.fromLTRB (.-left b) (- (.-top b) remaining) (.-right b) (+ (.-bottom b) px))
+        r/AxisDirection.right (ui/Rect.fromLTRB (- (.-left b) px) (.-top b) (+ (.-right b) remaining) (.-bottom b))
+        r/AxisDirection.left (ui/Rect.fromLTRB (- (.-left b) remaining) (.-top b) (+ (.-right b) px) (.-bottom b))
+        (ui/Rect.fromLTRB (.-left b) (- (.-top b) px) (.-right b) (+ (.-bottom b) remaining)))))
+
+  ^:mixin #/(r/RenderObjectWithChildMixin r/RenderBox)
+  r/RenderAbstractViewport
+  (^r/RevealedOffset getOffsetToReveal [this ^r/RenderObject target ^double alignment
+                                        ^ui/Rect? .rect ^r/Axis? .axis]
+    (let [^r/ViewportOffset offset (.-viewOffset this)
+          ^ui/Rect rect (or rect (.-paintBounds target))]
+      (if-not (instance? r/RenderBox target)
+        (r/RevealedOffset .offset (.-pixels offset) .rect rect)
+        (let [^r/RenderBox c (.-child this)
+              ^ui/Rect bounds (r/MatrixUtils.transformRect (.getTransformTo target c) rect)
+              ^ui/Size content (.-size c)
+              ^ui/Size sz (.-size this)
+              d (.-axisDir this)
+              ^double main-extent (if (= (axis-of d) r/Axis.vertical) (.-height sz) (.-width sz))
+              ^double leading (condp = d
+                                r/AxisDirection.up (- (.-height content) (.-bottom bounds))
+                                r/AxisDirection.left (- (.-width content) (.-right bounds))
+                                r/AxisDirection.right (.-left bounds)
+                                (.-top bounds))
+              ^double target-extent (if (= (axis-of d) r/Axis.vertical) (.-height bounds) (.-width bounds))
+              ^double target-offset (- leading (* (- main-extent target-extent) alignment))]
+          (r/RevealedOffset .offset target-offset
+                            .rect (.shift bounds (paint-offset-for this target-offset))))))))
+
+;; over-scroll only exists under a non-idle activity (drag, hold, ballistic,
+;; driven): each ends by going ballistic back into range itself
+(defn- ^bool idle? [^r/ViewportOffset offset]
+  (if (instance? w/ScrollPosition offset)
+    (let [act (.-activity ^w/ScrollPosition offset)]
+      (or (nil? act) (instance? w/IdleScrollActivity act)))
+    true))
+
+(defn- ^r/Axis axis-of [^r/AxisDirection d]
+  (r/axisDirectionToAxis d))
+
+(defn- ^r/BoxConstraints inner-constraints [^RenderScrollViewport this ^r/BoxConstraints constraints]
+  (if (= (axis-of (.-axisDir this)) r/Axis.horizontal)
+    (.heightConstraints constraints)
+    (.widthConstraints constraints)))
+
+(defn- ^double viewport-extent [^RenderScrollViewport this]
+  (let [^ui/Size sz (.-size this)]
+    (if (= (axis-of (.-axisDir this)) r/Axis.horizontal) (.-width sz) (.-height sz))))
+
+(defn- ^double max-scroll-extent [^RenderScrollViewport this]
+  (if-let [^r/RenderBox c (.-child this)]
+    (let [^ui/Size sz (.-size this)
+          ^ui/Size cs (.-size c)]
+      (#/(math/max double) 0.0 (if (= (axis-of (.-axisDir this)) r/Axis.horizontal)
+                      (- (.-width cs) (.-width sz))
+                      (- (.-height cs) (.-height sz)))))
+    0.0))
+
+(defn- ^ui/Offset paint-offset-for [^RenderScrollViewport this ^double position]
+  (let [^r/RenderBox c (.-child this)
+        ^ui/Size sz (.-size this)]
+    (condp = (.-axisDir this)
+      r/AxisDirection.up (ui/Offset 0.0 (+ (- position (.-height (.-size c))) (.-height sz)))
+      r/AxisDirection.left (ui/Offset (+ (- position (.-width (.-size c))) (.-width sz)) 0.0)
+      r/AxisDirection.right (ui/Offset (- position) 0.0)
+      (ui/Offset 0.0 (- position)))))
+
+(defn- ^bool clips-at? [^RenderScrollViewport this ^ui/Offset po]
+  (let [^r/RenderBox c (.-child this)
+        ^ui/Size sz (.-size this)]
+    (and (not= (.-clip this) ui/Clip.none)
+         (or (< (.-dx po) 0.0)
+             (< (.-dy po) 0.0)
+             (> (+ (.-dx po) (.-width (.-size c))) (.-width sz))
+             (> (+ (.-dy po) (.-height (.-size c))) (.-height sz))))))
+
+(defn- ^RenderScrollViewport render-scroll-viewport
+  [^r/AxisDirection axis-dir ^r/ViewportOffset offset ^ui/Clip clip]
+  (let [ro (RenderScrollViewport axis-dir offset clip (#/(r/LayerHandle r/ClipRectLayer)) nil)]
+    (.-scrolledCb! ro (fn []
+                        (.markNeedsPaint ro)
+                        (.markNeedsSemanticsUpdate ro)))
+    ro))
+
+(defn- update-render-object! [^RenderScrollViewport ro ^r/AxisDirection axis-dir
+                              ^r/ViewportOffset offset ^ui/Clip clip]
+  ;; axis direction first: the offset listener swap below relayouts with it
+  (when-not (= axis-dir (.-axisDir ro))
+    (.-axisDir! ro axis-dir)
+    (.markNeedsLayout ro))
+  (when-not (identical? offset (.-viewOffset ro))
+    (when (.-attached ro)
+      (let [cb (.-scrolledCb ro)] (.removeListener (.-viewOffset ro) cb)))
+    (.-viewOffset! ro offset)
+    (when (.-attached ro)
+      (let [cb (.-scrolledCb ro)] (.addListener offset cb)))
+    (.markNeedsLayout ro))
+  (when-not (= clip (.-clip ro))
+    (.-clip! ro clip)
+    (.markNeedsPaint ro)
+    (.markNeedsSemanticsUpdate ro)))
+
+;; ViewportElementMixin bumps ScrollNotification.depth across this viewport, so
+;; an outer Scrollbar/RefreshIndicator (depth == 0 predicate) ignores nested scrolls
+(deftype ^:private ScrollViewportElement [^w/SingleChildRenderObjectWidget wgt]
+  :extends (w/SingleChildRenderObjectElement wgt)
+  ^:mixin w/NotifiableElementMixin
+  ^:mixin w/ViewportElementMixin)
+
+(deftype ^:private ScrollViewport [^r/AxisDirection axisDir ^r/ViewportOffset viewOffset
+                                   ^ui/Clip clip ^w/Widget? c]
+  :extends (w/SingleChildRenderObjectWidget .child c)
+
+  (createRenderObject [_ _ctx]
+    (render-scroll-viewport axisDir viewOffset clip))
+
+  (updateRenderObject [_ _ctx ro]
+    (update-render-object! ro axisDir viewOffset clip))
+
+  (createElement [this]
+    (ScrollViewportElement this)))
+
+(defn ^w/Widget single-child-scroll-view
+  "SingleChildScrollView.build with the clamp-free viewport. All args are
+   resolved Flutter values; `padding`, `controller`, `primary`, `physics`,
+   `restoration-id` may be nil."
+  [{:keys [^w/Key? key ^r/Axis axis ^bool reverse ^w/EdgeInsetsGeometry? padding
+           ^w/ScrollController? controller primary ^w/ScrollPhysics? physics
+           ^ui/Clip clip drag-start-behavior keyboard-dismiss-behavior
+           ^dc/String? restoration-id ^w/Widget? child]}]
+  (w/Builder
+   .key key
+   .builder
+   (fn [^w/BuildContext ctx]
+     (let [axis-dir (w/getAxisDirectionFromAxisReverseAndDirectionality ctx axis reverse)
+           contents (if padding (w/Padding .padding padding .child child) child)
+           primary? (if (some? primary)
+                      (boolean primary)
+                      (and (nil? controller) (w/PrimaryScrollController.shouldInherit ctx axis)))
+           ^w/ScrollController? sc (if primary? (w/PrimaryScrollController.maybeOf ctx) controller)
+           scrollable (w/Scrollable
+                       .dragStartBehavior drag-start-behavior
+                       .axisDirection axis-dir
+                       .controller sc
+                       .physics physics
+                       .restorationId restoration-id
+                       .clipBehavior clip
+                       .viewportBuilder (fn [_ ^r/ViewportOffset offset]
+                                          (ScrollViewport axis-dir offset clip contents)))
+           scrollable (if (= keyboard-dismiss-behavior w/ScrollViewKeyboardDismissBehavior.onDrag)
+                        (#/(w/NotificationListener w/ScrollUpdateNotification)
+                         .onNotification
+                         (fn ^bool [^w/ScrollUpdateNotification n]
+                           (let [scope (w/FocusScope.of ctx)]
+                             (when (and (some? (.-dragDetails n))
+                                        (not (.-hasPrimaryFocus scope))
+                                        (.-hasFocus scope))
+                               (some-> w/FocusManager.instance .-primaryFocus .unfocus)))
+                           false)
+                         .child scrollable)
+                        scrollable)]
+       ;; descendant scroll views must not inherit the same PrimaryScrollController
+       (if (and primary? (some? sc))
+         (w/PrimaryScrollController.none .child scrollable)
+         scrollable)))))

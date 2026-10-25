@@ -5,6 +5,7 @@
    ["package:flutter/widgets.dart" :as w]
    [flutter-cljd.internal.grid.opts :as grid-opts]
    [flutter-cljd.internal.grid.sliver :as grid-sliver]
+   [flutter-cljd.internal.scroll-viewport :as sv]
    [flutter-cljd.internal.sliver-collection :as scol]
    [flutter-cljd.internal.visible-range :as vr]
    [flutter-cljd.types :as t]
@@ -300,19 +301,20 @@
 ;; --- scroll ---
 
 (defn ^w/Widget scroll* [args child]
-  (w/SingleChildScrollView
-   .key (t/widget-key (:key args))
-   .scrollDirection (t/axis (or (:axis args) :vertical))
-   .reverse (boolean (:reverse args))
-   .controller (:controller args)
-   .primary (:primary args)
-   .physics (some-> (:physics args) t/scroll-physics)
-   .padding (some-> (:padding args) t/insets)
-   .clipBehavior (t/clip (or (:clip args) :hard-edge))
-   .dragStartBehavior (t/drag-start-behavior (or (:drag-start-behavior args) :start))
-   .keyboardDismissBehavior (t/scroll-view-keyboard-dismiss-behavior
-                             (or (:keyboard-dismiss-behavior args) :manual))
-   .child child))
+  (sv/single-child-scroll-view
+   {:key (t/widget-key (:key args))
+    :axis (t/axis (or (:axis args) :vertical))
+    :reverse (boolean (:reverse args))
+    :controller (:controller args)
+    :primary (:primary args)
+    :physics (some-> (:physics args) t/scroll-physics)
+    :padding (some-> (:padding args) t/insets)
+    :clip (t/clip (or (:clip args) :hard-edge))
+    :drag-start-behavior (t/drag-start-behavior (or (:drag-start-behavior args) :start))
+    :keyboard-dismiss-behavior (t/scroll-view-keyboard-dismiss-behavior
+                                (or (:keyboard-dismiss-behavior args) :manual))
+    :restoration-id (:restoration-id args)
+    :child child}))
 
 ;; --- scrollable ---
 

@@ -1,0 +1,245 @@
+;; @ai-generated(solo)
+(ns flutter-cljd.internal.scroll-viewport-test
+  "`scroll`: bouncing over-scroll survives per-frame relayouts; layout and
+   scrolling stay SingleChildScrollView's."
+  (:require
+   [clojure.test :refer [deftest is testing]]
+   ["dart:core" :as dc]
+   ["dart:ui" :as ui]
+   ["package:flutter/widgets.dart" :as w]
+   ["package:flutter_test/flutter_test.dart" :as ft]
+   [flutter-cljd.widgets :as f]))
+
+(defn- ^w/Widget host [^w/Widget child]
+  (w/MediaQuery
+   .data (w/MediaQueryData .size (ui/Size 400.0 600.0))
+   .child
+   (w/Directionality
+    .textDirection ui/TextDirection.ltr
+    .child child)))
+
+(defn- ^w/ScrollPosition scroll-position [^ft/WidgetTester tester]
+  (let [^w/ScrollableState st (.state tester (ft/find.byType w/Scrollable))]
+    (.-position st)))
+
+(defn- ^w/Widget ticking
+  "Rebuilds `(build t)` every frame for 100s, t ∈ [0, 1]."
+  [build]
+  (w/TweenAnimationBuilder
+   .tween (w/Tween .begin 0.0 .end 1.0)
+   .duration (dc/Duration .seconds 100)
+   .builder (fn [_ ^double t _] (build t))))
+
+(defn- ^w/Widget color-box
+  "Rebuild changes only paint, never size."
+  [^double t]
+  (w/ColoredBox .color (ui/Color.fromARGB 255 (int (* 255 t)) 0 0)
+                .child (w/SizedBox .width 40.0 .height 40.0)))
+
+(defn- content
+  "2000px of content along `axis`; `animating` sits first, rebuilt every frame."
+  [axis ^w/Widget animating]
+  (let [filler (if (= axis :vertical)
+                 (w/SizedBox .height 2000.0 .width 10.0)
+                 (w/SizedBox .width 2000.0 .height 10.0))]
+    (if (= axis :vertical)
+      (w/Column .children [animating filler])
+      (w/Row .children [animating filler]))))
+
+(def ^:private variants
+  {;; Flutter 3.38: a rebuild under a LayoutBuilder re-runs its layout callback,
+   ;; so a paint-only animation still marks the enclosing viewport for layout
+   :layout-builder
+   (fn [] (w/LayoutBuilder .builder (fn [_ _] (ticking color-box))))
+   :resizing
+   (fn [] (ticking (fn [^double t] (w/SizedBox .width (+ 40.0 t) .height (+ 40.0 t)))))
+   ;; control: no relayout reaches the viewport
+   :paint-only
+   (fn [] (ticking color-box))})
+
+(defn- over-scroll-after-frames
+  "Drags past the leading edge, pumps frames while held, returns pixels."
+  [^ft/WidgetTester tester axis]
+  (let [step (fn [^double d] (if (= axis :vertical) (ui/Offset 0.0 d) (ui/Offset d 0.0)))
+        ^ft/TestGesture g (await (.startGesture tester (ui/Offset 200.0 300.0)))]
+    ;; first move eats the touch slop
+    (await (.moveBy g (step 20.0)))
+    (await (.moveBy g (step 80.0)))
+    (await (.pump tester (dc/Duration .milliseconds 16)))
+    (await (.pump tester (dc/Duration .milliseconds 16)))
+    (let [px (.-pixels (scroll-position tester))]
+      (await (.up g))
+      px)))
+
+(defn- check [^ft/WidgetTester tester axis variant]
+  (await (.pumpWidget tester (host (f/scroll :axis axis :physics :bouncing
+                                             (content axis ((variants variant)))))))
+  (await (.pump tester (dc/Duration .milliseconds 16)))
+  (let [px (await (over-scroll-after-frames tester axis))]
+    (testing "over-scroll survives relayouts"
+      (is (< px -20.0))))
+  (dotimes [_ 30] (await (.pump tester (dc/Duration .milliseconds 50))))
+  (testing "springs back on release"
+    (is (< (.abs (.-pixels (scroll-position tester))) 1.0))))
+
+(deftest vertical-layout-builder
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :vertical :layout-builder)))
+
+(deftest vertical-resizing
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :vertical :resizing)))
+
+(deftest vertical-paint-only
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :vertical :paint-only)))
+
+(deftest horizontal-layout-builder
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :horizontal :layout-builder)))
+
+(deftest horizontal-resizing
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :horizontal :resizing)))
+
+(deftest horizontal-paint-only
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (check tester :horizontal :paint-only)))
+
+;; MARK: - SingleChildScrollView parity
+
+(def ^:private content-key (w/ValueKey "content"))
+(def ^:private top-key (w/ValueKey "top"))
+(def ^:private bottom-key (w/ValueKey "bottom"))
+
+(defn- ^ui/Size size-of [^ft/WidgetTester tester ^w/Key k]
+  (.getSize tester (ft/find.byKey k)))
+
+(deftest horizontal-scroll-in-a-column-sizes-to-its-child
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  ;; a Column gives an unbounded cross axis: a sliver viewport would throw here
+  (await (.pumpWidget tester (host (w/Column
+                                    .children
+                                    [(w/KeyedSubtree
+                                      .key content-key
+                                      .child (f/scroll :axis :horizontal
+                                                       (w/SizedBox .width 2000.0 .height 40.0)))]))))
+  (is (nil? (.takeException tester)))
+  (is (= 40.0 (.-height (size-of tester content-key)))))
+
+(deftest loose-cross-axis-hugs-the-child
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (w/Center
+                                    .child (w/KeyedSubtree
+                                            .key content-key
+                                            .child (f/scroll (w/SizedBox .width 100.0 .height 2000.0)))))))
+  (is (= 100.0 (.-width (size-of tester content-key))))
+  (is (= 600.0 (.-height (size-of tester content-key)))))
+
+(deftest short-content-hugs-the-main-axis
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (w/Center
+                                    .child (w/KeyedSubtree
+                                            .key content-key
+                                            .child (f/scroll (w/SizedBox .width 100.0 .height 50.0)))))))
+  (is (= 50.0 (.-height (size-of tester content-key)))))
+
+(deftest intrinsics-come-from-the-child
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (w/Align
+                                    .alignment w/Alignment.topLeft
+                                    .child (w/IntrinsicHeight
+                                            .child (w/KeyedSubtree
+                                                    .key content-key
+                                                    .child (f/scroll :axis :horizontal
+                                                                     (w/SizedBox .width 2000.0 .height 30.0))))))))
+  (is (nil? (.takeException tester)))
+  (is (= 30.0 (.-height (size-of tester content-key)))))
+
+(deftest reverse-starts-at-the-far-end
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/scroll :reverse true
+                                             (w/Column
+                                              .children
+                                              [(w/SizedBox .key top-key .height 100.0)
+                                               (w/SizedBox .height 2000.0)
+                                               (w/SizedBox .key bottom-key .height 100.0)])))))
+  (is (= 500.0 (.-dy (.getTopLeft tester (ft/find.byKey bottom-key)))))
+  (.jumpTo (scroll-position tester) 50.0)
+  (await (.pump tester))
+  (is (= 550.0 (.-dy (.getTopLeft tester (ft/find.byKey bottom-key))))))
+
+(deftest ensure-visible-reveals-a-descendant
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/scroll
+                                    (w/Column
+                                     .children
+                                     [(w/SizedBox .height 2000.0)
+                                      (w/SizedBox .key bottom-key .height 100.0)])))))
+  (await (w/Scrollable.ensureVisible (.element tester (ft/find.byKey bottom-key))))
+  (await (.pump tester))
+  (is (= 1500.0 (.-pixels (scroll-position tester))))
+  (is (= 500.0 (.-dy (.getTopLeft tester (ft/find.byKey bottom-key))))))
+
+(deftest content-shrinking-under-an-idle-position-snaps-to-the-new-end
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [height (#/(w/ValueNotifier double) 2000.0)]
+    (await (.pumpWidget tester (host (f/scroll
+                                      (#/(w/ValueListenableBuilder double)
+                                       .valueListenable height
+                                       .builder (fn [_ ^double h _] (w/SizedBox .height h)))))))
+    (.jumpTo (scroll-position tester) 1400.0)
+    (await (.pump tester))
+    (.-value! height 1000.0)
+    (await (.pump tester))
+    (is (= 400.0 (.-pixels (scroll-position tester))))))
+
+(deftest nested-scroll-notifications-count-depth
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [depths (atom #{})]
+    (await (.pumpWidget tester
+                        (host (#/(w/NotificationListener w/ScrollUpdateNotification)
+                               .onNotification (fn ^bool [^w/ScrollUpdateNotification n]
+                                                 (swap! depths conj (.-depth n))
+                                                 false)
+                               .child (f/scroll
+                                       (w/Column
+                                        .children
+                                        [(w/SizedBox
+                                          .height 100.0
+                                          .child (f/scroll :axis :horizontal
+                                                           (w/SizedBox .key content-key .width 2000.0 .height 100.0)))
+                                         (w/SizedBox .height 2000.0)]))))))
+    (await (.dragFrom tester (ui/Offset 100.0 50.0) (ui/Offset -200.0 0.0)))
+    (await (.pump tester))
+    (is (= #{1} @depths) "the inner scroll reports through the outer viewport")))
+
+(deftest catching-the-bounce-keeps-the-over-scroll
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (await (.pumpWidget tester (host (f/scroll :physics :bouncing
+                                             (content :vertical ((variants :layout-builder)))))))
+  (await (over-scroll-after-frames tester :vertical))
+  (await (.pump tester (dc/Duration .milliseconds 50)))
+  (let [springing (.-pixels (scroll-position tester))
+        ^ft/TestGesture g (await (.startGesture tester (ui/Offset 200.0 300.0)))]
+    (is (< springing -5.0))
+    ;; a touch during the spring-back holds the position (HoldScrollActivity)
+    (await (.pump tester (dc/Duration .milliseconds 16)))
+    (await (.pump tester (dc/Duration .milliseconds 16)))
+    (is (= springing (.-pixels (scroll-position tester))))
+    (await (.up g))))

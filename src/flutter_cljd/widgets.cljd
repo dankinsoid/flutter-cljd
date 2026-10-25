@@ -2954,7 +2954,10 @@ Examples:
 
 Options: `:axis`, `:reverse`, `:controller`, `:primary`, `:physics`,
 `:padding`, `:clip`, `:keyboard-dismiss-behavior` (`:manual`/`:on-drag`),
-`:drag-start-behavior` (`:start`/`:down`)."
+`:drag-start-behavior` (`:start`/`:down`), `:restoration-id`.
+
+A bouncing over-scroll survives content that relayouts every frame (stock
+`SingleChildScrollView` snaps it to the edge on any relayout)."
   [& args]
   (let [[args [child]] (ut/key-values-args-and-children args)]
     (scrl/scroll* args child)))
