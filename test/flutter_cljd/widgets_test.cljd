@@ -1006,7 +1006,12 @@
     (let [widget (f/text-field :keyboard-type :email :text-input-action :search)]
       (is (= (.-maxLines widget) 1))
       (is (= (.-keyboardType widget) m/TextInputType.emailAddress))
-      (is (= (.-textInputAction widget) m/TextInputAction.search)))))
+      (is (= (.-textInputAction widget) m/TextInputAction.search))))
+  (testing "keyboard appearance"
+    (is (nil? (.-keyboardAppearance (f/text-field))))
+    (is (= (.-keyboardAppearance (f/text-field :keyboard-appearance :dark)) m/Brightness.dark))
+    (is (= (.-keyboardAppearance (f/text-field :keyboard-appearance :light)) m/Brightness.light))
+    (is (thrown? Exception (f/text-field :keyboard-appearance :dim)))))
 
 (deftest test-switch
   (let [widget (f/switch true (fn [_] nil) :adaptive false :active-track-color :green)]

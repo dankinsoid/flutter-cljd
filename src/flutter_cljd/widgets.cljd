@@ -3624,6 +3624,8 @@ Options (a map or key-value pairs):
 - `:text-input-action` — `:done`, `:go`, `:next`, `:previous`, `:search`,
   `:send`, `:newline`, …; `:text-capitalization` — `:none`, `:words`,
   `:sentences`, `:characters`
+- `:keyboard-appearance` — `:light` or `:dark` (or a `Brightness`); iOS only,
+  defaults to the theme's brightness
 - `:autofocus`, `:obscure`, `:enabled`, `:read-only`, `:autocorrect` (default true)
 - decoration — top-level shortcuts or a `:decoration` map (or an
   `InputDecoration`): `:hint`, `:hint-style`, `:label`, `:label-style`,

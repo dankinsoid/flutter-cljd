@@ -57,6 +57,14 @@
       :characters s/TextCapitalization.characters
       (throw (Exception. (str "Invalid text capitalization: " cap))))))
 
+(defn- ^m/Brightness brightness [b]
+  (if (instance? m/Brightness b)
+    b
+    (case b
+      :light m/Brightness.light
+      :dark m/Brightness.dark
+      (throw (Exception. (str "Invalid brightness: " b " (expected :light or :dark)"))))))
+
 (defn- ^m/InputBorder? input-border [b]
   (cond
     (nil? b) nil
@@ -125,6 +133,7 @@
      .keyboardType (some-> (:keyboard-type opts) keyboard-type)
      .textInputAction (some-> (:text-input-action opts) text-input-action)
      .textCapitalization (text-capitalization (:text-capitalization opts :none))
+     .keyboardAppearance (some-> (:keyboard-appearance opts) brightness)
      .autocorrect (boolean (:autocorrect opts true))
      .decoration decoration)))
 
