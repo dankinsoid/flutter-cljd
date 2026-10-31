@@ -15,10 +15,17 @@ uniform float uGridWidth;
 uniform float uGridHeight;
 // 6
 uniform float uUseTexture; // 0=uniforms, 1=texture
-// 7-134
-uniform vec2 uPositions[64];
-// 135-390
-uniform vec4 uColors[64];
+// Vector data is split into one float array per component: Impeller's OpenGLES
+// backend before Flutter 3.44 strides vec arrays by 4 bytes, so element i of a
+// vec4[] reads floats i..i+3 (flutter/flutter 41e819290c).
+// 7-70, 71-134
+uniform float uPosX[64];
+uniform float uPosY[64];
+// 135-198, 199-262, 263-326, 327-390: OKLab/OKLCH components, alpha
+uniform float uColor0[64];
+uniform float uColor1[64];
+uniform float uColor2[64];
+uniform float uColor3[64];
 // 391
 uniform float uColorSpace; // 0=oklab; >0=oklch raw-angle interpolation (hue modes/mix of the 1D shader are NOT implemented here)
 // 392-393 (texture path only): decode row-1 RGB signal as texel*uDataScale + uDataLo
@@ -126,7 +133,7 @@ float ditherNoise() {
 
 vec2 getPosition(int i) {
     if (uUseTexture < 0.5) {
-        return uPositions[i];
+        return vec2(uPosX[i], uPosY[i]);
     }
     float n = uGridWidth * uGridHeight;
     float u = (float(i) + 0.5) / n;
@@ -136,7 +143,7 @@ vec2 getPosition(int i) {
 
 vec4 getMeshColor(int i) {
     if (uUseTexture < 0.5) {
-        return uColors[i];
+        return vec4(uColor0[i], uColor1[i], uColor2[i], uColor3[i]);
     }
     float n = uGridWidth * uGridHeight;
     float u = (float(i) + 0.5) / n;

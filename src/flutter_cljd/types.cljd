@@ -1038,40 +1038,26 @@
       ;; Uniform path
       (do
         (.setFloat shader 5 0.0)
-        ;; Colors (indices 10..137, 32 slots × 4 components)
+        ;; Colors: component k of stop i at 10 + 32k + i (one float[32] per component).
         ;; Preconvert to OKLab (L,a,b) or OKLCH (L,C,H) so shader skips conversion per-pixel.
-        ;; For oklch-mix (cs 5-8) also fill uLabColors (171..298) with OKLab
+        ;; For oklch-mix (cs 5-8) also fill uLab0..2 (171 + 32k + i) with OKLab
         ;; so the shader avoids per-pixel oklchToOklab trig.
         (let [mix? (>= cs-id 5)]
           (dotimes [i 32]
-            (let [base (+ 10 (* i 4))]
-              (if (< i n)
-                (let [^ui/Color c (nth colors i)]
-                  (if (zero? cs-id)
-                    (let [[l a b alpha] (ut/color->oklab c)]
-                      (.setFloat shader base l)
-                      (.setFloat shader (+ base 1) a)
-                      (.setFloat shader (+ base 2) b)
-                      (.setFloat shader (+ base 3) alpha))
-                    ;; OKLCH modes: compute OKLab once, derive OKLCH from it
-                    (let [[l a b alpha :as lab] (ut/color->oklab c)
-                          [lc cc hc _] (ut/oklab->oklch lab)]
-                      (.setFloat shader base lc)
-                      (.setFloat shader (+ base 1) cc)
-                      (.setFloat shader (+ base 2) hc)
-                      (.setFloat shader (+ base 3) alpha)
-                      ;; oklch-mix: store OKLab in secondary array
-                      (when mix?
-                        (let [lab-base (+ 171 (* i 4))]
-                          (.setFloat shader lab-base l)
-                          (.setFloat shader (+ lab-base 1) a)
-                          (.setFloat shader (+ lab-base 2) b)
-                          (.setFloat shader (+ lab-base 3) 0.0))))))
-                (do
-                  (.setFloat shader base 0.0)
-                  (.setFloat shader (+ base 1) 0.0)
-                  (.setFloat shader (+ base 2) 0.0)
-                  (.setFloat shader (+ base 3) 0.0))))))
+            (if (< i n)
+              (let [^ui/Color c (nth colors i)
+                    [l a b alpha :as lab] (ut/color->oklab c)
+                    [x y z] (if (zero? cs-id) lab (ut/oklab->oklch lab))]
+                (.setFloat shader (+ 10 i) x)
+                (.setFloat shader (+ 42 i) y)
+                (.setFloat shader (+ 74 i) z)
+                (.setFloat shader (+ 106 i) alpha)
+                (when mix?
+                  (.setFloat shader (+ 171 i) l)
+                  (.setFloat shader (+ 203 i) a)
+                  (.setFloat shader (+ 235 i) b)))
+              (dotimes [k 4]
+                (.setFloat shader (+ 10 (* k 32) i) 0.0)))))
         ;; Stops (indices 138..169)
         (dotimes [i 32]
           (.setFloat shader (+ 138 i)
@@ -1081,8 +1067,8 @@
       ;; Texture path (>32 stops)
       (let [[img lo scale] tex]
         (.setFloat shader 5 1.0)
-        (.setFloat shader 299 (double lo))    ; uDataLo:    signal decode offset
-        (.setFloat shader 300 (double scale)) ; uDataScale: signal decode range
+        (.setFloat shader 267 (double lo))    ; uDataLo:    signal decode offset
+        (.setFloat shader 268 (double scale)) ; uDataScale: signal decode range
         (.setImageSampler shader 0 img)))
     (.setFloat shader 170 (double cs-id))
     shader))
@@ -1417,34 +1403,29 @@
       ;; Uniform path
       (do
         (.setFloat shader 6 0.0) ;; uUseTexture
-        ;; Positions (indices 7..134, 64 slots × 2 components)
+        ;; Positions: x at 7 + i, y at 71 + i (one float[64] per component)
         (dotimes [i 64]
-          (let [base (+ 7 (* i 2))]
-            (if (< i n)
-              (let [pt (nth points i)]
-                (.setFloat shader base (double (nth pt 0)))
-                (.setFloat shader (+ base 1) (double (nth pt 1))))
-              (do
-                (.setFloat shader base 0.0)
-                (.setFloat shader (+ base 1) 0.0)))))
-        ;; Colors (indices 135..390, 64 slots × 4 components)
+          (if (< i n)
+            (let [pt (nth points i)]
+              (.setFloat shader (+ 7 i) (double (nth pt 0)))
+              (.setFloat shader (+ 71 i) (double (nth pt 1))))
+            (do
+              (.setFloat shader (+ 7 i) 0.0)
+              (.setFloat shader (+ 71 i) 0.0))))
+        ;; Colors: component k of point i at 135 + 64k + i.
         ;; Preconvert to OKLab (L,a,b) or OKLCH (L,C,H) so gridColorLab skips conversion per-pixel
         (dotimes [i 64]
-          (let [base (+ 135 (* i 4))]
-            (if (< i n)
-              (let [^ui/Color c (nth colors i)
-                    [x y z a] (if (zero? cs-id)
-                                (ut/color->oklab c)
-                                (ut/color->oklch c))]
-                (.setFloat shader base x)
-                (.setFloat shader (+ base 1) y)
-                (.setFloat shader (+ base 2) z)
-                (.setFloat shader (+ base 3) a))
-              (do
-                (.setFloat shader base 0.0)
-                (.setFloat shader (+ base 1) 0.0)
-                (.setFloat shader (+ base 2) 0.0)
-                (.setFloat shader (+ base 3) 0.0)))))
+          (if (< i n)
+            (let [^ui/Color c (nth colors i)
+                  [x y z a] (if (zero? cs-id)
+                              (ut/color->oklab c)
+                              (ut/color->oklch c))]
+              (.setFloat shader (+ 135 i) x)
+              (.setFloat shader (+ 199 i) y)
+              (.setFloat shader (+ 263 i) z)
+              (.setFloat shader (+ 327 i) a))
+            (dotimes [k 4]
+              (.setFloat shader (+ 135 (* k 64) i) 0.0))))
         ;; Dummy sampler — shader declares sampler2D, must be bound
         (.setImageSampler shader 0 -dummy-image))
       ;; Texture path (>64 points)

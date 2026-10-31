@@ -18,15 +18,24 @@ uniform float uUseTexture; // 0=uniforms, 1=texture
 // 6-9
 uniform vec2 uParam0;     // linear: begin; radial/sweep/diamond: center
 uniform vec2 uParam1;     // linear: end; radial/diamond: (endRadius, startRadius); sweep: (startAngle, endAngle)
-// 10-137
-uniform vec4 uColors[32];
+// Vector data is split into one float array per component: Impeller's OpenGLES
+// backend before Flutter 3.44 strides vec arrays by 4 bytes, so element i of a
+// vec4[] reads floats i..i+3 (flutter/flutter 41e819290c).
+// 10-41, 42-73, 74-105, 106-137: OKLab (L,a,b) / OKLCH (L,C,H) components, alpha
+uniform float uColor0[32];
+uniform float uColor1[32];
+uniform float uColor2[32];
+uniform float uColor3[32];
 // 138-169
 uniform float uStops[32];
 // 170
 uniform float uColorSpace; // 0=oklab, 1-4=oklch (shorter/longer/increasing/decreasing), 5-8=oklch-mix (same hue modes)
-// 171-298 (only populated for oklch-mix uniform path, cs 5-8)
-uniform vec4 uLabColors[32]; // OKLab (L,a,b,_) — avoids per-pixel oklchToOklab in mix path
-// 299-300 (texture path only): decode row-0 RGB signal as texel*uDataScale + uDataLo
+// 171-202, 203-234, 235-266 (only populated for oklch-mix uniform path, cs 5-8):
+// OKLab (L,a,b) — avoids per-pixel oklchToOklab in mix path
+uniform float uLab0[32];
+uniform float uLab1[32];
+uniform float uLab2[32];
+// 267-268 (texture path only): decode row-0 RGB signal as texel*uDataScale + uDataLo
 uniform float uDataLo;
 uniform float uDataScale;
 
@@ -129,7 +138,7 @@ float ditherNoise() {
 
 vec4 getColor(int i) {
     if (uUseTexture < 0.5) {
-        return uColors[i];
+        return vec4(uColor0[i], uColor1[i], uColor2[i], uColor3[i]);
     }
     float u = (float(i) + 0.5) / uColorCount;
     // Row 0: encoded RGB signal → decode to (wide) sRGB signal
@@ -272,10 +281,10 @@ void main() {
         if (uUseTexture < 0.5) {
             lchA = cA.rgb;
             lchB = cB.rgb;
-            // Uniform path: OKLab precomputed by CPU in uLabColors (cs 5-8)
+            // Uniform path: OKLab precomputed by CPU in uLab0..2 (cs 5-8)
             if (uColorSpace > 4.5) {
-                labA = uLabColors[idx].rgb;
-                labB = uLabColors[idx + 1].rgb;
+                labA = vec3(uLab0[idx], uLab1[idx], uLab2[idx]);
+                labB = vec3(uLab0[idx + 1], uLab1[idx + 1], uLab2[idx + 1]);
             }
         } else if (uColorSpace > 4.5) {
             // Texture path + oklch-mix: keep OKLab intermediate to avoid redundant trig
