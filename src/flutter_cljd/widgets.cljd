@@ -2419,6 +2419,9 @@ Options (leading map):
 - `:id` — what the screen shows; a change fires again while open (e.g. a
   detail screen switching items in place).
 - `:once?` — fire on the first open only.
+- `:ignore-background?` — 0-arg fn, read when the app leaves the foreground;
+  true means returning from that background is not an open (e.g. a fullscreen
+  ad's own Android activity covered the app).
 
 ```clojure
 (on-screen-open #(track! :home-viewed) home)

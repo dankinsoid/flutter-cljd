@@ -15,6 +15,13 @@
   dismissal doesn't re-fire. A resume while such a route is on top is dropped,
   not deferred to its dismissal — only the top route counts a resume.
 
+  `:ignore-background?` (0-arg fn) is read once, on the first background
+  state of an episode: true means the return from that background is not a
+  resume. On Android a fullscreen ad runs in its own opaque activity, which
+  stops the Flutter one until the ad closes; reading it only on the way down
+  makes the ad SDK's dismissal callback and the resume free to land in either
+  order.
+
   Firing runs post-frame, so several rebuilds within one frame (e.g. an `:id`
   swap right after mount) collapse into one call with the latest callback."
   (:require
@@ -49,8 +56,16 @@
 
 (defn- on-lifecycle [st* state]
   (case state
-    (:hidden :paused :detached) (swap! st* assoc :resume-pending? true)
-    (check! st*))
+    (:hidden :paused :detached)
+    ;; hidden → paused on the way down, paused → hidden on the way up: only the
+    ;; first background state of an episode decides
+    (when-not (:background? @st*)
+      (let [ignore? (:ignore-background? @st*)]
+        (swap! st* assoc
+               :background? true
+               :resume-pending? (not (and ignore? (true? (ignore?)))))))
+    (do (swap! st* assoc :background? false)
+        (check! st*)))
   nil)
 
 (defn- dispose-state
@@ -59,7 +74,7 @@
   (swap! st* assoc :disposed? true)
   nil)
 
-(defn ^w/Widget on-screen-open* [{:keys [id once?]} on-open child]
+(defn ^w/Widget on-screen-open* [{:keys [id once? ignore-background?]} on-open child]
   (f/widget
    :context ctx
    :managed [st* (atom {:armed? true :id id}) :dispose dispose-state]
@@ -70,6 +85,7 @@
                          (cond-> (assoc st
                                         :on-open on-open
                                         :once? once?
+                                        :ignore-background? ignore-background?
                                         :current? current?
                                         :visible? visible?)
                            (not= id (:id st)) (assoc :id id :armed? true)

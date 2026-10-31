@@ -52,3 +52,61 @@
     (pop! tester)
     (await (.pumpAndSettle tester))
     (is (= 1 @opens))))
+
+(defn- ^:async lifecycle! [^ft/WidgetTester tester state]
+  (.handleAppLifecycleStateChanged (.-binding tester) state)
+  (await (.pump tester))
+  nil)
+
+(deftest fires-on-resume
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [opens (atom 0)]
+    (await (.pumpWidget tester (app (f/on-screen-open #(swap! opens inc) (w/SizedBox.expand)))))
+    (await (.pump tester))
+    (await (lifecycle! tester ui/AppLifecycleState.paused))
+    (is (= 1 @opens) "background: no fire")
+    (await (lifecycle! tester ui/AppLifecycleState.resumed))
+    (is (= 2 @opens) "resume")))
+
+(deftest an-ignored-background-is-not-a-resume
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [opens (atom 0)
+        ad? (atom false)]
+    (await (.pumpWidget tester (app (f/on-screen-open {:ignore-background? #(deref ad?)}
+                                                      #(swap! opens inc)
+                                                      (w/SizedBox.expand)))))
+    (await (.pump tester))
+    (is (= 1 @opens) "mount")
+    ;; the ad's dismissal callback before the resume
+    (reset! ad? true)
+    (await (lifecycle! tester ui/AppLifecycleState.paused))
+    (reset! ad? false)
+    (await (lifecycle! tester ui/AppLifecycleState.resumed))
+    (is (= 1 @opens))
+    ;; the resume before the dismissal callback
+    (reset! ad? true)
+    (await (lifecycle! tester ui/AppLifecycleState.paused))
+    (await (lifecycle! tester ui/AppLifecycleState.resumed))
+    (reset! ad? false)
+    (is (= 1 @opens))
+    (await (lifecycle! tester ui/AppLifecycleState.paused))
+    (await (lifecycle! tester ui/AppLifecycleState.resumed))
+    (is (= 2 @opens) "a real return from the background")))
+
+(deftest an-ignored-background-keeps-mount-and-uncover
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [opens (atom 0)]
+    (await (.pumpWidget tester (app (f/on-screen-open {:ignore-background? (fn [] true)}
+                                                      #(swap! opens inc)
+                                                      (w/SizedBox.expand)))))
+    (await (.pump tester))
+    (is (= 1 @opens))
+    (push-opaque! tester)
+    (await (.pumpAndSettle tester))
+    (is (= 1 @opens) "covered")
+    (pop! tester)
+    (await (.pumpAndSettle tester))
+    (is (= 2 @opens) "uncovered")))
