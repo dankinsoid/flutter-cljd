@@ -905,6 +905,24 @@
     (let [widget (f/semantics :header true :merge true (m/Text "x"))]
       (is (instance? m/MergeSemantics widget))
       (is (true? (.-header (.-properties (.-child widget)))))))
+  (testing "adjustable, tri-state, route and custom actions"
+    (let [inc! (fn [])
+          act! (fn [])
+          props (.-properties (f/semantics {:slider true :value "50%" :increased-value "60%"
+                                            :on-increase inc! :mixed true
+                                            :scopes-route true :names-route true
+                                            :actions {"Open" act!}}
+                                           (m/Text "x")))
+          [[action f]] (seq (.-customSemanticsActions props))]
+      (is (true? (.-slider props)))
+      (is (= (.-increasedValue props) "60%"))
+      (is (identical? (.-onIncrease props) inc!))
+      (is (true? (.-mixed props)))
+      (is (nil? (.-checked props)))
+      (is (true? (.-scopesRoute props)))
+      (is (true? (.-namesRoute props)))
+      (is (= (.-label action) "Open"))
+      (is (identical? f act!))))
   (testing "exclude-semantics"
     (is (true? (.-excluding (f/exclude-semantics (m/Text "x")))))
     (is (false? (.-excluding (f/exclude-semantics false (m/Text "x")))))))

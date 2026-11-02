@@ -1,18 +1,26 @@
 ;; @ai-generated(solo)
 (ns flutter-cljd.internal.semantics
   (:require
+   ["dart:core" :as dc]
    ["package:flutter/widgets.dart" :as w]
    ["package:flutter/semantics.dart" :as sem]
    [flutter-cljd.types :as t]))
 
 (defn- ^bool? opt-bool [v] (some-> v boolean))
 
+(defn- custom-actions [actions]
+  (when (seq actions)
+    (into {}
+          (map (fn [[label f]] [(sem/CustomSemanticsAction .label (str label)) f]))
+          actions)))
+
 (defn ^w/Widget semantics* [opts child]
   (let [{:keys [key label value hint tooltip identifier sort-key
-                button header link image enabled selected checked toggled
-                focusable focused hidden read-only obscured live-region text-field
-                container explicit-child-nodes exclude-children merge
-                on-tap on-long-press]} opts
+                button header heading-level link image enabled selected checked mixed toggled
+                slider expanded focusable focused hidden read-only obscured live-region text-field
+                container explicit-child-nodes exclude-children merge scopes-route names-route
+                increased-value decreased-value
+                on-tap on-long-press on-increase on-decrease on-dismiss actions]} opts
         node (w/Semantics
               .key (when-not merge (t/widget-key key))
               .container (boolean container)
@@ -20,6 +28,8 @@
               .excludeSemantics (boolean exclude-children)
               .label (some-> label str)
               .value (some-> value str)
+              .increasedValue (some-> increased-value str)
+              .decreasedValue (some-> decreased-value str)
               .hint (some-> hint str)
               .tooltip (some-> tooltip str)
               .identifier (some-> identifier str)
@@ -29,12 +39,16 @@
                          :else (sem/OrdinalSortKey (double sort-key)))
               .button (opt-bool button)
               .header (opt-bool header)
+              .headingLevel (some-> heading-level int)
               .link (opt-bool link)
               .image (opt-bool image)
               .enabled (opt-bool enabled)
               .selected (opt-bool selected)
               .checked (opt-bool checked)
+              .mixed (opt-bool mixed)
               .toggled (opt-bool toggled)
+              .slider (opt-bool slider)
+              .expanded (opt-bool expanded)
               .focusable (opt-bool focusable)
               .focused (opt-bool focused)
               .hidden (opt-bool hidden)
@@ -42,9 +56,21 @@
               .obscured (opt-bool obscured)
               .liveRegion (opt-bool live-region)
               .textField (opt-bool text-field)
+              .scopesRoute (opt-bool scopes-route)
+              .namesRoute (opt-bool names-route)
               .onTap on-tap
               .onLongPress on-long-press
+              .onIncrease on-increase
+              .onDecrease on-decrease
+              .onDismiss on-dismiss
+              .customSemanticsActions (custom-actions actions)
               .child child)]
     (if merge
       (w/MergeSemantics .key (t/widget-key key) .child node)
       node)))
+
+(defn ^w/Widget clamp-text-scale* [{:keys [min max]} child]
+  (w/MediaQuery.withClampedTextScaling
+   .minScaleFactor (double (or min 0.0))
+   .maxScaleFactor (if (some? max) (double max) dc/double.infinity)
+   .child child))

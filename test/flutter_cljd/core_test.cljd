@@ -98,3 +98,19 @@
     (is (= (.-strokeWidth ind) 3.0)))
   (is (instance? m/Scaffold (f/adaptive-scaffold {:background-color :black} (w/SizedBox))))
   (set! fd/debugDefaultTargetPlatformOverride nil))
+
+(deftest clamp-text-scale-caps-the-scaler
+  :tags [:widget]
+  :runner (ft/testWidgets [tester])
+  (let [seen (atom nil)
+        probe (fn [opts]
+                (w/MediaQuery
+                 .data (w/MediaQueryData .textScaler (w/TextScaler.linear 3.0))
+                 .child (f/clamp-text-scale opts
+                          (w/Builder .builder (fn [ctx]
+                                                (reset! seen (.scale (w/MediaQuery.textScalerOf ctx) 10.0))
+                                                (w/SizedBox.shrink))))))]
+    (await (.pumpWidget tester (probe {:max 1.5})))
+    (is (= 15.0 @seen))
+    (await (.pumpWidget tester (probe {:min 4.0})))
+    (is (= 40.0 @seen))))
