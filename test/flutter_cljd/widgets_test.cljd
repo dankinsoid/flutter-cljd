@@ -1043,3 +1043,15 @@
     (is (instance? m/Text (.-title widget)))
     (is (= (.-elevation widget) 0.0))
     (is (= (count (.-actions widget)) 1))))
+
+(deftest test-fitted
+  (let [child (m/Text "x")
+        widget (f/fitted child)]
+    (is (instance? m/FittedBox widget))
+    (is (= m/BoxFit.scaleDown (.-fit widget)))
+    (is (= m/Alignment.center (.-alignment widget)))
+    (is (= m/Clip.none (.-clipBehavior widget))))
+  (let [widget (f/fitted {:fit :contain :alignment :center-left :clip true} (m/Text "x"))]
+    (is (= m/BoxFit.contain (.-fit widget)))
+    (is (= m/Alignment.centerLeft (.-alignment widget)))
+    (is (= m/Clip.hardEdge (.-clipBehavior widget)))))
