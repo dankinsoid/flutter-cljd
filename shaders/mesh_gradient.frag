@@ -38,28 +38,22 @@ uniform sampler2D uData;   // Nx2 data texture (row 0: pos x,y + alpha, row 1: e
 
 out vec4 fragColor;
 
-// --- Fast sRGB <-> Linear (polynomial / sqrt-chain approximation) ---
+// --- sRGB <-> Linear ---
 
-// Sign-preserving, unclamped: approximates utils/srgb-eotf (±0.001) so
+// Exact, sign-preserving, unclamped: matches utils/srgb-eotf / srgb-oetf so
 // texture-decoded wide-gamut signals (components outside 0..1) linearize
-// consistently with the CPU-converted uniform path.
+// consistently with the CPU-converted uniform path. pow lowers to exp2/log2
+// on the GPU, so exactness costs about as much as a polynomial fit.
 float srgbToLinear(float c) {
     float a = abs(c);
-    float l = a * (a * (a * 0.305306011 + 0.682171111) + 0.012522878);
+    float l = a <= 0.04045 ? a / 12.92 : pow((a + 0.055) / 1.055, 2.4);
     return c < 0.0 ? -l : l;
 }
 
 float linearToSrgb(float c) {
     float a = abs(c);
-    float s1 = sqrt(a);
-    float s2 = sqrt(s1);
-    float s3 = sqrt(s2);
-    // The chain dips negative for |c| < ~9e-4; without the clamp the sign
-    // restore below flips tiny negative inputs (matrix-roundtrip noise,
-    // out-of-gamut interpolants) into a positive haze of +5..8/255 on
-    // channels that should be ~0.
-    float encoded = max(0.585122381 * s1 + 0.783140355 * s2 - 0.368262736 * s3, 0.0);
-    return c < 0.0 ? -encoded : encoded;
+    float s = a <= 0.0031308 ? a * 12.92 : 1.055 * pow(a, 1.0 / 2.4) - 0.055;
+    return c < 0.0 ? -s : s;
 }
 
 vec3 srgbToLinearV(vec3 c) {
